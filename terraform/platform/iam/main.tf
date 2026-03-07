@@ -164,12 +164,17 @@ resource "aws_iam_role" "ci_app" {
         }
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/${each.key}:*"
-          }
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud"              = "sts.amazonaws.com"
-            "token.actions.githubusercontent.com:job_workflow_ref" = "${var.github_org}/platform/.github/workflows/tf-plan.yml@refs/heads/main"
+            # Terraform operations: plan (read), review (read), apply (write)
+            "token.actions.githubusercontent.com:job_workflow_ref" = [
+              "${var.github_org}/platform/.github/workflows/tf-plan.yml@refs/heads/main",
+              "${var.github_org}/platform/.github/workflows/plan-review.yml@refs/heads/main",
+              "${var.github_org}/platform/.github/workflows/tf-apply.yml@refs/heads/main",
+            ]
           }
         }
       }
@@ -204,11 +209,95 @@ resource "aws_iam_role_policy" "ci_app_allow" {
   })
 }
 
+resource "aws_iam_role_policy" "ci_app_deny" {
+  for_each = toset(var.registered_app_repos)
+
+  name = "deny-platform-operations"
+  role = aws_iam_role.ci_app[each.key].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DenyNetworkInfra"
+        Effect = "Deny"
+        Action = [
+          "ec2:CreateVpc", "ec2:DeleteVpc", "ec2:ModifyVpcAttribute",
+          "ec2:CreateSubnet", "ec2:DeleteSubnet",
+          "ec2:CreateNatGateway", "ec2:DeleteNatGateway",
+          "ec2:CreateInternetGateway", "ec2:DeleteInternetGateway",
+          "ec2:AttachInternetGateway", "ec2:DetachInternetGateway",
+          "ec2:CreateRouteTable", "ec2:DeleteRouteTable",
+          "ec2:CreateSecurityGroup", "ec2:DeleteSecurityGroup",
+          "ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress",
+          "ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupEgress",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "DenyLoadBalancerAndCluster"
+        Effect = "Deny"
+        Action = [
+          "elasticloadbalancingv2:CreateLoadBalancer",
+          "elasticloadbalancingv2:DeleteLoadBalancer",
+          "ecs:CreateCluster", "ecs:DeleteCluster",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "DenySecurityServices"
+        Effect = "Deny"
+        Action = [
+          "guardduty:*",
+          "securityhub:*",
+          "config:*",
+          "cloudtrail:*",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "DenyOrgAndAccount"
+        Effect = "Deny"
+        Action = [
+          "organizations:*",
+          "account:*",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "DenyDangerousIAM"
+        Effect = "Deny"
+        Action = [
+          "iam:CreateUser",
+          "iam:CreateAccessKey",
+          "iam:CreateLoginProfile",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "DenyPlatformSNS"
+        Effect = "Deny"
+        Action = [
+          "sns:CreateTopic",
+          "sns:DeleteTopic",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid      = "DenyStateBucketDeletion"
+        Effect   = "Deny"
+        Action   = "s3:DeleteBucket"
+        Resource = "*"
+      },
+    ]
+  })
+}
+
 ################################################################################
 # 3. javabin-ci-deploy-{repo} — Per-app deploy role (build + push + deploy)
 #
-# Trust: GitHub OIDC pinned to the platform's tf-apply, docker-build, and
-# ecs-deploy workflows on main.
+# Trust: GitHub OIDC pinned to docker-build and ecs-deploy workflows on main.
+# Terraform operations use the app role instead.
 # Permissions: Scoped to ECR push, ECS update, CloudWatch logs, SSM read.
 ################################################################################
 
@@ -233,9 +322,8 @@ resource "aws_iam_role" "ci_deploy" {
           }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/${each.key}:*"
-            # Trust tf-apply, docker-build, and ecs-deploy workflows
+            # Deployment operations only — Terraform uses the app role
             "token.actions.githubusercontent.com:job_workflow_ref" = [
-              "${var.github_org}/platform/.github/workflows/tf-apply.yml@refs/heads/main",
               "${var.github_org}/platform/.github/workflows/docker-build.yml@refs/heads/main",
               "${var.github_org}/platform/.github/workflows/ecs-deploy.yml@refs/heads/main",
             ]
