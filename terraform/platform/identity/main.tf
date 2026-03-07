@@ -1,11 +1,8 @@
 ################################################################################
 # Cognito User Pools — Internal (java.no) + External (public)
 #
-# Internal pool: Google IdP restricted to @java.no (hosted domain claim).
-# External pool: Self-service signup + Google (any account).
-#
-# Gated by var.enable_cognito — requires Google OAuth credentials from GCP.
-# DNS records for custom domains require var.route53_zone_id and var.certificate_arn.
+# Pools are always created. Google IdP is added when google_client_id is set.
+# Custom domains require certificate_arn (must be in us-east-1 for CloudFront).
 #
 # Identity Center lives in terraform/org/ (human-applied, not CI).
 ################################################################################
@@ -15,8 +12,6 @@
 ################################################################################
 
 resource "aws_cognito_user_pool" "internal" {
-  count = var.enable_cognito ? 1 : 0
-
   name = "${var.project}-internal"
 
   auto_verified_attributes = ["email"]
@@ -55,9 +50,9 @@ resource "aws_cognito_user_pool" "internal" {
 }
 
 resource "aws_cognito_identity_provider" "internal_google" {
-  count = var.enable_cognito ? 1 : 0
+  count = var.google_client_id != "" ? 1 : 0
 
-  user_pool_id  = aws_cognito_user_pool.internal[0].id
+  user_pool_id  = aws_cognito_user_pool.internal.id
   provider_name = "Google"
   provider_type = "Google"
 
@@ -83,15 +78,15 @@ resource "aws_cognito_identity_provider" "internal_google" {
 }
 
 resource "aws_cognito_user_pool_domain" "internal" {
-  count = var.enable_cognito && var.certificate_arn != "" ? 1 : 0
+  count = var.certificate_arn != "" ? 1 : 0
 
   domain          = "auth-internal.${var.domain}"
   certificate_arn = var.certificate_arn
-  user_pool_id    = aws_cognito_user_pool.internal[0].id
+  user_pool_id    = aws_cognito_user_pool.internal.id
 }
 
 resource "aws_route53_record" "internal_auth" {
-  count = var.enable_cognito && var.route53_zone_id != "" && var.certificate_arn != "" ? 1 : 0
+  count = var.route53_zone_id != "" && var.certificate_arn != "" ? 1 : 0
 
   zone_id = var.route53_zone_id
   name    = "auth-internal.${var.domain}"
@@ -106,10 +101,10 @@ resource "aws_route53_record" "internal_auth" {
 
 # Groups mirroring Google Workspace
 resource "aws_cognito_user_group" "internal_groups" {
-  for_each = var.enable_cognito ? toset(["heroes", "board", "pkom", "infra"]) : toset([])
+  for_each = toset(["heroes", "board", "pkom", "infra"])
 
   name         = each.key
-  user_pool_id = aws_cognito_user_pool.internal[0].id
+  user_pool_id = aws_cognito_user_pool.internal.id
   description  = "${each.key} group (synced from Google Workspace)"
 }
 
@@ -118,8 +113,6 @@ resource "aws_cognito_user_group" "internal_groups" {
 ################################################################################
 
 resource "aws_cognito_user_pool" "external" {
-  count = var.enable_cognito ? 1 : 0
-
   name = "${var.project}-external"
 
   auto_verified_attributes = ["email"]
@@ -158,9 +151,9 @@ resource "aws_cognito_user_pool" "external" {
 }
 
 resource "aws_cognito_identity_provider" "external_google" {
-  count = var.enable_cognito ? 1 : 0
+  count = var.google_client_id != "" ? 1 : 0
 
-  user_pool_id  = aws_cognito_user_pool.external[0].id
+  user_pool_id  = aws_cognito_user_pool.external.id
   provider_name = "Google"
   provider_type = "Google"
 
@@ -184,15 +177,15 @@ resource "aws_cognito_identity_provider" "external_google" {
 }
 
 resource "aws_cognito_user_pool_domain" "external" {
-  count = var.enable_cognito && var.certificate_arn != "" ? 1 : 0
+  count = var.certificate_arn != "" ? 1 : 0
 
   domain          = "auth-external.${var.domain}"
   certificate_arn = var.certificate_arn
-  user_pool_id    = aws_cognito_user_pool.external[0].id
+  user_pool_id    = aws_cognito_user_pool.external.id
 }
 
 resource "aws_route53_record" "external_auth" {
-  count = var.enable_cognito && var.route53_zone_id != "" && var.certificate_arn != "" ? 1 : 0
+  count = var.route53_zone_id != "" && var.certificate_arn != "" ? 1 : 0
 
   zone_id = var.route53_zone_id
   name    = "auth-external.${var.domain}"

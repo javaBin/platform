@@ -37,12 +37,6 @@ variable "exempt_roles" {
   ]
 }
 
-variable "enable_identity_center" {
-  description = "Whether to create Identity Center permission sets and group assignments. Enable after Google Workspace SAML sync is configured."
-  type        = bool
-  default     = false
-}
-
 variable "google_workspace_domain" {
   description = "Google Workspace domain for Identity Center group lookups"
   type        = string
