@@ -149,6 +149,7 @@ LLM_REGION = os.environ.get("DEPLOY_REGION", "eu-central-1")
 
 MAX_SERVICES_PER_CATEGORY = 8
 SPIKE_THRESHOLD_PCT = 15.0
+USD_TO_NOK = 10.5  # Approximate exchange rate
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +157,12 @@ SPIKE_THRESHOLD_PCT = 15.0
 # ---------------------------------------------------------------------------
 def fmt_date(d):
     return d.strftime("%b %d")
+
+
+def fmt_usd_nok(usd):
+    """Format amount in both USD and NOK."""
+    nok = usd * USD_TO_NOK
+    return f"${usd:.2f} (~{nok:.0f} NOK)"
 
 
 def fmt_service_lines(services, start, end, week_total):
@@ -193,81 +200,76 @@ def fmt_change(current, previous):
 # LLM narrative generation via Bedrock — structured output
 # ---------------------------------------------------------------------------
 _NARRATIVE_TOOL = {
-    "tools": [{
-        "toolSpec": {
-            "name": "submit_narrative",
-            "description": "Submit a cost report narrative summary",
-            "inputSchema": {
-                "json": {
-                    "type": "object",
-                    "properties": {
-                        "summary": {
-                            "type": "string",
-                            "description": "2-3 sentence executive summary of the cost report",
-                        },
-                        "notable": {
-                            "type": "boolean",
-                            "description": "True if there is something worth calling out "
-                            "(significant change, unusual pattern). False if costs are stable.",
-                        },
-                    },
-                    "required": ["summary", "notable"],
-                }
+    "name": "submit_narrative",
+    "description": "Submit a cost report narrative summary",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "2-3 sentence executive summary of the cost report",
             },
-        }
-    }],
-    "toolChoice": {"any": {}},
+            "notable": {
+                "type": "boolean",
+                "description": "True if there is something worth calling out "
+                "(significant change, unusual pattern). False if costs are stable.",
+            },
+        },
+        "required": ["summary", "notable"],
+    },
 }
 
 _SPIKE_TOOL = {
-    "tools": [{
-        "toolSpec": {
-            "name": "submit_spike_analysis",
-            "description": "Submit a root cause analysis for a cost spike",
-            "inputSchema": {
-                "json": {
-                    "type": "object",
-                    "properties": {
-                        "root_cause": {
-                            "type": "string",
-                            "description": "2-3 sentence explanation of the likely root cause",
-                        },
-                        "suggested_action": {
-                            "type": "string",
-                            "description": "One concrete action to investigate",
-                        },
-                        "severity": {
-                            "type": "string",
-                            "enum": ["LOW", "MEDIUM", "HIGH"],
-                            "description": "LOW = expected growth, MEDIUM = worth investigating, "
-                            "HIGH = likely anomaly needing immediate attention",
-                        },
-                    },
-                    "required": ["root_cause", "suggested_action", "severity"],
-                }
+    "name": "submit_spike_analysis",
+    "description": "Submit a root cause analysis for a cost spike",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "root_cause": {
+                "type": "string",
+                "description": "2-3 sentence explanation of the likely root cause",
             },
-        }
-    }],
-    "toolChoice": {"any": {}},
+            "suggested_action": {
+                "type": "string",
+                "description": "One concrete action to investigate",
+            },
+            "severity": {
+                "type": "string",
+                "enum": ["LOW", "MEDIUM", "HIGH"],
+                "description": "LOW = expected growth, MEDIUM = worth investigating, "
+                "HIGH = likely anomaly needing immediate attention",
+            },
+        },
+        "required": ["root_cause", "suggested_action", "severity"],
+    },
 }
 
 
-def _llm_structured(prompt, tool_config):
-    """Call Bedrock with tool use, return structured dict or None."""
+def _llm_structured(prompt, tool):
+    """Call Bedrock invoke_model with tool use, return structured dict or None."""
     try:
         bedrock = boto3.client(
             "bedrock-runtime", region_name=LLM_REGION,
             config=Config(read_timeout=20, connect_timeout=5),
         )
-        response = bedrock.converse(
+        request_body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 1024,
+            "temperature": 0.2,
+            "messages": [{"role": "user", "content": prompt}],
+            "tools": [tool],
+            "tool_choice": {"type": "any"},
+        })
+        response = bedrock.invoke_model(
             modelId=LLM_MODEL_ID,
-            messages=[{"role": "user", "content": [{"text": prompt}]}],
-            toolConfig=tool_config,
-            inferenceConfig={"temperature": 0.2},
+            contentType="application/json",
+            accept="application/json",
+            body=request_body,
         )
-        for content in response["output"]["message"]["content"]:
-            if "toolUse" in content:
-                return content["toolUse"]["input"]
+        response_body = json.loads(response["body"].read())
+        for block in response_body.get("content", []):
+            if block.get("type") == "tool_use" and block.get("name") == tool["name"]:
+                return block["input"]
     except Exception as e:
         logger.warning("LLM call failed: %s", e)
     return None
@@ -370,7 +372,8 @@ def build_blocks(this_week, prev_week, mtd, prev_mtd, project_costs,
         for proj_name, cost in sorted_projects:
             if cost >= 0.01:
                 pct = (cost / tw_total * 100) if tw_total > 0 else 0
-                project_lines.append(f"  * {proj_name} — *${cost:.2f}* ({pct:.1f}%)")
+                nok = cost * USD_TO_NOK
+                project_lines.append(f"  \u2022 {proj_name} \u2014 *${cost:.2f}* (~{nok:.0f} NOK) `{pct:.1f}%`")
         if project_lines:
             blocks.append({
                 "type": "section",
@@ -409,12 +412,12 @@ def build_blocks(this_week, prev_week, mtd, prev_mtd, project_costs,
     blocks.append({
         "type": "section",
         "fields": [
-            {"type": "mrkdwn", "text": f"*Total This Week*\n${tw_total:.2f}"},
-            {"type": "mrkdwn", "text": f"*Previous Week*\n${pw_total:.2f}"},
+            {"type": "mrkdwn", "text": f"*Total This Week*\n{fmt_usd_nok(tw_total)}"},
+            {"type": "mrkdwn", "text": f"*Previous Week*\n{fmt_usd_nok(pw_total)}"},
             {"type": "mrkdwn", "text": f"*Week-over-Week*\n{fmt_change(tw_total, pw_total)}"},
-            {"type": "mrkdwn", "text": f"*Avg Daily*\n${daily_avg:.2f}"},
-            {"type": "mrkdwn", "text": f"*Month-to-Date*\n${mtd_total:.2f}"},
-            {"type": "mrkdwn", "text": f"*Projected {curr_month_name}*\n${projected:.2f}"},
+            {"type": "mrkdwn", "text": f"*Avg Daily*\n{fmt_usd_nok(daily_avg)}"},
+            {"type": "mrkdwn", "text": f"*Month-to-Date*\n{fmt_usd_nok(mtd_total)}"},
+            {"type": "mrkdwn", "text": f"*Projected {curr_month_name}*\n{fmt_usd_nok(projected)}"},
         ]
     })
 
@@ -429,28 +432,16 @@ def build_blocks(this_week, prev_week, mtd, prev_mtd, project_costs,
     blocks.append({
         "type": "section",
         "fields": [
-            {"type": "mrkdwn", "text": f"*MTD Total*\n${mtd_total:.2f}"},
-            {"type": "mrkdwn", "text": f"*{prev_month_name} Same Period*\n${prev_mtd_total:.2f}"},
+            {"type": "mrkdwn", "text": f"*MTD Total*\n{fmt_usd_nok(mtd_total)}"},
+            {"type": "mrkdwn", "text": f"*{prev_month_name} Same Period*\n{fmt_usd_nok(prev_mtd_total)}"},
             {"type": "mrkdwn", "text": f"*MTD Change*\n{fmt_change(mtd_total, prev_mtd_total)}"},
-            {"type": "mrkdwn", "text": f"*Projected {curr_month_name}*\n${projected:.2f}"},
+            {"type": "mrkdwn", "text": f"*Projected {curr_month_name}*\n{fmt_usd_nok(projected)}"},
         ]
     })
 
     blocks.append({"type": "divider"})
 
-    # LLM narrative
-    narrative_result = generate_narrative(
-        this_week, prev_week, mtd,
-        tw_total, pw_total, mtd_total, projected, curr_month_name,
-    )
-    if narrative_result:
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn",
-                     "text": f":brain: *Summary*\n{narrative_result.get('summary', '')}"}
-        })
-
-    # LLM spike root cause
+    # LLM spike root cause (shown as a section — important)
     spike_result = analyze_spike(this_week, prev_week, tw_total, pw_total)
     if spike_result:
         sev_emoji = {"HIGH": ":red_circle:", "MEDIUM": ":large_orange_circle:"}.get(
@@ -461,18 +452,25 @@ def build_blocks(this_week, prev_week, mtd, prev_mtd, project_costs,
                      "text": f":warning: *Spike Analysis* {sev_emoji}\n{spike_result.get('root_cause', '')}\n\n"
                      f"_Suggested action: {spike_result.get('suggested_action', 'N/A')}_"}
         })
-
-    if narrative_result or spike_result:
         blocks.append({"type": "divider"})
 
+    # LLM narrative + footer as context blocks
+    narrative_result = generate_narrative(
+        this_week, prev_week, mtd,
+        tw_total, pw_total, mtd_total, projected, curr_month_name,
+    )
+
+    ce_url = cost_explorer_url(tw_start, tw_end)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    blocks.append({
-        "type": "context",
-        "elements": [
-            {"type": "mrkdwn",
-             "text": f"Source: AWS Cost Explorer | Generated {ts}"}
-        ]
-    })
+    context_parts = []
+    if narrative_result:
+        context_parts.append(
+            {"type": "mrkdwn", "text": f":brain: {narrative_result.get('summary', '')}"}
+        )
+    context_parts.append(
+        {"type": "mrkdwn", "text": f"<{ce_url}|View in Cost Explorer> | Generated {ts} | NOK rate: ~{USD_TO_NOK}"}
+    )
+    blocks.append({"type": "context", "elements": context_parts})
 
     return blocks
 
