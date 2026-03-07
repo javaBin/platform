@@ -281,15 +281,36 @@ jobs:
           role-session-name: javabin-apply-${{ github.run_id }}
 
       - name: Check risk level
+        env:
+          RISK: ${{ needs.review.outputs.risk_level }}
+          OVERRIDE_WEBHOOK_PARAM: /javabin/slack/platform-override-alerts-webhook
         run: |
-          RISK="${{ needs.review.outputs.risk_level }}"
           echo "LLM review risk: ${RISK}"
           if [ "$RISK" = "HIGH" ]; then
-            echo "Auto-apply blocked (risk=HIGH)."
-            echo "A board member can override via the approve-override workflow."
+            echo "Auto-apply blocked (risk=HIGH). Notifying Slack..."
+            WEBHOOK_URL=$(aws ssm get-parameter \
+              --name "${OVERRIDE_WEBHOOK_PARAM}" \
+              --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")
+            if [ -n "$WEBHOOK_URL" ]; then
+              OVERRIDE_URL="https://github.com/${{ github.repository }}/actions/workflows/approve-override.yml?inputs%5Brepo%5D=${{ github.event.repository.name }}&inputs%5Bsha%5D=${{ github.sha }}"
+              python3 << 'PYEOF'
+          import json, os, urllib.request
+          webhook = os.environ.get("WEBHOOK_URL", "")
+          payload = json.dumps({
+              "blocks": [
+                  {"type": "header", "text": {"type": "plain_text", "text": "Deploy Blocked - HIGH Risk"}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": f"*Repo:* {os.environ['GITHUB_REPOSITORY']}\n*SHA:* `{os.environ['GITHUB_SHA'][:8]}`\n*Actor:* {os.environ.get('GITHUB_ACTOR','unknown')}"}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": f"<{os.environ['OVERRIDE_URL']}|Approve Override>"}},
+              ],
+              "text": f"Deploy blocked for {os.environ['GITHUB_REPOSITORY']}"
+          }).encode()
+          req = urllib.request.Request(webhook, data=payload, headers={"Content-Type": "application/json"})
+          urllib.request.urlopen(req)
+          PYEOF
+            fi
             exit 1
           elif [ "$RISK" != "LOW" ] && [ "$RISK" != "MEDIUM" ]; then
-            echo "⚠️ LLM review returned ${RISK} — proceeding with caution (review may have errored)"
+            echo "LLM review returned ${RISK} — proceeding with caution (review may have errored)"
           fi
 
       - name: Download plan from S3
