@@ -105,11 +105,21 @@ jobs:
             fi
           fi
 
+      - name: Generate GitHub App token
+        if: hashFiles('app.yaml') != ''
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PLATFORM_APP_ID }}
+          private-key: ${{ secrets.PLATFORM_APP_PRIVATE_KEY }}
+          owner: javaBin
+
       - name: Checkout platform scripts
         if: hashFiles('app.yaml') != ''
         uses: actions/checkout@v4
         with:
           repository: javaBin/platform
+          token: ${{ steps.app-token.outputs.token }}
           path: .platform
           sparse-checkout: scripts
 

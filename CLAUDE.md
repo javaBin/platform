@@ -27,7 +27,7 @@ sourced from this repo.
   Our CI roles attach to the same provider with different trust conditions.
 - **Auth0**: login.javazone.no — existing IdP, stays as-is
 - **Existing TF state**: `javazone-terraform-state` bucket + `terraform-lock` table — manages SQS only, unrelated to our work
-- **Security services**: None enabled (no CloudTrail, GuardDuty, Security Hub, Config)
+- **Security services**: GuardDuty, Security Hub, and Config deployed by our platform. CloudTrail not managed by us.
 
 ### Coexistence Strategy
 **Full separation.** We create our own VPC, ALB, ECS cluster, OIDC provider, state bucket — everything.
@@ -49,6 +49,9 @@ Migration happens later per-app at developer's pace — apps move from old ALB/E
 ## Working Rules
 
 - **Variables, not hardcodes**: Use `var.region`, `var.project`, `var.aws_account_id`, `var.domain`. Never hardcode account IDs, regions, or domains.
+- **No inline scripts in CI workflows**: Never embed large shell/Python scripts in workflow YAML. Keep scripts in `scripts/` and reference them. Workflow steps should be short commands that call scripts, not scripts themselves.
+- **No manual resource creation**: All AWS resources come from Terraform modules. Never create resources via CLI as a stopgap — fix the module/workflow so it provisions automatically.
+- **Clean, generalized implementations**: Always patternize. If something will be used more than once, make it a module, script, or reusable component from the start. No hacky workarounds.
 - **IAM least-privilege**: Scope `Resource` to specific ARNs/regions. If `*` is required by AWS, add a comment explaining why.
 - **Secrets via SSM**: Webhook URLs and secrets in SSM Parameter Store under `/javabin/`. Lambdas read at runtime via `ssm:GetParameter`. Never in env vars, TF variables, or code.
 - **Tags via provider**: All resources get `default_tags` from `providers.tf`. Don't manually add tags that are already in defaults.
@@ -84,7 +87,6 @@ Migration happens later per-app at developer's pace — apps move from old ALB/E
 | File | What |
 |------|------|
 | `CLAUDE.md` | This file — project overview and agent instructions |
-| `PLAN.md` | Full platform plan (all phases, constraints, architecture) |
 | `.gitignore` | Terraform state files, .terraform/, *.tfplan |
 
 ### Documentation
@@ -113,7 +115,7 @@ terraform/platform/
   compute/         ECS cluster, ECR base config
   monitoring/      SNS, EventBridge, Config, GuardDuty, Security Hub
   lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, override-cleanup, team-provisioner
-  identity/        IAM Identity Center, Cognito pools (new)
+  identity/        IAM Identity Center, Cognito pools (NOT YET IMPLEMENTED — empty dir)
 ```
 
 ### Terraform — Org (human-applied, no CI)
@@ -147,7 +149,7 @@ terraform/state/
 | `terraform/modules/service-queue/` | SQS queue + DLQ with IAM policy output |
 | `terraform/modules/service-alarm/` | CloudWatch alarms for ECS service |
 | `terraform/modules/app-stack/` | Golden path — reads `app.yaml`, creates all infra |
-| `terraform/modules/cognito-app-client/` | Cognito app client registration (new) |
+| `terraform/modules/cognito-app-client/` | Cognito app client registration (code exists, no pools deployed yet) |
 
 ### GitHub Actions Workflows
 ```
@@ -175,7 +177,7 @@ terraform/state/
 | `daily-cost-check` | Daily spike detection (silent if no spikes) |
 | `compliance-reporter` | Reports untagged resources to Slack (no auto-fix) |
 | `override-cleanup` | Hourly cleanup of stale SSM override tokens |
-| `team-provisioner` | Syncs teams across Google, GitHub, Cognito, IAM (stub) |
+| `team-provisioner` | Stub — logs event and returns 200. Google/GitHub/Cognito sync not implemented |
 
 ### Scripts
 | Script | What |
@@ -211,7 +213,7 @@ Scheduled:
 
 EventBridge (Create/Run) ──► compliance-reporter (report to Slack, no auto-fix)
   Hourly             ──► override-cleanup (delete stale SSM override tokens)
-Registry merge ──► team-provisioner (Google + GitHub + Cognito + IAM sync)
+Registry merge ──► team-provisioner (STUB — not yet implemented)
 ```
 
 ## SSM Parameters
@@ -228,66 +230,42 @@ Registry merge ──► team-provisioner (Google + GitHub + Cognito + IAM sync)
 
 ## Work Packages
 
-See `PLAN.md` for the full plan. Each work package has a task brief in `phases/tasks/`.
-Phase-level context is in `phases/phase-{n}-*.md`.
+### Task Status
 
-### Dependency Graph
-```
-0a-discovery ──► 0b-bootstrap ──► 0c-org-and-boundary
-                      │                    │
-                      ▼                    ▼
-                 2a-networking        2c-iam-oidc ──► 2g-ci-handoff
-                      │                    │               │
-                      ▼                    │               ▼
-                 2b-ingress               │          (all subsequent
-                      │                    │           via CI pipeline)
-                      ▼                    ▼
-                 2d-compute          2e-monitoring ──► 2f-lambdas
-                      │
-                      ▼
-                 3a-reusable-modules ──► 3c-app-yaml
-                      │                      │
-                      ▼                      ▼
-                 3b-github-workflows    3d-registry ──► Phase 4
-                      │
-                 3e-cli (independent)
-                 3f-ci-images (independent)
+| ID | Task | Status |
+|----|------|--------|
+| 0a | AWS Discovery | **Done** |
+| 0b | Bootstrap State Backend | **Done** — S3 backend live |
+| 0c | Organizations + Permission Boundary | **Done** — org enabled, boundary deployed, SCP deferred |
+| 1 | Identity (Google + Identity Center + Cognito) | **Not started** — Google Admin access confirmed, `identity/` dir is empty, no Cognito pools deployed |
+| 2a | Networking | **Deployed** — VPC, subnets, NAT |
+| 2b | Ingress | **Deployed** — ALB + ACM cert |
+| 2c | IAM / OIDC | **Deployed** — 4 CI roles + per-app roles |
+| 2d | Compute | **Deployed** — ECS cluster + ECR repos |
+| 2e | Monitoring | **Deployed** — GuardDuty, Security Hub, Config, SNS |
+| 2f | Lambda Functions | **Deployed** — 5 working + team-provisioner (stub only) |
+| 2g | Platform CI | **Done** — plan → LLM review → apply pipeline working |
+| 3a | Reusable Terraform Modules | **Code done** — 12 modules in repo |
+| 3b | GitHub Actions Workflows | **Code done** — 13 reusable workflows |
+| 3c | app.yaml Schema + Generation | **Done** — generate-terraform.sh + docs |
+| 3d | Registry Repo | **Partially working** — repo exists, provision workflow fails (missing GH_TOKEN) |
+| 3e | javabin CLI | **Code done** — 3 commands in javaBin/javabin-cli |
+| 3f | CI Images + Supporting Repos | Not started |
+| 4 | App Onboarding | **Blocked** — platform-test-app registered but CI failing (ECR repo not provisioned, tf-plan 404) |
 
-Phase 1 (identity) is blocked on Google Admin access — implement when unblocked.
-```
-
-### Task Index
-
-| ID | Task | Status | Brief |
-|----|------|--------|-------|
-| 0a | AWS Discovery | **Done** | `phases/discovery-results.md` |
-| 0b | Bootstrap State Backend | **Done** — bootstrapped, imported, migrated to S3 | `phases/tasks/0b-bootstrap.md` |
-| 0c | Organizations + Permission Boundary | **Done** — org enabled, boundary deployed, SCP deferred | `phases/tasks/0c-org-and-boundary.md` |
-| 1 | Identity (Google + Identity Center) | Unblocked (Google Admin confirmed) — not started | `phases/phase-1-identity.md` |
-| 2a | Networking | **Deployed** — VPC, subnets, NAT live | `phases/tasks/2a-networking.md` |
-| 2b | Ingress | **Deployed** — ALB + cert issued | `phases/tasks/2b-ingress.md` |
-| 2c | IAM / OIDC | **Deployed** — 4 CI roles + per-app roles | `phases/tasks/2c-iam-oidc.md` |
-| 2d | Compute | **Deployed** — ECS cluster + 3 ECR repos | `phases/tasks/2d-compute.md` |
-| 2e | Monitoring | **Deployed** — GuardDuty, Security Hub, Config, SNS | `phases/tasks/2e-monitoring.md` |
-| 2f | Lambda Functions | **Deployed** — 6 handlers, shared utils, Block Kit | `phases/tasks/2f-lambdas.md` |
-| 2g | Platform CI | **Done** — CI working, AWS CLI converse for review | `phases/tasks/2g-ci-handoff.md` |
-| 3a | Reusable Terraform Modules | **Code done** — 12 modules adapted | `phases/tasks/3a-reusable-modules.md` |
-| 3b | GitHub Actions Workflows | **Code done** — 11 reusable workflows | `phases/tasks/3b-github-workflows.md` |
-| 3c | app.yaml Schema + Generation | **Done** — generate-terraform.sh + docs | `phases/tasks/3c-app-yaml.md` |
-| 3d | Registry Repo | **Done** — pushed, branch protected | `phases/tasks/3d-registry.md` |
-| 3e | javabin CLI | **Code done** — 3 commands (register, status, whoami) | `phases/tasks/3e-cli.md` |
-| 3f | CI Images + Supporting Repos | Not started | `phases/tasks/3f-ci-images-and-repos.md` |
-| 4 | App Onboarding | **In progress** — platform-test-app registered | `phases/phase-4-onboarding.md` |
+### Known Issues
+- **Registry → platform dispatch broken**: `provision-app.yml` fails because `GH_TOKEN` env var not set in workflow
+- **platform-test-app CI failing**: ECR repo `platform-test-app` doesn't exist (never provisioned), tf-plan gets 404 on platform repo checkout
+- **Team provisioner is a stub**: Lambda exists and is deployed but does nothing (logs and returns 200)
+- **Identity module empty**: `terraform/platform/identity/` is an empty directory, not wired in `main.tf`
+- **Cognito pools not deployed**: `cognito-app-client` module exists but has no pools to connect to
 
 ## Agent Guidelines
 
 When working on any task:
-1. Read the task brief in `phases/tasks/` first
-2. Read the parent phase file in `phases/` for broader context
-3. Read `PLAN.md` for constraints and architectural decisions
-4. Create/update `CLAUDE.md` or doc MDs near the code when detail is too specific for this file
-5. Never hardcode secrets — SSM only
-6. Never push without Alexander's confirmation
-7. Never implement hacky solutions — generalize
-8. Update task status in this file when complete
-9. Update `PLAN.md` to reflect implementation (replace "what to do" with "what was done")
+1. Read `CLAUDE.md` and relevant `docs/` files for context
+2. Create/update `CLAUDE.md` or doc MDs near the code when detail is too specific for this file
+3. Never hardcode secrets — SSM only
+4. Never push without the user's confirmation
+5. Never implement hacky solutions — generalize
+6. Update task status in this file when complete
