@@ -4,56 +4,63 @@
 Usage:
     python3 scripts/review-plan.py plan-output.txt
 
-Uses boto3 invoke_model (Anthropic Messages API) for maximum compatibility.
+Uses AWS CLI for Bedrock Converse (no boto3 version dependency).
 Writes structured JSON to REVIEW_RESULT_PATH (default: review-result.json).
 """
 
 import json
 import os
+import subprocess
 import sys
-
-import boto3
-from botocore.config import Config
 
 MODEL_ID = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
 REGION = os.environ.get("AWS_REGION", "eu-central-1")
 
-REVIEW_TOOL = {
-    "name": "submit_review",
-    "description": "Submit a structured review of a Terraform plan",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "risk": {
-                "type": "string",
-                "description": "Overall risk level",
-                "enum": ["LOW", "MEDIUM", "HIGH"],
-            },
-            "summary": {
-                "type": "string",
-                "description": "One sentence summary of the plan",
-            },
-            "findings": {
-                "type": "array",
-                "description": "3-5 findings from the plan review",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "category": {
-                            "type": "string",
-                            "enum": ["security", "cost", "destruction", "routine"],
+REVIEW_TOOL_CONFIG = {
+    "tools": [
+        {
+            "toolSpec": {
+                "name": "submit_review",
+                "description": "Submit a structured review of a Terraform plan",
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "risk": {
+                                "type": "string",
+                                "description": "Overall risk level",
+                                "enum": ["LOW", "MEDIUM", "HIGH"],
+                            },
+                            "summary": {
+                                "type": "string",
+                                "description": "One sentence summary of the plan",
+                            },
+                            "findings": {
+                                "type": "array",
+                                "description": "3-5 findings from the plan review",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "category": {
+                                            "type": "string",
+                                            "enum": ["security", "cost", "destruction", "routine"],
+                                        },
+                                        "detail": {
+                                            "type": "string",
+                                            "description": "Brief description of the finding",
+                                        },
+                                    },
+                                    "required": ["category", "detail"],
+                                },
+                            },
                         },
-                        "detail": {
-                            "type": "string",
-                            "description": "Brief description of the finding",
-                        },
-                    },
-                    "required": ["category", "detail"],
+                        "required": ["risk", "summary", "findings"],
+                    }
                 },
-            },
-        },
-        "required": ["risk", "summary", "findings"],
-    },
+            }
+        }
+    ],
+    "toolChoice": {"any": {}},
 }
 
 RISK_EMOJI = {"LOW": "\U0001f7e2", "MEDIUM": "\U0001f7e1", "HIGH": "\U0001f534"}
@@ -61,7 +68,7 @@ CATEGORY_EMOJI = {"security": "\U0001f512", "cost": "\U0001f4b0", "destruction":
 
 
 def review_plan(plan_text):
-    """Send plan to Bedrock for LLM review via invoke_model, return structured dict."""
+    """Send plan to Bedrock via AWS CLI for LLM review, return structured dict."""
     if len(plan_text) > 80000:
         plan_text = plan_text[:80000] + "\n\n... (truncated)"
 
@@ -83,33 +90,31 @@ Terraform plan output:
 {plan_text}
 ```"""
 
-    bedrock = boto3.client(
-        "bedrock-runtime",
-        region_name=REGION,
-        config=Config(read_timeout=60, connect_timeout=10),
+    messages = [{"role": "user", "content": [{"text": prompt}]}]
+
+    result = subprocess.run(
+        [
+            "aws", "bedrock-runtime", "converse",
+            "--model-id", MODEL_ID,
+            "--messages", json.dumps(messages),
+            "--tool-config", json.dumps(REVIEW_TOOL_CONFIG),
+            "--inference-config", json.dumps({"temperature": 0.1}),
+            "--region", REGION,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
 
-    request_body = json.dumps({
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": 1024,
-        "temperature": 0.1,
-        "messages": [{"role": "user", "content": prompt}],
-        "tools": [REVIEW_TOOL],
-        "tool_choice": {"type": "any"},
-    })
+    if result.returncode != 0:
+        print(f"AWS CLI error: {result.stderr}", file=sys.stderr)
+        return None
 
-    response = bedrock.invoke_model(
-        modelId=MODEL_ID,
-        contentType="application/json",
-        accept="application/json",
-        body=request_body,
-    )
+    response = json.loads(result.stdout)
 
-    response_body = json.loads(response["body"].read())
-
-    for block in response_body.get("content", []):
-        if block.get("type") == "tool_use" and block.get("name") == "submit_review":
-            return block["input"]
+    for content in response.get("output", {}).get("message", {}).get("content", []):
+        if "toolUse" in content and content["toolUse"]["name"] == "submit_review":
+            return content["toolUse"]["input"]
 
     return None
 
