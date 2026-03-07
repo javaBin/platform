@@ -51,7 +51,7 @@ resource "aws_cloudwatch_metric_alarm" "memory_high" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "unhealthy_targets" {
-  count               = var.target_group_arn_suffix != "" ? 1 : 0
+  count               = var.enable_alb_alarms ? 1 : 0
   alarm_name          = "${var.project}-${var.name}-unhealthy-targets"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
@@ -76,7 +76,7 @@ resource "aws_cloudwatch_metric_alarm" "unhealthy_targets" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "target_5xx" {
-  count               = var.target_group_arn_suffix != "" ? 1 : 0
+  count               = var.enable_alb_alarms ? 1 : 0
   alarm_name          = "${var.project}-${var.name}-5xx"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
