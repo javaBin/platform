@@ -4,12 +4,12 @@
 
 output "ecr_url" {
   description = "ECR repository URL"
-  value       = module.ecr.repository_url
+  value       = local.ecr_url
 }
 
 output "ecr_name" {
   description = "ECR repository name"
-  value       = module.ecr.repository_name
+  value       = local.ecr_name
 }
 
 ################################################################################
@@ -137,6 +137,16 @@ output "platform" {
 ################################################################################
 
 output "app_name" {
-  description = "Application name from YAML"
+  description = "Application name from YAML (base name without environment suffix)"
   value       = local.name
+}
+
+output "environment_name" {
+  description = "Environment name (empty string for single-environment apps)"
+  value       = var.environment_name
+}
+
+output "qualified_name" {
+  description = "Environment-qualified name used for resource naming (e.g. 'moresleep-dev')"
+  value       = local.qualified_name
 }

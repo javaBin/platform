@@ -203,32 +203,138 @@ alarms:
   memory_threshold: 80 # default: 80 (percent)
 ```
 
-### environments (planned — not yet supported)
+### environments
 
-Multi-environment configuration. If omitted, a single production environment is created.
-
-> **Note:** This field is planned for a future release. The `app-stack` module and `generate-terraform.sh` do not yet read the `environments` key. For now, all apps deploy as a single production environment.
+Multi-environment configuration. If omitted, a single production environment is created (backwards compatible). When present, each key defines a separate environment with its own ECS service, ALB target group, DNS record, IAM role, and Terraform state.
 
 ```yaml
 environments:
   prod:
-    compute:
-      cpu: 512
-      memory: 1024
     routing:
       host: submit.javazone.no
       priority: 100
   dev:
-    compute:
-      cpu: 256
-      memory: 512
     routing:
       host: dev.submit.javazone.no
       priority: 101
-    budget_alert_nok: 200
+    auto_deploy: true
 ```
 
-Each environment inherits top-level defaults and can override: `compute`, `routing`, `resources`, `environment`, `budget_alert_nok`, `alarms`.
+Each environment inherits all top-level defaults and can override: `compute`, `routing`, `domain`, `resources`, `environment`, `budget_alert_nok`, `alarms`.
+
+#### Environment defaults
+
+The `dev` environment gets smaller defaults automatically:
+
+| Field | dev default | other envs default |
+|-------|-------------|-------------------|
+| `compute.cpu` | 256 | 512 |
+| `compute.memory` | 512 | 1024 |
+
+All other fields (port, desired_count, health_check, etc.) use the same defaults regardless of environment.
+
+#### Full example
+
+```yaml
+name: submittheforce
+team: pkom
+compute:
+  cpu: 512
+  memory: 1024
+  port: 8080
+resources:
+  databases:
+    - name: submissions
+      hash_key: id
+      env: SUBMISSIONS_TABLE
+environment:
+  LOG_LEVEL: info
+environments:
+  prod:
+    routing:
+      host: submit.javazone.no
+      priority: 100
+    compute:
+      desired_count: 2
+    environment:
+      LOG_LEVEL: warn
+  dev:
+    routing:
+      host: dev.submit.javazone.no
+      priority: 101
+    auto_deploy: true
+```
+
+This creates two environments:
+
+| | prod | dev |
+|---|---|---|
+| CPU / Memory | 512 / 1024 (from top-level) | 256 / 512 (dev defaults) |
+| Desired count | 2 (override) | 1 (default) |
+| Domain | submit.javazone.no | dev.submit.javazone.no |
+| DynamoDB table | `javabin-submittheforce-prod-submissions` | `javabin-submittheforce-dev-submissions` |
+| ECS service | `submittheforce-prod` | `submittheforce-dev` |
+| LOG_LEVEL | warn (override) | info (from top-level) |
+| State key | `apps/submittheforce-prod/terraform.tfstate` | `apps/submittheforce-dev/terraform.tfstate` |
+
+#### Override behavior
+
+- **compute, routing, alarms**: Per-field override. Unspecified fields fall back to top-level, then to defaults.
+- **resources**: Per-type replacement. Each resource type (buckets, databases, secrets, queues) is independently replaced — if the environment defines `resources.databases`, it gets only those databases (not merged with top-level). Resource types not defined in the environment inherit from top-level.
+- **environment** (env vars): Merged. Top-level env vars are applied first, then environment-specific ones override on conflict.
+
+#### auto_deploy
+
+```yaml
+environments:
+  dev:
+    auto_deploy: true
+```
+
+When `true`, merges to main automatically deploy to this environment without manual approval. Default: `false`. This is read by CI workflows, not by Terraform.
+
+#### ECR repository
+
+All environments share a single ECR repository named after the base app name. The same container image is deployed to all environments. The prod environment (or the first environment if no prod exists) creates the ECR repository; other environments reference it via data source.
+
+**Important:** When first setting up multi-env, apply the environment that creates ECR (prod) before other environments.
+
+#### Naming
+
+Environment name must be lowercase alphanumeric, max 4 characters (e.g. `dev`, `prod`, `test`, `stag`). Multi-env apps should keep their name under ~19 characters to allow room for the environment suffix in ALB target group names (32-char AWS limit). Resources are named with an environment suffix:
+
+| Resource | Single-env | Multi-env (dev) |
+|----------|-----------|-----------------|
+| ECS service | `moresleep` | `moresleep-dev` |
+| IAM task role | `javabin-moresleep` | `javabin-moresleep-dev` |
+| ALB target group | `javabin-moresleep` | `javabin-moresleep-dev` |
+| DynamoDB table | `javabin-moresleep-sessions` | `javabin-moresleep-dev-sessions` |
+| S3 bucket | `moresleep-data-{account}` | `moresleep-dev-data-{account}` |
+| Log group | `/ecs/javabin/moresleep` | `/ecs/javabin/moresleep-dev` |
+| ECR repo | `moresleep` | `moresleep` (shared) |
+
+#### Generated directory structure
+
+Single-env:
+```
+terraform/
+  backend.tf
+  providers.tf
+  main.tf
+```
+
+Multi-env:
+```
+terraform/
+  prod/
+    backend.tf    # state key: apps/{name}-prod/terraform.tfstate
+    providers.tf
+    main.tf       # environment_name = "prod", create_ecr = true
+  dev/
+    backend.tf    # state key: apps/{name}-dev/terraform.tfstate
+    providers.tf
+    main.tf       # environment_name = "dev", create_ecr = false
+```
 
 ## How It Works
 
@@ -253,3 +359,5 @@ Generated files have a `# GENERATED FROM app.yaml` marker. The script only overw
 | CloudWatch logs | `/ecs/javabin/{name}` |
 | DNS record | `{routing.host}` |
 | SSM (Cognito) | `/javabin/platform-apps/{name}/cognito-*` |
+
+> In multi-env mode, `{name}` becomes `{name}-{env}` in all resource names except ECR. See [environments naming](#naming) for details.
