@@ -21,6 +21,10 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: platform-ci-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   TF_ROOT: terraform/platform
   AWS_REGION: eu-central-1
@@ -72,7 +76,7 @@ jobs:
         working-directory: ${{ env.TF_ROOT }}
         run: |
           set +e
-          terraform plan -out=tfplan -detailed-exitcode -no-color > plan-output.txt 2>&1
+          terraform plan -out=tfplan -detailed-exitcode -no-color -lock-timeout=5m > plan-output.txt 2>&1
           PLAN_EXIT=$?
           set -e
 
@@ -328,7 +332,7 @@ jobs:
 
       - name: Terraform Apply
         working-directory: ${{ env.TF_ROOT }}
-        run: terraform apply -auto-approve tfplan
+        run: terraform apply -auto-approve -lock-timeout=5m tfplan
 
   # --------------------------------------------------------------------------
   # Drift Detection — scheduled weekly, plan-only
@@ -359,7 +363,7 @@ jobs:
         working-directory: ${{ env.TF_ROOT }}
         run: |
           set +e
-          terraform plan -detailed-exitcode -no-color > drift.txt 2>&1
+          terraform plan -detailed-exitcode -no-color -lock-timeout=5m > drift.txt 2>&1
           EXIT_CODE=$?
           set -e
 
