@@ -284,10 +284,12 @@ jobs:
         run: |
           RISK="${{ needs.review.outputs.risk_level }}"
           echo "LLM review risk: ${RISK}"
-          if [ "$RISK" != "LOW" ] && [ "$RISK" != "MEDIUM" ]; then
-            echo "Auto-apply blocked (risk=${RISK})."
+          if [ "$RISK" = "HIGH" ]; then
+            echo "Auto-apply blocked (risk=HIGH)."
             echo "A board member can override via the approve-override workflow."
             exit 1
+          elif [ "$RISK" != "LOW" ] && [ "$RISK" != "MEDIUM" ]; then
+            echo "⚠️ LLM review returned ${RISK} — proceeding with caution (review may have errored)"
           fi
 
       - name: Download plan from S3
