@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import boto3
 from botocore.config import Config
-from shared.constants import USD_TO_NOK
+from shared.constants import USD_TO_NOK, risk_emoji
 from shared.slack import get_webhook_url, post_to_slack
 
 logger = logging.getLogger(__name__)
@@ -440,8 +440,7 @@ def build_blocks(this_week, prev_week, mtd, prev_mtd, project_costs,
     # LLM spike root cause (shown as a section — important)
     spike_result = analyze_spike(this_week, prev_week, tw_total, pw_total)
     if spike_result:
-        sev_emoji = {"HIGH": ":red_circle:", "MEDIUM": ":large_orange_circle:"}.get(
-            spike_result.get("severity"), ":yellow_circle:")
+        sev_emoji = risk_emoji(spike_result.get("severity"))
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn",

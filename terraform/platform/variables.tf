@@ -31,7 +31,7 @@ variable "domain" {
 variable "registered_app_repos" {
   description = "GitHub repo names (under javaBin/) registered for CI/CD access"
   type        = list(string)
-  default     = []
+  default     = ["platform-test-app"]
 }
 
 variable "override_approvers" {
