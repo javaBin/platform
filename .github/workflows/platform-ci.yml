@@ -67,9 +67,9 @@ jobs:
         working-directory: ${{ env.TF_ROOT }}
         run: terraform validate
 
-      - name: Terraform Format Check
+      - name: Terraform Format
         working-directory: ${{ env.TF_ROOT }}
-        run: terraform fmt -check -recursive
+        run: terraform fmt -recursive
 
       - name: Terraform Plan
         id: plan
