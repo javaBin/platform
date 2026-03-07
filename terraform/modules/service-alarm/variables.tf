@@ -41,8 +41,14 @@ variable "error_5xx_threshold" {
   default     = 10
 }
 
+variable "enable_alb_alarms" {
+  description = "Whether to create ALB-based alarms (unhealthy targets, 5xx). Must be a static value, not derived from resource attributes."
+  type        = bool
+  default     = true
+}
+
 variable "target_group_arn_suffix" {
-  description = "Target group ARN suffix for ALB alarms (empty = skip ALB alarms)"
+  description = "Target group ARN suffix for ALB alarms"
   type        = string
   default     = ""
 }
