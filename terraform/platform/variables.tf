@@ -61,12 +61,6 @@ variable "google_client_secret" {
   default     = ""
 }
 
-variable "enable_cognito" {
-  description = "Whether to create Cognito user pools. Requires google_client_id and google_client_secret."
-  type        = bool
-  default     = false
-}
-
 variable "certificate_arn" {
   description = "ACM certificate ARN in us-east-1 for Cognito custom domains (CloudFront requirement)"
   type        = string

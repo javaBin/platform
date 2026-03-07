@@ -68,6 +68,5 @@ module "identity" {
   route53_zone_id      = module.ingress.route53_zone_id
   google_client_id     = var.google_client_id
   google_client_secret = var.google_client_secret
-  enable_cognito       = var.enable_cognito
   certificate_arn      = var.certificate_arn
 }
