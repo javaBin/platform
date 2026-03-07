@@ -19,9 +19,17 @@ jobs:
   provision:
     runs-on: ubuntu-latest
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PLATFORM_APP_ID }}
+          private-key: ${{ secrets.PLATFORM_APP_PRIVATE_KEY }}
+          owner: javaBin
+
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.PLATFORM_DISPATCH_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Process registry update
         env:
@@ -34,7 +42,7 @@ jobs:
 
       - name: Fetch all registered apps from registry
         env:
-          GH_TOKEN: ${{ secrets.PLATFORM_DISPATCH_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           # List all app YAML files in the registry
           APPS=$(gh api repos/javaBin/registry/contents/apps \

@@ -44,13 +44,14 @@ jobs:
   # 3. Docker build + ECR push (main only, after builds pass)
   # --------------------------------------------------------------------------
   docker-build:
-    needs: [detect, build-jvm, build-ts]
+    needs: [detect, build-jvm, build-ts, tf-apply]
     if: |
       always() &&
       github.ref == 'refs/heads/main' &&
       needs.detect.outputs.has_docker == 'true' &&
       (needs.build-jvm.result == 'success' || needs.build-jvm.result == 'skipped') &&
-      (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped')
+      (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped') &&
+      (needs.tf-apply.result == 'success' || needs.tf-apply.result == 'skipped')
     uses: javaBin/platform/.github/workflows/docker-build.yml@main
     secrets: inherit
 
@@ -79,11 +80,10 @@ jobs:
   # --------------------------------------------------------------------------
   tf-apply:
     needs: [tf-plan, plan-review]
-    if: |
-      always() &&
+    if: >-
       github.ref == 'refs/heads/main' &&
       needs.tf-plan.outputs.has_changes == 'true' &&
-      (needs.plan-review.result == 'success' || needs.plan-review.result == 'skipped')
+      needs.plan-review.result == 'success'
     uses: javaBin/platform/.github/workflows/tf-apply.yml@main
     with:
       plan_key: ${{ needs.tf-plan.outputs.plan_key }}
