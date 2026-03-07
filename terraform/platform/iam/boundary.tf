@@ -102,15 +102,29 @@ resource "aws_iam_policy" "developer_boundary" {
       },
 
       ########################################################################
-      # Deny protective services: GuardDuty, Config, Security Hub, CloudTrail
+      # Deny disabling/deleting protective services
+      # All roles (infra + app) can create/read/manage these services,
+      # but no role can disable or delete them. This lets the infra CI role
+      # manage GuardDuty/Config/SecurityHub while preventing any role from
+      # turning them off. App roles are further restricted by tag-based
+      # isolation on their Allow policy (they can't create these resources
+      # because they lack the platform tags).
       ########################################################################
       {
-        Sid    = "DenyProtectiveServices"
+        Sid    = "DenyProtectiveServicesTampering"
         Effect = "Deny"
         Action = [
-          "guardduty:*",
-          "config:*",
-          "securityhub:*",
+          "guardduty:DeleteDetector",
+          "guardduty:DeleteMembers",
+          "guardduty:DisassociateFromMasterAccount",
+          "guardduty:UpdateDetector",
+          "config:DeleteConfigurationRecorder",
+          "config:StopConfigurationRecorder",
+          "config:DeleteDeliveryChannel",
+          "config:DeleteRetentionConfiguration",
+          "securityhub:DisableSecurityHub",
+          "securityhub:DeleteMembers",
+          "securityhub:DisassociateFromMasterAccount",
           "cloudtrail:DeleteTrail",
           "cloudtrail:StopLogging",
           "cloudtrail:UpdateTrail",
