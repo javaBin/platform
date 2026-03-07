@@ -1,0 +1,36 @@
+name: Build JVM
+
+on:
+  workflow_call:
+    inputs:
+      java_version:
+        description: "Java version"
+        type: string
+        default: "21"
+      maven_args:
+        description: "Additional Maven arguments"
+        type: string
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java_version }}
+          cache: maven
+
+      - name: Build and test
+        run: mvn --batch-mode verify ${{ inputs.maven_args }}
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: "**/target/surefire-reports/*.xml"
+          retention-days: 7

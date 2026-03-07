@@ -1,0 +1,87 @@
+name: ECS Deploy
+
+on:
+  workflow_call:
+    inputs:
+      image_tag:
+        description: "Container image tag to deploy"
+        type: string
+        required: true
+      service_name:
+        description: "ECS service name (defaults to repo name)"
+        type: string
+        default: ""
+      cluster_name:
+        description: "ECS cluster name"
+        type: string
+        default: "javabin-platform"
+      aws_account_id:
+        description: "AWS account ID"
+        type: string
+        default: "553637109631"
+      aws_region:
+        description: "AWS region"
+        type: string
+        default: "eu-central-1"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-deploy-${{ github.event.repository.name }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Update ECS service
+        env:
+          SERVICE: ${{ inputs.service_name || github.event.repository.name }}
+          CLUSTER: ${{ inputs.cluster_name }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          ECR_REPO: ${{ github.event.repository.name }}
+          ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          REGION: ${{ inputs.aws_region }}
+        run: |
+          export ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
+
+          # Get current task definition from the service
+          TASK_DEF_ARN=$(aws ecs describe-services \
+            --cluster "$CLUSTER" --services "$SERVICE" \
+            --query 'services[0].taskDefinition' --output text)
+
+          # Fetch and update the task definition
+          aws ecs describe-task-definition --task-definition "$TASK_DEF_ARN" \
+            --query 'taskDefinition' > task-def.json
+
+          python3 << 'PYEOF'
+          import json, os
+          with open('task-def.json') as f:
+              td = json.load(f)
+          td['containerDefinitions'][0]['image'] = os.environ['ECR_URI']
+          for key in ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes',
+                      'compatibilities', 'registeredAt', 'registeredBy', 'deregisteredAt']:
+              td.pop(key, None)
+          with open('task-def-new.json', 'w') as f:
+              json.dump(td, f)
+          PYEOF
+
+          # Register new task definition
+          NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://task-def-new.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "New task definition: $NEW_ARN"
+
+          # Update the service
+          aws ecs update-service \
+            --cluster "$CLUSTER" --service "$SERVICE" \
+            --task-definition "$NEW_ARN" > /dev/null
+
+          # Wait for deployment to stabilize
+          echo "Waiting for service to stabilize..."
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
+          echo "Deployment complete."

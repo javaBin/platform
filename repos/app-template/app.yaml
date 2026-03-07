@@ -1,0 +1,47 @@
+# app.yaml — Javabin Platform Service Configuration
+# Full reference: https://github.com/javaBin/platform/blob/main/docs/app-yaml-reference.md
+
+# Service name (required) — lowercase + hyphens, max 20 chars
+name: my-service
+
+# Owning team (required) — must match a team in javaBin/registry
+team: my-team
+
+# Container compute settings (optional, defaults shown)
+compute:
+  cpu: 512            # vCPU units (256, 512, 1024, 2048, 4096)
+  memory: 1024        # MB (512-30720, must match cpu)
+  port: 8080          # container port your app listens on
+  desired_count: 1    # number of running tasks
+  health_check: /health
+
+# ALB routing (required for web services)
+routing:
+  host: my-service.javazone.no   # DNS name, must be under javazone.no
+  priority: 100                  # unique across all apps (1-50000)
+
+# Infrastructure resources (optional) — auto-wired to your container
+# resources:
+#   buckets:
+#     - name: data
+#       env: DATA_BUCKET
+#   databases:
+#     - name: cache
+#       hash_key: id
+#       env: CACHE_TABLE
+#   secrets:
+#     - name: api-key
+#       env: API_KEY
+#   queues:
+#     - name: jobs
+#       env: JOBS_QUEUE_URL
+
+# Cognito auth (optional) — internal, external, both, or none
+# auth: internal
+
+# Custom environment variables
+# environment:
+#   LOG_LEVEL: info
+
+# Monthly budget alert in NOK (default: 1000)
+# budget_alert_nok: 500

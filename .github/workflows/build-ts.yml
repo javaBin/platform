@@ -1,0 +1,37 @@
+name: Build TypeScript
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: "Node.js version"
+        type: string
+        default: "22"
+      pnpm_version:
+        description: "pnpm version"
+        type: string
+        default: "9"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm_version }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
