@@ -11,7 +11,7 @@
 #   compute     ECS cluster, public ECR images
 #   monitoring  SNS topics, EventBridge rules, Config, GuardDuty, Security Hub
 #   lambdas     slack-alert, cost-report, daily-cost-check, auto-tagger
-#   identity    IAM Identity Center, Cognito pools
+#   identity    Cognito pools (Identity Center is in terraform/org/)
 ################################################################################
 
 module "networking" {
@@ -61,13 +61,13 @@ module "lambdas" {
   compliance_reporter_identities = var.auto_tagger_identities
 }
 
-# NOTE: identity module is not yet implemented.
-# Uncomment when ready.
-
-# module "identity" {
-#   source         = "./identity"
-#   project        = var.project
-#   region         = var.region
-#   aws_account_id = var.aws_account_id
-#   domain         = var.domain
-# }
+module "identity" {
+  source               = "./identity"
+  project              = var.project
+  domain               = var.domain
+  route53_zone_id      = module.ingress.route53_zone_id
+  google_client_id     = var.google_client_id
+  google_client_secret = var.google_client_secret
+  enable_cognito       = var.enable_cognito
+  certificate_arn      = var.certificate_arn
+}

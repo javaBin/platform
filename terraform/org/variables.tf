@@ -36,3 +36,21 @@ variable "exempt_roles" {
     "arn:aws:iam::553637109631:root"
   ]
 }
+
+variable "enable_identity_center" {
+  description = "Whether to create Identity Center permission sets and group assignments. Enable after Google Workspace SAML sync is configured."
+  type        = bool
+  default     = false
+}
+
+variable "google_workspace_domain" {
+  description = "Google Workspace domain for Identity Center group lookups"
+  type        = string
+  default     = "java.no"
+}
+
+variable "session_duration" {
+  description = "SSO session duration in ISO 8601 format"
+  type        = string
+  default     = "PT4H"
+}
