@@ -54,6 +54,14 @@ jobs:
           role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-${{ github.event.repository.name }}
           aws-region: ${{ inputs.aws_region }}
 
+      - name: Checkout platform scripts
+        if: hashFiles('app.yaml') != ''
+        uses: actions/checkout@v4
+        with:
+          repository: javaBin/platform
+          path: .platform
+          sparse-checkout: scripts
+
       - name: Generate Terraform from app.yaml
         if: hashFiles('app.yaml') != ''
         env:
@@ -62,10 +70,8 @@ jobs:
           AWS_REGION: ${{ inputs.aws_region }}
           TF_ROOT: ${{ inputs.tf_root }}
         run: |
-          curl -sL "https://raw.githubusercontent.com/javaBin/platform/main/scripts/generate-terraform.sh" \
-            -o /tmp/generate-terraform.sh
-          chmod +x /tmp/generate-terraform.sh
-          /tmp/generate-terraform.sh
+          chmod +x .platform/scripts/generate-terraform.sh
+          .platform/scripts/generate-terraform.sh
 
       - name: Terraform Init
         working-directory: ${{ inputs.tf_root }}
