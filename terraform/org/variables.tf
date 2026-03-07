@@ -37,12 +37,6 @@ variable "exempt_roles" {
   ]
 }
 
-variable "google_workspace_domain" {
-  description = "Google Workspace domain for Identity Center group lookups"
-  type        = string
-  default     = "java.no"
-}
-
 variable "session_duration" {
   description = "SSO session duration in ISO 8601 format"
   type        = string
