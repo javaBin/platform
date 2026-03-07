@@ -1,0 +1,78 @@
+name: Validate Registration
+
+on:
+  pull_request:
+    paths:
+      - 'apps/**'
+      - 'teams/**'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate YAML and references
+        run: |
+          ERRORS=0
+
+          # Validate app registrations
+          for f in $(git diff --name-only --diff-filter=ACMR origin/main...HEAD -- 'apps/*.yaml'); do
+            echo "Validating $f"
+            APP_NAME=$(grep -m1 '^name:' "$f" | awk '{print $2}')
+            APP_TEAM=$(grep -m1 '^team:' "$f" | awk '{print $2}')
+            APP_REPO=$(grep -m1 '^repo:' "$f" | awk '{print $2}')
+
+            if [ -z "$APP_NAME" ]; then
+              echo "::error file=$f::Missing required field: name"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            if [ -z "$APP_TEAM" ]; then
+              echo "::error file=$f::Missing required field: team"
+              ERRORS=$((ERRORS + 1))
+            elif [ ! -f "teams/${APP_TEAM}.yaml" ]; then
+              echo "::error file=$f::Team '${APP_TEAM}' not found in teams/"
+              ERRORS=$((ERRORS + 1))
+            fi
+
+            if [ -z "$APP_REPO" ]; then
+              echo "::error file=$f::Missing required field: repo"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          # Validate team definitions
+          for f in $(git diff --name-only --diff-filter=ACMR origin/main...HEAD -- 'teams/*.yaml'); do
+            echo "Validating $f"
+            TEAM_NAME=$(grep -m1 '^name:' "$f" | awk '{print $2}')
+
+            if [ -z "$TEAM_NAME" ]; then
+              echo "::error file=$f::Missing required field: name"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "Validation failed with $ERRORS error(s)"
+            exit 1
+          fi
+          echo "All validations passed"
+
+      - name: Post result to PR
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}' === 'success' ? 'passed' : 'failed';
+            const emoji = status === 'passed' ? ':white_check_mark:' : ':x:';
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Registry Validation ${emoji}\n\nValidation **${status}**.`
+            });

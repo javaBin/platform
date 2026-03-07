@@ -1,0 +1,48 @@
+name: Notify Registration
+
+on:
+  pull_request:
+    types: [opened, reopened]
+    paths:
+      - 'apps/**'
+      - 'teams/**'
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Uses a repository secret rather than SSM — the registry repo does not have
+      # an IAM role to assume (ci-infra trusts only javaBin/platform). A dedicated
+      # javabin-ci-registry role can be added later if SSM access is needed.
+      - name: Post to Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_RESOURCE_ALERTS_WEBHOOK }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os, urllib.request
+          webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "")
+          if not webhook_url:
+              print("No SLACK_RESOURCE_ALERTS_WEBHOOK secret set, skipping notification")
+              exit(0)
+          pr_url = os.environ["PR_URL"]
+          pr_title = os.environ["PR_TITLE"]
+          pr_author = os.environ["PR_AUTHOR"]
+          payload = json.dumps({
+              "blocks": [
+                  {"type": "header", "text": {"type": "plain_text", "text": "New Registry Request", "emoji": True}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": f"*{pr_title}*\nBy: {pr_author}"}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": f"<{pr_url}|Review PR>"}},
+              ],
+              "text": f"New registry request: {pr_title}"
+          }).encode()
+          req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
+          urllib.request.urlopen(req)
+          PYEOF

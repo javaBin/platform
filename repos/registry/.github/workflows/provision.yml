@@ -1,0 +1,38 @@
+name: Provision
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'teams/**'
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Determine changed files
+        id: changes
+        run: |
+          CHANGED_APPS=$(git diff --name-only HEAD~1 HEAD -- 'apps/*.yaml' | xargs -I{} basename {} .yaml | tr '\n' ',' | sed 's/,$//')
+          CHANGED_TEAMS=$(git diff --name-only HEAD~1 HEAD -- 'teams/*.yaml' | xargs -I{} basename {} .yaml | tr '\n' ',' | sed 's/,$//')
+          echo "apps=${CHANGED_APPS}" >> "$GITHUB_OUTPUT"
+          echo "teams=${CHANGED_TEAMS}" >> "$GITHUB_OUTPUT"
+          echo "Changed apps: ${CHANGED_APPS}"
+          echo "Changed teams: ${CHANGED_TEAMS}"
+
+      - name: Trigger platform provisioning
+        if: steps.changes.outputs.apps != '' || steps.changes.outputs.teams != ''
+        env:
+          GH_TOKEN: ${{ secrets.PLATFORM_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/javaBin/platform/dispatches \
+            -f event_type=registry-update \
+            -f client_payload="{\"apps\":\"${{ steps.changes.outputs.apps }}\",\"teams\":\"${{ steps.changes.outputs.teams }}\"}"

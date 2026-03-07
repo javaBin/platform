@@ -1,0 +1,42 @@
+name: EB Deploy
+
+# Transitional workflow for Elastic Beanstalk apps. Remove per-repo
+# once the app is confirmed working on ECS.
+
+on:
+  workflow_call:
+    inputs:
+      environment_name:
+        description: "Elastic Beanstalk environment name"
+        type: string
+        required: true
+      aws_account_id:
+        description: "AWS account ID"
+        type: string
+        default: "553637109631"
+      aws_region:
+        description: "AWS region"
+        type: string
+        default: "eu-central-1"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-deploy-${{ github.event.repository.name }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Install EB CLI
+        run: pip install awsebcli
+
+      - name: Deploy to Elastic Beanstalk
+        run: eb deploy ${{ inputs.environment_name }} --staged

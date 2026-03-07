@@ -1,0 +1,567 @@
+################################################################################
+# Lambda Functions — slack-alert, cost-report, daily-cost-check,
+#                    compliance-reporter, override-cleanup, team-provisioner
+################################################################################
+
+locals {
+  lambda_src_path = "${path.module}/../../lambda-src"
+  github_org_url  = "https://github.com/javaBin"
+}
+
+################################################################################
+# Archive files — build zips from source
+################################################################################
+
+# Shared pricing module (included in slack_alert zip)
+data "archive_file" "slack_alert" {
+  type        = "zip"
+  output_path = "${path.module}/builds/slack_alert.zip"
+
+  source {
+    content  = file("${local.lambda_src_path}/slack_alert/handler.py")
+    filename = "handler.py"
+  }
+
+  source {
+    content  = file("${local.lambda_src_path}/shared/pricing.py")
+    filename = "shared/pricing.py"
+  }
+
+  source {
+    content  = file("${local.lambda_src_path}/shared/__init__.py")
+    filename = "shared/__init__.py"
+  }
+}
+
+data "archive_file" "cost_report" {
+  type        = "zip"
+  output_path = "${path.module}/builds/cost_report.zip"
+  source_dir  = "${local.lambda_src_path}/cost_report"
+}
+
+data "archive_file" "daily_cost_check" {
+  type        = "zip"
+  output_path = "${path.module}/builds/daily_cost_check.zip"
+  source_dir  = "${local.lambda_src_path}/daily_cost_check"
+}
+
+data "archive_file" "compliance_reporter" {
+  type        = "zip"
+  output_path = "${path.module}/builds/compliance_reporter.zip"
+  source_dir  = "${local.lambda_src_path}/compliance_reporter"
+}
+
+data "archive_file" "override_cleanup" {
+  type        = "zip"
+  output_path = "${path.module}/builds/override_cleanup.zip"
+  source_dir  = "${local.lambda_src_path}/override_cleanup"
+}
+
+data "archive_file" "team_provisioner" {
+  type        = "zip"
+  output_path = "${path.module}/builds/team_provisioner.zip"
+  source_dir  = "${local.lambda_src_path}/team_provisioner"
+}
+
+################################################################################
+# IAM Roles
+################################################################################
+
+# --- slack-alert role ---
+resource "aws_iam_role" "slack_alert" {
+  name = "${var.project}-slack-alert"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "slack_alert" {
+  name = "${var.project}-slack-alert"
+  role = aws_iam_role.slack_alert.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SSMRead"
+        Effect = "Allow"
+        Action = "ssm:GetParameter"
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/javabin/slack/*",
+        ]
+      },
+      {
+        Sid      = "BedrockConverse"
+        Effect   = "Allow"
+        Action   = "bedrock:Converse"
+        Resource = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
+      },
+      {
+        Sid    = "PricingRead"
+        Effect = "Allow"
+        Action = "pricing:GetProducts"
+        # Pricing API is global and only supports * for resource
+        Resource = "*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "slack_alert_logs" {
+  role       = aws_iam_role.slack_alert.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# --- cost-report role ---
+resource "aws_iam_role" "cost_report" {
+  name = "${var.project}-cost-report"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "cost_report" {
+  name = "${var.project}-cost-report"
+  role = aws_iam_role.cost_report.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "SSMRead"
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/javabin/slack/*"
+      },
+      {
+        Sid    = "CostExplorer"
+        Effect = "Allow"
+        Action = [
+          "ce:GetCostAndUsage",
+        ]
+        # Cost Explorer is a global service, requires *
+        Resource = "*"
+      },
+      {
+        Sid      = "BedrockConverse"
+        Effect   = "Allow"
+        Action   = "bedrock:Converse"
+        Resource = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "cost_report_logs" {
+  role       = aws_iam_role.cost_report.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# --- daily-cost-check role ---
+resource "aws_iam_role" "daily_cost_check" {
+  name = "${var.project}-daily-cost-check"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "daily_cost_check" {
+  name = "${var.project}-daily-cost-check"
+  role = aws_iam_role.daily_cost_check.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "SSMRead"
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/javabin/slack/*"
+      },
+      {
+        Sid      = "CostExplorer"
+        Effect   = "Allow"
+        Action   = "ce:GetCostAndUsage"
+        Resource = "*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "daily_cost_check_logs" {
+  role       = aws_iam_role.daily_cost_check.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# --- compliance-reporter role ---
+resource "aws_iam_role" "compliance_reporter" {
+  name = "${var.project}-compliance-reporter"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "compliance_reporter" {
+  name = "${var.project}-compliance-reporter"
+  role = aws_iam_role.compliance_reporter.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "SSMRead"
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/javabin/slack/*"
+      },
+      {
+        Sid    = "ReadTags"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeTags",
+          "s3:GetBucketTagging",
+          "ecs:ListTagsForResource",
+          "elasticloadbalancing:DescribeTags",
+          "lambda:ListTags",
+          "rds:ListTagsForResource",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "compliance_reporter_logs" {
+  role       = aws_iam_role.compliance_reporter.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# --- override-cleanup role ---
+resource "aws_iam_role" "override_cleanup" {
+  name = "${var.project}-override-cleanup"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "override_cleanup" {
+  name = "${var.project}-override-cleanup"
+  role = aws_iam_role.override_cleanup.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SSMOverrides"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParametersByPath",
+          "ssm:DeleteParameter",
+        ]
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/javabin/platform-overrides/*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "override_cleanup_logs" {
+  role       = aws_iam_role.override_cleanup.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# --- team-provisioner role (stub — minimal permissions) ---
+resource "aws_iam_role" "team_provisioner" {
+  name = "${var.project}-team-provisioner"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "team_provisioner_logs" {
+  role       = aws_iam_role.team_provisioner.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+################################################################################
+# Lambda Functions
+################################################################################
+
+resource "aws_lambda_function" "slack_alert" {
+  function_name    = "${var.project}-slack-alert"
+  role             = aws_iam_role.slack_alert.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 256
+  filename         = data.archive_file.slack_alert.output_path
+  source_code_hash = data.archive_file.slack_alert.output_base64sha256
+
+  environment {
+    variables = {
+      INFRA_WEBHOOK_PARAM = "/javabin/slack/platform-resource-alerts-webhook"
+      COST_WEBHOOK_PARAM  = "/javabin/slack/platform-cost-alerts-webhook"
+      SECURITY_TOPIC_ARN  = var.security_topic_arn
+      PROJECT_PREFIX      = var.project
+      GITHUB_ORG_URL      = local.github_org_url
+      DEPLOY_REGION       = var.region
+    }
+  }
+}
+
+resource "aws_lambda_function" "cost_report" {
+  function_name    = "${var.project}-cost-report"
+  role             = aws_iam_role.cost_report.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 256
+  filename         = data.archive_file.cost_report.output_path
+  source_code_hash = data.archive_file.cost_report.output_base64sha256
+
+  environment {
+    variables = {
+      COST_WEBHOOK_PARAM = "/javabin/slack/platform-cost-alerts-webhook"
+      DEPLOY_REGION      = var.region
+    }
+  }
+}
+
+resource "aws_lambda_function" "daily_cost_check" {
+  function_name    = "${var.project}-daily-cost-check"
+  role             = aws_iam_role.daily_cost_check.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 128
+  filename         = data.archive_file.daily_cost_check.output_path
+  source_code_hash = data.archive_file.daily_cost_check.output_base64sha256
+
+  environment {
+    variables = {
+      COST_WEBHOOK_PARAM = "/javabin/slack/platform-cost-alerts-webhook"
+    }
+  }
+}
+
+resource "aws_lambda_function" "compliance_reporter" {
+  function_name    = "${var.project}-compliance-reporter"
+  role             = aws_iam_role.compliance_reporter.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 128
+  filename         = data.archive_file.compliance_reporter.output_path
+  source_code_hash = data.archive_file.compliance_reporter.output_base64sha256
+
+  environment {
+    variables = {
+      PROJECT_PREFIX      = var.project
+      INFRA_WEBHOOK_PARAM = "/javabin/slack/platform-resource-alerts-webhook"
+      ALLOWED_IDENTITIES  = join(",", var.compliance_reporter_identities)
+    }
+  }
+}
+
+resource "aws_lambda_function" "override_cleanup" {
+  function_name    = "${var.project}-override-cleanup"
+  role             = aws_iam_role.override_cleanup.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 128
+  filename         = data.archive_file.override_cleanup.output_path
+  source_code_hash = data.archive_file.override_cleanup.output_base64sha256
+
+  environment {
+    variables = {
+      OVERRIDE_PATH = "/javabin/platform-overrides/"
+      MAX_AGE_HOURS = "24"
+    }
+  }
+}
+
+resource "aws_lambda_function" "team_provisioner" {
+  function_name    = "${var.project}-team-provisioner"
+  role             = aws_iam_role.team_provisioner.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 256
+  filename         = data.archive_file.team_provisioner.output_path
+  source_code_hash = data.archive_file.team_provisioner.output_base64sha256
+}
+
+################################################################################
+# SNS Subscriptions — slack-alert subscribes to both topics
+################################################################################
+
+resource "aws_sns_topic_subscription" "slack_alert_security" {
+  topic_arn = var.security_topic_arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.slack_alert.arn
+}
+
+resource "aws_sns_topic_subscription" "slack_alert_alerts" {
+  topic_arn = var.alerts_topic_arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.slack_alert.arn
+}
+
+resource "aws_lambda_permission" "slack_alert_security" {
+  statement_id  = "AllowSNSSecurity"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.slack_alert.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = var.security_topic_arn
+}
+
+resource "aws_lambda_permission" "slack_alert_alerts" {
+  statement_id  = "AllowSNSAlerts"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.slack_alert.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = var.alerts_topic_arn
+}
+
+################################################################################
+# EventBridge Schedules
+################################################################################
+
+# --- cost-report: Monday 08:00 UTC ---
+resource "aws_cloudwatch_event_rule" "cost_report_schedule" {
+  name                = "${var.project}-cost-report-schedule"
+  description         = "Weekly cost report — Monday 08:00 UTC"
+  schedule_expression = "cron(0 8 ? * MON *)"
+}
+
+resource "aws_cloudwatch_event_target" "cost_report" {
+  rule      = aws_cloudwatch_event_rule.cost_report_schedule.name
+  target_id = "invoke-cost-report"
+  arn       = aws_lambda_function.cost_report.arn
+}
+
+resource "aws_lambda_permission" "cost_report_schedule" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.cost_report.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.cost_report_schedule.arn
+}
+
+# --- daily-cost-check: Daily 08:00 UTC ---
+resource "aws_cloudwatch_event_rule" "daily_cost_check_schedule" {
+  name                = "${var.project}-daily-cost-check-schedule"
+  description         = "Daily cost spike check — 08:00 UTC"
+  schedule_expression = "cron(0 8 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "daily_cost_check" {
+  rule      = aws_cloudwatch_event_rule.daily_cost_check_schedule.name
+  target_id = "invoke-daily-cost-check"
+  arn       = aws_lambda_function.daily_cost_check.arn
+}
+
+resource "aws_lambda_permission" "daily_cost_check_schedule" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.daily_cost_check.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.daily_cost_check_schedule.arn
+}
+
+# --- compliance-reporter: EventBridge — resource creation events ---
+resource "aws_cloudwatch_event_rule" "compliance_reporter_trigger" {
+  name        = "${var.project}-compliance-reporter-trigger"
+  description = "Trigger compliance reporter on resource creation"
+
+  event_pattern = jsonencode({
+    source = [
+      "aws.s3", "aws.ec2", "aws.rds", "aws.ecs",
+      "aws.elasticloadbalancing", "aws.lambda",
+    ]
+    detail-type = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventName = [
+        "CreateBucket", "RunInstances", "CreateDBInstance",
+        "CreateService", "CreateFunction20150331", "CreateLoadBalancer",
+        "CreateSecurityGroup", "CreateNatGateway", "CreateVpc", "CreateSubnet",
+        "CreateTargetGroup",
+      ]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "compliance_reporter" {
+  rule      = aws_cloudwatch_event_rule.compliance_reporter_trigger.name
+  target_id = "invoke-compliance-reporter"
+  arn       = aws_lambda_function.compliance_reporter.arn
+}
+
+resource "aws_lambda_permission" "compliance_reporter_eventbridge" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.compliance_reporter.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.compliance_reporter_trigger.arn
+}
+
+# --- override-cleanup: hourly ---
+resource "aws_cloudwatch_event_rule" "override_cleanup_schedule" {
+  name                = "${var.project}-override-cleanup-schedule"
+  description         = "Hourly cleanup of stale SSM override parameters"
+  schedule_expression = "rate(1 hour)"
+}
+
+resource "aws_cloudwatch_event_target" "override_cleanup" {
+  rule      = aws_cloudwatch_event_rule.override_cleanup_schedule.name
+  target_id = "invoke-override-cleanup"
+  arn       = aws_lambda_function.override_cleanup.arn
+}
+
+resource "aws_lambda_permission" "override_cleanup_schedule" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.override_cleanup.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.override_cleanup_schedule.arn
+}
+
+# --- team-provisioner: no schedule — triggered via function URL or SNS (future) ---
+# For now, the stub has no trigger. It will be connected to a GitHub webhook
+# or repository dispatch event when the registry repo is set up.

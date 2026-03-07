@@ -1,0 +1,123 @@
+name: Javabin CI
+
+# Unified entrypoint — app repos call this with a single 5-line deploy.yml:
+#
+#   name: Deploy
+#   on:
+#     push:
+#       branches: [main, master]
+#     pull_request:
+#   jobs:
+#     javabin:
+#       uses: javaBin/platform/.github/workflows/javabin.yml@main
+#       secrets: inherit
+
+on:
+  workflow_call:
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  # --------------------------------------------------------------------------
+  # 1. Detect repo contents
+  # --------------------------------------------------------------------------
+  detect:
+    uses: javaBin/platform/.github/workflows/detect.yml@main
+
+  # --------------------------------------------------------------------------
+  # 2. Build (JVM or TypeScript — parallel, skipped if not applicable)
+  # --------------------------------------------------------------------------
+  build-jvm:
+    needs: detect
+    if: needs.detect.outputs.has_maven == 'true'
+    uses: javaBin/platform/.github/workflows/build-jvm.yml@main
+
+  build-ts:
+    needs: detect
+    if: needs.detect.outputs.has_pnpm == 'true'
+    uses: javaBin/platform/.github/workflows/build-ts.yml@main
+
+  # --------------------------------------------------------------------------
+  # 3. Docker build + ECR push (main only, after builds pass)
+  # --------------------------------------------------------------------------
+  docker-build:
+    needs: [detect, build-jvm, build-ts]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      needs.detect.outputs.has_docker == 'true' &&
+      (needs.build-jvm.result == 'success' || needs.build-jvm.result == 'skipped') &&
+      (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped')
+    uses: javaBin/platform/.github/workflows/docker-build.yml@main
+    secrets: inherit
+
+  # --------------------------------------------------------------------------
+  # 4. Terraform plan (if terraform/ exists or app.yaml needs generation)
+  # --------------------------------------------------------------------------
+  tf-plan:
+    needs: detect
+    if: needs.detect.outputs.has_tf == 'true' || needs.detect.outputs.has_yaml == 'true'
+    uses: javaBin/platform/.github/workflows/tf-plan.yml@main
+    secrets: inherit
+
+  # --------------------------------------------------------------------------
+  # 5. LLM plan review (only when plan has changes)
+  # --------------------------------------------------------------------------
+  plan-review:
+    needs: tf-plan
+    if: needs.tf-plan.outputs.has_changes == 'true'
+    uses: javaBin/platform/.github/workflows/plan-review.yml@main
+    with:
+      plan_key: ${{ needs.tf-plan.outputs.plan_key }}
+    secrets: inherit
+
+  # --------------------------------------------------------------------------
+  # 6. Terraform apply (main only, after review — blocked on HIGH risk)
+  # --------------------------------------------------------------------------
+  tf-apply:
+    needs: [tf-plan, plan-review]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      needs.tf-plan.outputs.has_changes == 'true' &&
+      (needs.plan-review.result == 'success' || needs.plan-review.result == 'skipped')
+    uses: javaBin/platform/.github/workflows/tf-apply.yml@main
+    with:
+      plan_key: ${{ needs.tf-plan.outputs.plan_key }}
+      plan_sha256: ${{ needs.tf-plan.outputs.plan_sha256 }}
+      risk_level: ${{ needs.plan-review.outputs.risk_level || 'UNKNOWN' }}
+    secrets: inherit
+
+  # --------------------------------------------------------------------------
+  # 7. ECS deploy (main only, after docker build + TF apply)
+  # --------------------------------------------------------------------------
+  ecs-deploy:
+    needs: [detect, docker-build, tf-apply]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      needs.docker-build.result == 'success' &&
+      (needs.tf-apply.result == 'success' || needs.tf-apply.result == 'skipped')
+    uses: javaBin/platform/.github/workflows/ecs-deploy.yml@main
+    with:
+      image_tag: ${{ needs.docker-build.outputs.image_tag }}
+    secrets: inherit
+
+  # --------------------------------------------------------------------------
+  # 8. EB deploy (transitional — for repos with .elasticbeanstalk/)
+  # --------------------------------------------------------------------------
+  eb-deploy:
+    needs: [detect, build-jvm, build-ts]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      needs.detect.outputs.has_eb == 'true' &&
+      (needs.build-jvm.result == 'success' || needs.build-jvm.result == 'skipped') &&
+      (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped')
+    uses: javaBin/platform/.github/workflows/eb-deploy.yml@main
+    with:
+      environment_name: ${{ needs.detect.outputs.app_name }}
+    secrets: inherit

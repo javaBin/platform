@@ -1,0 +1,12 @@
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.zip
+__pycache__/
+*.pyc
+
+# Go Lambda build artifacts
+lambda-src/ci_authorizer/bootstrap
+lambda-src/ci_authorizer/ci-authorizer
+# 2026-03-03T00:17:45Z
