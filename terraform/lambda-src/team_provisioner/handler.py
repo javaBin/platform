@@ -180,20 +180,49 @@ def _google_api(method, path, access_token, body=None):
         raise
 
 
+def _normalize_member(member):
+    """Normalize a member entry to a dict with email and github fields.
+
+    Supports two formats:
+    - Simple string: "alexander.amiri"
+        → email: alexander.amiri@java.no (Google Workspace username)
+        → github: not set (must use dict format for GitHub team sync)
+    - Dict: {google: "alexander.amiri", github: "alexanderamiri"}
+        → email: alexander.amiri@java.no (derived from google field)
+        → github: alexanderamiri
+
+    The 'google' field is the username part only — @java.no is always appended.
+    Legacy 'email' field is also accepted for backwards compatibility.
+    Members without a 'github' field are synced to Google Groups only.
+    """
+    if isinstance(member, str):
+        username = member.strip()
+        return {"email": f"{username}@java.no"}
+    if isinstance(member, dict):
+        result = dict(member)
+        # Derive email from 'google' field if 'email' is not set
+        if "email" not in result and "google" in result:
+            result["email"] = f"{result['google']}@java.no"
+        return result
+    logger.warning("Unexpected member format: %s", member)
+    return {}
+
+
 def sync_google_group(team):
-    """Create or update a Google Workspace group and sync its membership."""
-    group_email = team.get("google_group")
-    if not group_email:
-        logger.info("No google_group for team %s — skipping", team["name"])
-        return {"skipped": True}
+    """Create or update a Google Workspace group and sync its membership.
+
+    Group email is derived as team-{name}@java.no. All members are MEMBER role.
+    """
+    team_name = team["name"]
+    group_email = f"team-{team_name}@java.no"
 
     access_token = _get_google_access_token()
     group_key = urllib.parse.quote(group_email, safe="")
 
     group_body = {
         "email": group_email,
-        "name": team.get("display_name", team["name"]),
-        "description": team.get("description", f"Javabin team: {team['name']}"),
+        "name": team_name,
+        "description": team["description"],
     }
 
     existing = _google_api("GET", f"/groups/{group_key}", access_token)
@@ -208,7 +237,7 @@ def sync_google_group(team):
             logger.info("Created Google group %s", group_email)
 
     # Current members (paginated — Google returns max 200 per page)
-    current_members = {}
+    current_emails = set()
     page_token = None
     while True:
         path = f"/groups/{group_key}/members?maxResults=200"
@@ -217,7 +246,7 @@ def sync_google_group(team):
         resp = _google_api("GET", path, access_token)
         if resp and "members" in resp:
             for m in resp["members"]:
-                current_members[m["email"].lower()] = m.get("role", "MEMBER")
+                current_emails.add(m["email"].lower())
         if resp and resp.get("nextPageToken"):
             page_token = resp["nextPageToken"]
         else:
@@ -226,33 +255,23 @@ def sync_google_group(team):
     # Desired members
     desired_emails = set()
     for member in team.get("members", []):
-        email = member.get("email", "").lower()
+        m = _normalize_member(member)
+        email = m.get("email", "").lower()
         if not email:
             continue
         desired_emails.add(email)
-        role = "OWNER" if member.get("role") == "admin" else "MEMBER"
-        encoded_email = urllib.parse.quote(email, safe="")
 
-        if email in current_members:
-            if current_members[email] != role:
-                _google_api(
-                    "PUT",
-                    f"/groups/{group_key}/members/{encoded_email}",
-                    access_token,
-                    {"role": role},
-                )
-                logger.info("Updated %s to %s in %s", email, role, group_email)
-        else:
+        if email not in current_emails:
             _google_api(
                 "POST",
                 f"/groups/{group_key}/members",
                 access_token,
-                {"email": email, "role": role},
+                {"email": email, "role": "MEMBER"},
             )
-            logger.info("Added %s as %s to %s", email, role, group_email)
+            logger.info("Added %s to %s", email, group_email)
 
     # Remove members no longer in the team definition
-    for email in current_members:
+    for email in current_emails:
         if email not in desired_emails:
             encoded_email = urllib.parse.quote(email, safe="")
             _google_api(
@@ -347,14 +366,17 @@ def _github_api(method, path, token, body=None):
 
 
 def sync_github_team(team):
-    """Create or update a GitHub team and sync its membership."""
+    """Create or update a GitHub team and sync its membership.
+
+    All members are added as maintainers (no role distinction).
+    """
     team_name = team["name"]
     token = _get_github_installation_token()
     team_slug = team_name.lower().replace(" ", "-")
 
     team_body = {
         "name": team_name,
-        "description": team.get("description", f"Javabin team: {team_name}"),
+        "description": team["description"],
         "privacy": "closed",
     }
 
@@ -397,18 +419,23 @@ def sync_github_team(team):
     # Desired members
     desired_users = set()
     for member in team.get("members", []):
-        github_user = member.get("github", "").lower()
+        m = _normalize_member(member)
+        github_user = m.get("github", "").lower()
         if not github_user:
+            logger.warning(
+                "No GitHub handle for member %s in team %s — skipping",
+                member,
+                team_name,
+            )
             continue
         desired_users.add(github_user)
-        role = "maintainer" if member.get("role") == "admin" else "member"
         _github_api(
             "PUT",
             f"/orgs/{GITHUB_ORG}/teams/{team_slug}/memberships/{github_user}",
             token,
-            {"role": role},
+            {"role": "maintainer"},
         )
-        logger.info("Set %s as %s in team %s", github_user, role, team_slug)
+        logger.info("Set %s as maintainer in team %s", github_user, team_slug)
 
     # Remove members no longer in the team definition
     for login in current_members - desired_users:
@@ -432,10 +459,7 @@ def sync_github_team(team):
 
 def sync_budget(team):
     """Create or update an AWS Budget for this team."""
-    budget_nok = team.get("budget_nok")
-    if not budget_nok:
-        logger.info("No budget_nok for team %s — skipping", team["name"])
-        return {"skipped": True}
+    budget_nok = team.get("budget_nok", 500)
 
     budget_usd = round(budget_nok / USD_TO_NOK, 2)
     budget_name = f"javabin-team-{team['name']}"
@@ -519,6 +543,20 @@ def sync_identity_center_group(team):
 # Event parsing
 # ---------------------------------------------------------------------------
 
+def _extract_payload(event):
+    """Unwrap the event payload from SNS, Function URL, or direct invocation."""
+    if "Records" in event:
+        for record in event["Records"]:
+            if "Sns" in record:
+                return json.loads(record["Sns"]["Message"])
+
+    if "body" in event:
+        body = event["body"]
+        return json.loads(body) if isinstance(body, str) else body
+
+    return event
+
+
 def parse_team_payload(event):
     """Extract team definitions from the Lambda event.
 
@@ -527,24 +565,9 @@ def parse_team_payload(event):
     2. SNS-wrapped: {"Records": [{"Sns": {"Message": '{"teams": [...]}'}}]}
     3. Function URL: {"body": '{"teams": [...]}'}
     """
-    if "teams" in event:
-        return event["teams"]
-
-    if "Records" in event:
-        for record in event["Records"]:
-            if "Sns" in record:
-                message = json.loads(record["Sns"]["Message"])
-                if "teams" in message:
-                    return message["teams"]
-
-    if "body" in event:
-        body = (
-            json.loads(event["body"])
-            if isinstance(event["body"], str)
-            else event["body"]
-        )
-        if "teams" in body:
-            return body["teams"]
+    payload = _extract_payload(event)
+    if "teams" in payload:
+        return payload["teams"]
 
     logger.warning(
         "No team data found in event: %s",
@@ -640,6 +663,14 @@ def handler(event, context):
                 "Team entry missing 'name' — skipping: %s",
                 json.dumps(team)[:200],
             )
+            continue
+
+        if not team.get("description"):
+            logger.warning(
+                "Team %s missing required 'description' — skipping",
+                team_name,
+            )
+            results[team_name] = {"error": "missing required 'description' field"}
             continue
 
         logger.info("Provisioning team: %s", team_name)
