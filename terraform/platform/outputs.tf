@@ -92,3 +92,4 @@ output "security_topic_arn" {
   description = "ARN of the security SNS topic"
   value       = module.monitoring.security_topic_arn
 }
+
