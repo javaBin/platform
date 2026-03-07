@@ -15,8 +15,7 @@
 data "aws_ssoadmin_instances" "this" {}
 
 locals {
-  instance_arn      = tolist(data.aws_ssoadmin_instances.this.arns)[0]
-  identity_store_id = tolist(data.aws_ssoadmin_instances.this.identity_store_ids)[0]
+  instance_arn = tolist(data.aws_ssoadmin_instances.this.arns)[0]
 }
 
 ################################################################################
@@ -175,95 +174,8 @@ resource "aws_ssoadmin_managed_policy_attachment" "readonly" {
 }
 
 ################################################################################
-# Identity Center Groups — looked up by display name
-# These groups are created by Google SAML sync or SCIM provisioning.
-# We reference them by name to assign permission sets.
-################################################################################
-
-data "aws_identitystore_group" "infra" {
-  identity_store_id = local.identity_store_id
-
-  alternate_identifier {
-    unique_attribute {
-      attribute_path  = "DisplayName"
-      attribute_value = "infra@${var.google_workspace_domain}"
-    }
-  }
-}
-
-data "aws_identitystore_group" "heroes" {
-  identity_store_id = local.identity_store_id
-
-  alternate_identifier {
-    unique_attribute {
-      attribute_path  = "DisplayName"
-      attribute_value = "heroes@${var.google_workspace_domain}"
-    }
-  }
-}
-
-data "aws_identitystore_group" "board" {
-  identity_store_id = local.identity_store_id
-
-  alternate_identifier {
-    unique_attribute {
-      attribute_path  = "DisplayName"
-      attribute_value = "board@${var.google_workspace_domain}"
-    }
-  }
-}
-
-data "aws_identitystore_group" "pkom" {
-  identity_store_id = local.identity_store_id
-
-  alternate_identifier {
-    unique_attribute {
-      attribute_path  = "DisplayName"
-      attribute_value = "pkom@${var.google_workspace_domain}"
-    }
-  }
-}
-
-################################################################################
 # Group → Permission Set Assignments
+#
+# TODO: Add group lookups and assignments after Google SAML sync is configured
+# and Identity Center groups (infra@, heroes@, board@, pkom@) exist.
 ################################################################################
-
-resource "aws_ssoadmin_account_assignment" "admin_infra" {
-  instance_arn       = local.instance_arn
-  permission_set_arn = aws_ssoadmin_permission_set.admin.arn
-
-  principal_id   = data.aws_identitystore_group.infra.group_id
-  principal_type = "GROUP"
-  target_id      = var.aws_account_id
-  target_type    = "AWS_ACCOUNT"
-}
-
-resource "aws_ssoadmin_account_assignment" "developer_heroes" {
-  instance_arn       = local.instance_arn
-  permission_set_arn = aws_ssoadmin_permission_set.developer.arn
-
-  principal_id   = data.aws_identitystore_group.heroes.group_id
-  principal_type = "GROUP"
-  target_id      = var.aws_account_id
-  target_type    = "AWS_ACCOUNT"
-}
-
-resource "aws_ssoadmin_account_assignment" "readonly_board" {
-  instance_arn       = local.instance_arn
-  permission_set_arn = aws_ssoadmin_permission_set.readonly.arn
-
-  principal_id   = data.aws_identitystore_group.board.group_id
-  principal_type = "GROUP"
-  target_id      = var.aws_account_id
-  target_type    = "AWS_ACCOUNT"
-}
-
-resource "aws_ssoadmin_account_assignment" "readonly_pkom" {
-  instance_arn       = local.instance_arn
-  permission_set_arn = aws_ssoadmin_permission_set.readonly.arn
-
-  principal_id   = data.aws_identitystore_group.pkom.group_id
-  principal_type = "GROUP"
-  target_id      = var.aws_account_id
-  target_type    = "AWS_ACCOUNT"
-}
