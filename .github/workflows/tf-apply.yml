@@ -49,7 +49,7 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-deploy-${{ github.event.repository.name }}
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-${{ github.event.repository.name }}
           aws-region: ${{ inputs.aws_region }}
 
       - name: Check risk level

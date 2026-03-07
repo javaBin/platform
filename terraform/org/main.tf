@@ -21,6 +21,9 @@ resource "aws_organizations_organization" "main" {
 
   # Enable SCPs
   enabled_policy_types = ["SERVICE_CONTROL_POLICY"]
+
+  # sso.amazonaws.com is required for Identity Center
+  aws_service_access_principals = ["sso.amazonaws.com"]
 }
 
 ################################################################################

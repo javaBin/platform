@@ -36,3 +36,9 @@ variable "exempt_roles" {
     "arn:aws:iam::553637109631:root"
   ]
 }
+
+variable "session_duration" {
+  description = "SSO session duration in ISO 8601 format"
+  type        = string
+  default     = "PT4H"
+}

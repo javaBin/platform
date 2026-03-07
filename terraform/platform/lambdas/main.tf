@@ -100,7 +100,23 @@ data "archive_file" "override_cleanup" {
 data "archive_file" "team_provisioner" {
   type        = "zip"
   output_path = "${path.module}/builds/team_provisioner.zip"
-  source_dir  = "${local.lambda_src_path}/team_provisioner"
+
+  source {
+    content  = file("${local.lambda_src_path}/team_provisioner/handler.py")
+    filename = "handler.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/__init__.py")
+    filename = "shared/__init__.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/slack.py")
+    filename = "shared/slack.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/constants.py")
+    filename = "shared/constants.py"
+  }
 }
 
 ################################################################################
@@ -345,7 +361,7 @@ resource "aws_iam_role_policy_attachment" "override_cleanup_logs" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# --- team-provisioner role (stub — minimal permissions) ---
+# --- team-provisioner role ---
 resource "aws_iam_role" "team_provisioner" {
   name = "${var.project}-team-provisioner"
 
@@ -356,6 +372,36 @@ resource "aws_iam_role" "team_provisioner" {
       Principal = { Service = "lambda.amazonaws.com" }
       Action    = "sts:AssumeRole"
     }]
+  })
+}
+
+resource "aws_iam_role_policy" "team_provisioner" {
+  name = "${var.project}-team-provisioner"
+  role = aws_iam_role.team_provisioner.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SSMRead"
+        Effect = "Allow"
+        Action = "ssm:GetParameter"
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/javabin/platform/*",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/javabin/slack/*",
+        ]
+      },
+      {
+        Sid    = "BudgetsManage"
+        Effect = "Allow"
+        Action = [
+          "budgets:CreateBudget",
+          "budgets:DescribeBudget",
+          "budgets:UpdateBudget",
+        ]
+        Resource = "arn:aws:budgets::${var.aws_account_id}:budget/javabin-team-*"
+      },
+    ]
   })
 }
 
@@ -471,6 +517,19 @@ resource "aws_lambda_function" "team_provisioner" {
   memory_size      = 256
   filename         = data.archive_file.team_provisioner.output_path
   source_code_hash = data.archive_file.team_provisioner.output_base64sha256
+
+  environment {
+    variables = {
+      INFRA_WEBHOOK_PARAM      = "/javabin/slack/platform-resource-alerts-webhook"
+      GOOGLE_SA_PARAM          = "/javabin/platform/google-admin-sa"
+      GOOGLE_ADMIN_EMAIL_PARAM = "/javabin/platform/google-admin-email"
+      GITHUB_APP_ID_PARAM      = "/javabin/platform/github-app-id"
+      GITHUB_APP_KEY_PARAM     = "/javabin/platform/github-app-key"
+      ACCOUNT_ID               = var.aws_account_id
+      GITHUB_ORG               = "javaBin"
+      ALERTS_TOPIC_ARN         = var.alerts_topic_arn
+    }
+  }
 }
 
 ################################################################################

@@ -4,6 +4,23 @@ variable "config_file" {
   default     = "../app.yaml"
 }
 
+variable "environment_name" {
+  description = "Environment name (e.g. 'dev', 'prod'). Empty string for single-environment apps."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.environment_name == "" || can(regex("^[a-z][a-z0-9]{0,3}$", var.environment_name))
+    error_message = "environment_name must be lowercase alphanumeric, max 4 chars (e.g. dev, prod, test)."
+  }
+}
+
+variable "create_ecr" {
+  description = "Whether to create the ECR repository. Set false for secondary environments sharing an ECR repo."
+  type        = bool
+  default     = true
+}
+
 variable "aws_account_id" {
   description = "AWS account ID for ARN construction and bucket naming"
   type        = string
