@@ -100,12 +100,12 @@ resource "aws_iam_role_policy" "ci_infra_deny" {
         Resource = "*"
       },
       {
-        Sid    = "DenyIdentityStore"
+        Sid    = "DenyIdentityCenter"
         Effect = "Deny"
         Action = [
-          "identitystore:CreateUser",
-          "sso:CreateInstance",
-          "sso:DeleteInstance",
+          "sso:*",
+          "sso-admin:*",
+          "identitystore:*",
         ]
         Resource = "*"
       },

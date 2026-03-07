@@ -48,6 +48,31 @@ variable "github_org" {
   default     = "javaBin"
 }
 
+variable "google_client_id" {
+  description = "Google OAuth 2.0 client ID for Cognito IdP (from GCP console)"
+  type        = string
+  default     = ""
+}
+
+variable "google_client_secret" {
+  description = "Google OAuth 2.0 client secret for Cognito IdP (from GCP console)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "enable_cognito" {
+  description = "Whether to create Cognito user pools. Requires google_client_id and google_client_secret."
+  type        = bool
+  default     = false
+}
+
+variable "certificate_arn" {
+  description = "ACM certificate ARN in us-east-1 for Cognito custom domains (CloudFront requirement)"
+  type        = string
+  default     = ""
+}
+
 variable "auto_tagger_identities" {
   description = "IAM identity substrings allowed to trigger auto-tagging"
   type        = list(string)
