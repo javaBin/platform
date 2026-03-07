@@ -33,9 +33,18 @@ jobs:
     env:
       PLAN_BUCKET: javabin-ci-plan-artifacts-${{ inputs.aws_account_id }}
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PLATFORM_APP_ID }}
+          private-key: ${{ secrets.PLATFORM_APP_PRIVATE_KEY }}
+          owner: javaBin
+
       - uses: actions/checkout@v4
         with:
           repository: javaBin/platform
+          token: ${{ steps.app-token.outputs.token }}
           ref: main
           sparse-checkout: scripts/review-plan.py
           path: platform
