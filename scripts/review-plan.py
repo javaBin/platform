@@ -4,7 +4,7 @@
 Usage:
     python3 scripts/review-plan.py plan-output.txt
 
-Uses boto3 for Bedrock Converse API.
+Uses boto3 invoke_model (Anthropic Messages API) for maximum compatibility.
 Writes structured JSON to REVIEW_RESULT_PATH (default: review-result.json).
 """
 
@@ -18,51 +18,42 @@ from botocore.config import Config
 MODEL_ID = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
 REGION = os.environ.get("AWS_REGION", "eu-central-1")
 
-REVIEW_TOOL_CONFIG = {
-    "tools": [
-        {
-            "toolSpec": {
-                "name": "submit_review",
-                "description": "Submit a structured review of a Terraform plan",
-                "inputSchema": {
-                    "json": {
-                        "type": "object",
-                        "properties": {
-                            "risk": {
-                                "type": "string",
-                                "description": "Overall risk level",
-                                "enum": ["LOW", "MEDIUM", "HIGH"],
-                            },
-                            "summary": {
-                                "type": "string",
-                                "description": "One sentence summary of the plan",
-                            },
-                            "findings": {
-                                "type": "array",
-                                "description": "3-5 findings from the plan review",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "category": {
-                                            "type": "string",
-                                            "enum": ["security", "cost", "destruction", "routine"],
-                                        },
-                                        "detail": {
-                                            "type": "string",
-                                            "description": "Brief description of the finding",
-                                        },
-                                    },
-                                    "required": ["category", "detail"],
-                                },
-                            },
+REVIEW_TOOL = {
+    "name": "submit_review",
+    "description": "Submit a structured review of a Terraform plan",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "risk": {
+                "type": "string",
+                "description": "Overall risk level",
+                "enum": ["LOW", "MEDIUM", "HIGH"],
+            },
+            "summary": {
+                "type": "string",
+                "description": "One sentence summary of the plan",
+            },
+            "findings": {
+                "type": "array",
+                "description": "3-5 findings from the plan review",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "enum": ["security", "cost", "destruction", "routine"],
                         },
-                        "required": ["risk", "summary", "findings"],
-                    }
+                        "detail": {
+                            "type": "string",
+                            "description": "Brief description of the finding",
+                        },
+                    },
+                    "required": ["category", "detail"],
                 },
-            }
-        }
-    ],
-    "toolChoice": {"any": {}},
+            },
+        },
+        "required": ["risk", "summary", "findings"],
+    },
 }
 
 RISK_EMOJI = {"LOW": "\U0001f7e2", "MEDIUM": "\U0001f7e1", "HIGH": "\U0001f534"}
@@ -70,8 +61,7 @@ CATEGORY_EMOJI = {"security": "\U0001f512", "cost": "\U0001f4b0", "destruction":
 
 
 def review_plan(plan_text):
-    """Send plan to Bedrock for LLM review, return structured dict."""
-    # Truncate very long plans to stay within model context
+    """Send plan to Bedrock for LLM review via invoke_model, return structured dict."""
     if len(plan_text) > 80000:
         plan_text = plan_text[:80000] + "\n\n... (truncated)"
 
@@ -99,16 +89,27 @@ Terraform plan output:
         config=Config(read_timeout=60, connect_timeout=10),
     )
 
-    response = bedrock.converse(
+    request_body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": 1024,
+        "temperature": 0.1,
+        "messages": [{"role": "user", "content": prompt}],
+        "tools": [REVIEW_TOOL],
+        "tool_choice": {"type": "any"},
+    })
+
+    response = bedrock.invoke_model(
         modelId=MODEL_ID,
-        messages=[{"role": "user", "content": [{"text": prompt}]}],
-        toolConfig=REVIEW_TOOL_CONFIG,
-        inferenceConfig={"temperature": 0.1},
+        contentType="application/json",
+        accept="application/json",
+        body=request_body,
     )
 
-    for content in response.get("output", {}).get("message", {}).get("content", []):
-        if "toolUse" in content and content["toolUse"]["name"] == "submit_review":
-            return content["toolUse"]["input"]
+    response_body = json.loads(response["body"].read())
+
+    for block in response_body.get("content", []):
+        if block.get("type") == "tool_use" and block.get("name") == "submit_review":
+            return block["input"]
 
     return None
 
