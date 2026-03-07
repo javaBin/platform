@@ -23,8 +23,8 @@ data "aws_iam_openid_connect_provider" "github" {
 # 1. javabin-ci-infra — Platform repo only (plan + apply)
 #
 # Trust: GitHub OIDC, only repo:javaBin/platform on main branch.
-# Permissions: Allow *:* (boundary blocks dangerous ops) + explicit deny on
-# operations that should never happen even with boundary.
+# Permissions: Allow *:* with permission boundary + explicit deny on operations
+# that should never happen via CI (organizations, IAM users, destructive security ops).
 ################################################################################
 
 resource "aws_iam_role" "ci_infra" {
