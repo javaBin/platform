@@ -169,7 +169,7 @@ jobs:
             "${{ env.TF_ROOT }}/plan-output.txt"
 
       - name: Install boto3
-        run: pip install boto3
+        run: pip install --upgrade boto3
 
       - name: Run LLM review
         id: review
