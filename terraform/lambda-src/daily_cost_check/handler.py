@@ -13,8 +13,7 @@ ssm = boto3.client("ssm")
 
 COST_WEBHOOK_PARAM = os.environ["COST_WEBHOOK_PARAM"]
 SPIKE_THRESHOLD = float(os.environ.get("SPIKE_THRESHOLD", "1.2"))  # 20% above average
-
-# Javabin doesn't use Bedrock for AI workloads, so no exclusion needed.
+USD_TO_NOK = 10.5  # Approximate exchange rate
 
 _webhook_cache = {}
 
@@ -114,12 +113,14 @@ def build_alert_blocks(spikes, yesterday_date):
     ]
 
     for svc, yesterday, avg, pct in spikes:
+        nok = yesterday * USD_TO_NOK
         fields = [
             {"type": "mrkdwn", "text": f"*Service*\n{svc}"},
-            {"type": "mrkdwn", "text": f"*Yesterday*\n${yesterday:.2f}"},
+            {"type": "mrkdwn", "text": f"*Yesterday*\n${yesterday:.2f} (~{nok:.0f} NOK)"},
         ]
         if avg > 0:
-            fields.append({"type": "mrkdwn", "text": f"*7-day avg*\n${avg:.2f}"})
+            avg_nok = avg * USD_TO_NOK
+            fields.append({"type": "mrkdwn", "text": f"*7-day avg*\n${avg:.2f} (~{avg_nok:.0f} NOK)"})
         fields.append({"type": "mrkdwn", "text": f"*Change*\n{fmt_change(pct, yesterday, avg)}"})
 
         blocks.append({"type": "section", "fields": fields})
@@ -130,7 +131,7 @@ def build_alert_blocks(spikes, yesterday_date):
     blocks.append({
         "type": "context",
         "elements": [{"type": "mrkdwn",
-                       "text": f"Source: AWS Cost Explorer | Generated {ts}"}]
+                       "text": f"Source: AWS Cost Explorer | Generated {ts} | NOK rate: ~{USD_TO_NOK}"}]
     })
 
     return blocks
