@@ -12,7 +12,9 @@ locals {
 # Archive files — build zips from source
 ################################################################################
 
-# Shared pricing module (included in slack_alert zip)
+# Each Lambda zip includes handler.py + shared/ modules it needs.
+# Using explicit source blocks so shared/ is at the right path for imports.
+
 data "archive_file" "slack_alert" {
   type        = "zip"
   output_path = "${path.module}/builds/slack_alert.zip"
@@ -21,28 +23,66 @@ data "archive_file" "slack_alert" {
     content  = file("${local.lambda_src_path}/slack_alert/handler.py")
     filename = "handler.py"
   }
-
+  source {
+    content  = file("${local.lambda_src_path}/shared/__init__.py")
+    filename = "shared/__init__.py"
+  }
   source {
     content  = file("${local.lambda_src_path}/shared/pricing.py")
     filename = "shared/pricing.py"
   }
-
   source {
-    content  = file("${local.lambda_src_path}/shared/__init__.py")
-    filename = "shared/__init__.py"
+    content  = file("${local.lambda_src_path}/shared/slack.py")
+    filename = "shared/slack.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/constants.py")
+    filename = "shared/constants.py"
   }
 }
 
 data "archive_file" "cost_report" {
   type        = "zip"
   output_path = "${path.module}/builds/cost_report.zip"
-  source_dir  = "${local.lambda_src_path}/cost_report"
+
+  source {
+    content  = file("${local.lambda_src_path}/cost_report/handler.py")
+    filename = "handler.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/__init__.py")
+    filename = "shared/__init__.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/slack.py")
+    filename = "shared/slack.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/constants.py")
+    filename = "shared/constants.py"
+  }
 }
 
 data "archive_file" "daily_cost_check" {
   type        = "zip"
   output_path = "${path.module}/builds/daily_cost_check.zip"
-  source_dir  = "${local.lambda_src_path}/daily_cost_check"
+
+  source {
+    content  = file("${local.lambda_src_path}/daily_cost_check/handler.py")
+    filename = "handler.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/__init__.py")
+    filename = "shared/__init__.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/slack.py")
+    filename = "shared/slack.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/constants.py")
+    filename = "shared/constants.py"
+  }
 }
 
 data "archive_file" "compliance_reporter" {
@@ -97,9 +137,12 @@ resource "aws_iam_role_policy" "slack_alert" {
         ]
       },
       {
-        Sid      = "BedrockConverse"
-        Effect   = "Allow"
-        Action   = "bedrock:Converse"
+        Sid    = "Bedrock"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:Converse",
+        ]
         Resource = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
       },
       {
@@ -155,9 +198,12 @@ resource "aws_iam_role_policy" "cost_report" {
         Resource = "*"
       },
       {
-        Sid      = "BedrockConverse"
-        Effect   = "Allow"
-        Action   = "bedrock:Converse"
+        Sid    = "Bedrock"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:Converse",
+        ]
         Resource = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
       },
     ]

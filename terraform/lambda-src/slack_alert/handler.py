@@ -3,12 +3,13 @@ import logging
 import os
 import re
 import time
-import urllib.request
 from datetime import datetime, timezone
 
 import boto3
 from botocore.config import Config
+from shared.constants import risk_emoji
 from shared.pricing import estimate_cost
+from shared.slack import get_webhook_url, post_to_slack
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -21,9 +22,6 @@ COST_WEBHOOK_PARAM = os.environ["COST_WEBHOOK_PARAM"]
 SECURITY_TOPIC_ARN = os.environ["SECURITY_TOPIC_ARN"]
 PROJECT_PREFIX = os.environ.get("PROJECT_PREFIX", "javabin")
 GITHUB_ORG_URL = os.environ.get("GITHUB_ORG_URL", "https://github.com/javaBin")
-
-# Cache webhook URLs across invocations
-_webhook_cache = {}
 
 # Dedup cache: "{action}:{resource}" -> timestamp
 _recent_alerts = {}
@@ -158,11 +156,8 @@ def is_duplicate(action, resource):
     return False
 
 
-def get_webhook_url(param_name):
-    if param_name not in _webhook_cache:
-        resp = ssm.get_parameter(Name=param_name, WithDecryption=True)
-        _webhook_cache[param_name] = resp["Parameter"]["Value"]
-    return _webhook_cache[param_name]
+def _get_webhook(param_name):
+    return get_webhook_url(ssm, param_name)
 
 
 # ---------------------------------------------------------------------------
@@ -418,12 +413,11 @@ def format_resource_creation(parsed):
                         sg_result.get("risk"), event_name, resource_name)
             return None
         if sg_result:
-            risk_emoji = {"HIGH": ":red_circle:", "MEDIUM": ":large_orange_circle:"}.get(
-                sg_result.get("risk"), ":yellow_circle:")
+            re_emoji = risk_emoji(sg_result.get("risk"))
             blocks.append({
                 "type": "section",
                 "text": {"type": "mrkdwn",
-                         "text": f":brain: *Security Analysis* {risk_emoji} {sg_result.get('risk', '')}\n{sg_result.get('analysis', '')}"}
+                         "text": f":brain: *Security Analysis* {re_emoji} {sg_result.get('risk', '')}\n{sg_result.get('analysis', '')}"}
             })
 
     if not is_ci:
@@ -543,12 +537,11 @@ def format_resource_modification(parsed):
                         sg_result.get("risk"), event_name, resource_name)
             return None
         if sg_result:
-            risk_emoji = {"HIGH": ":red_circle:", "MEDIUM": ":large_orange_circle:"}.get(
-                sg_result.get("risk"), ":yellow_circle:")
+            re_emoji = risk_emoji(sg_result.get("risk"))
             blocks.append({
                 "type": "section",
                 "text": {"type": "mrkdwn",
-                         "text": f":brain: *Security Analysis* {risk_emoji} {sg_result.get('risk', '')}\n{sg_result.get('analysis', '')}"}
+                         "text": f":brain: *Security Analysis* {re_emoji} {sg_result.get('risk', '')}\n{sg_result.get('analysis', '')}"}
             })
 
     blocks.append({"type": "divider"})
@@ -675,12 +668,11 @@ def format_iam_change(parsed):
     ]})
 
     if risk_result:
-        risk_emoji = {"HIGH": ":red_circle:", "MEDIUM": ":large_orange_circle:"}.get(
-            risk_result.get("risk"), ":yellow_circle:")
+        re_emoji = risk_emoji(risk_result.get("risk"))
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn",
-                     "text": f":brain: *Risk Assessment* {risk_emoji} {risk_result.get('risk', '')}\n{risk_result.get('analysis', '')}"}
+                     "text": f":brain: *Risk Assessment* {re_emoji} {risk_result.get('risk', '')}\n{risk_result.get('analysis', '')}"}
         })
 
     blocks.append({"type": "divider"})
@@ -931,9 +923,9 @@ def handler(event, context):
 
         # Route to correct webhook based on SNS topic
         if topic_arn == SECURITY_TOPIC_ARN:
-            webhook_url = get_webhook_url(INFRA_WEBHOOK_PARAM)
+            webhook_url = _get_webhook(INFRA_WEBHOOK_PARAM)
         else:
-            webhook_url = get_webhook_url(COST_WEBHOOK_PARAM)
+            webhook_url = _get_webhook(COST_WEBHOOK_PARAM)
 
         try:
             parsed = json.loads(raw_message)
@@ -1009,15 +1001,3 @@ def format_plain_alert(subject, message):
     return {"blocks": blocks, "text": subject}
 
 
-def post_to_slack(webhook_url, message):
-    """Post a Block Kit message to Slack."""
-    payload = json.dumps(message).encode("utf-8")
-    req = urllib.request.Request(
-        webhook_url,
-        data=payload,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        urllib.request.urlopen(req)
-    except Exception as e:
-        logger.error("Failed to post to Slack: %s", e)
