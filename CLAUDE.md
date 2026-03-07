@@ -95,6 +95,7 @@ Migration happens later per-app at developer's pace — apps move from old ALB/E
 | `docs/ci-workflow.md` | Platform CI pipeline: plan → review → apply flow |
 | `docs/reusable-modules.md` | App modules: inputs/outputs, app.yaml schema |
 | `docs/reusable-workflows.md` | App CI workflows: javabin.yml orchestration |
+| `docs/app-yaml-reference.md` | app.yaml schema and field reference |
 | `docs/bootstrap-runbook.md` | State backend bootstrap procedure |
 | `docs/org-runbook.md` | AWS Organizations setup procedure |
 
@@ -135,22 +136,23 @@ terraform/state/
 ### Reusable Modules (app repos source via `git::` URLs)
 | Module | What |
 |--------|------|
-| `modules/platform-data/` | Read-only data sources for shared infra |
-| `modules/ecr-repo/` | ECR repository with lifecycle policy |
-| `modules/service-routing/` | ALB target group + listener rule + DNS |
-| `modules/service-role/` | ECS task IAM role with composable policies |
-| `modules/ecs-service/` | ECS Fargate service |
-| `modules/service-bucket/` | S3 bucket with IAM policy output |
-| `modules/service-database/` | DynamoDB table with IAM policy output |
-| `modules/service-secret/` | Secrets Manager secret with IAM policy output |
-| `modules/service-queue/` | SQS queue + DLQ with IAM policy output |
-| `modules/service-alarm/` | CloudWatch alarms for ECS service |
-| `modules/app-stack/` | Golden path — reads `app.yaml`, creates all infra |
-| `modules/cognito-app-client/` | Cognito app client registration (new) |
+| `terraform/modules/platform-data/` | Read-only data sources for shared infra |
+| `terraform/modules/ecr-repo/` | ECR repository with lifecycle policy |
+| `terraform/modules/service-routing/` | ALB target group + listener rule + DNS |
+| `terraform/modules/service-role/` | ECS task IAM role with composable policies |
+| `terraform/modules/ecs-service/` | ECS Fargate service |
+| `terraform/modules/service-bucket/` | S3 bucket with IAM policy output |
+| `terraform/modules/service-database/` | DynamoDB table with IAM policy output |
+| `terraform/modules/service-secret/` | Secrets Manager secret with IAM policy output |
+| `terraform/modules/service-queue/` | SQS queue + DLQ with IAM policy output |
+| `terraform/modules/service-alarm/` | CloudWatch alarms for ECS service |
+| `terraform/modules/app-stack/` | Golden path — reads `app.yaml`, creates all infra |
+| `terraform/modules/cognito-app-client/` | Cognito app client registration (new) |
 
 ### GitHub Actions Workflows
 ```
 .github/workflows/
+  platform-ci.yml      Platform's own CI: plan → review → apply
   javabin.yml          Unified entrypoint (app repos call this)
   detect.yml           Detect repo contents
   build-jvm.yml        Maven build + test
@@ -162,6 +164,7 @@ terraform/state/
   ecs-deploy.yml       ECS task definition update
   plan-review.yml      LLM risk + cost analysis
   approve-override.yml Risk gate override (board members)
+  provision-app.yml    App provisioning triggered from registry
 ```
 
 ### Lambda Functions
@@ -180,6 +183,7 @@ terraform/state/
 | `scripts/bootstrap.sh` | One-time: create state bucket + lock tables |
 | `scripts/generate-terraform.sh` | CI: app.yaml → Terraform files |
 | `scripts/review-plan.py` | CI: LLM plan review via Bedrock |
+| `scripts/notify-block.py` | CI: post Slack notification when deploy is blocked |
 
 ## Naming
 
@@ -257,23 +261,23 @@ Phase 1 (identity) is blocked on Google Admin access — implement when unblocke
 | ID | Task | Status | Brief |
 |----|------|--------|-------|
 | 0a | AWS Discovery | **Done** | `phases/discovery-results.md` |
-| 0b | Bootstrap State Backend | **Code done** — needs Alexander to run bootstrap.sh | `phases/tasks/0b-bootstrap.md` |
-| 0c | Organizations + Permission Boundary | **Code done** — boundary.tf + org module written | `phases/tasks/0c-org-and-boundary.md` |
-| 1 | Identity (Google + Identity Center) | Blocked (Google Admin) | `phases/phase-1-identity.md` |
-| 2a | Networking (VPC, subnets, NAT) | **Code done** — reviewed, fixes applied | `phases/tasks/2a-networking.md` |
-| 2b | Ingress (ALB, ACM, Route53) | **Code done** — reviewed, deletion protection added | `phases/tasks/2b-ingress.md` |
-| 2c | IAM / OIDC (GitHub OIDC, CI roles) | **Code done** — reviewed, fixes applied | `phases/tasks/2c-iam-oidc.md` |
-| 2d | Compute (ECS cluster) | **Code done** — reviewed | `phases/tasks/2d-compute.md` |
-| 2e | Monitoring (SNS, EventBridge, Config, GuardDuty) | **Code done** — reviewed, encryption added | `phases/tasks/2e-monitoring.md` |
-| 2f | Lambda Functions | **Code done** — 6 handlers + shared module + TF module | `phases/tasks/2f-lambdas.md` |
-| 2g | Platform CI Handoff | **Code done** — platform-ci.yml + review-plan.py | `phases/tasks/2g-ci-handoff.md` |
+| 0b | Bootstrap State Backend | **Done** — bootstrapped, imported, migrated to S3 | `phases/tasks/0b-bootstrap.md` |
+| 0c | Organizations + Permission Boundary | **Done** — org enabled, boundary deployed, SCP deferred | `phases/tasks/0c-org-and-boundary.md` |
+| 1 | Identity (Google + Identity Center) | Unblocked (Google Admin confirmed) — not started | `phases/phase-1-identity.md` |
+| 2a | Networking | **Deployed** — VPC, subnets, NAT live | `phases/tasks/2a-networking.md` |
+| 2b | Ingress | **Deployed** — ALB + cert issued | `phases/tasks/2b-ingress.md` |
+| 2c | IAM / OIDC | **Deployed** — 4 CI roles + per-app roles | `phases/tasks/2c-iam-oidc.md` |
+| 2d | Compute | **Deployed** — ECS cluster + 3 ECR repos | `phases/tasks/2d-compute.md` |
+| 2e | Monitoring | **Deployed** — GuardDuty, Security Hub, Config, SNS | `phases/tasks/2e-monitoring.md` |
+| 2f | Lambda Functions | **Deployed** — 6 handlers, shared utils, Block Kit | `phases/tasks/2f-lambdas.md` |
+| 2g | Platform CI | **Done** — CI working, AWS CLI converse for review | `phases/tasks/2g-ci-handoff.md` |
 | 3a | Reusable Terraform Modules | **Code done** — 12 modules adapted | `phases/tasks/3a-reusable-modules.md` |
 | 3b | GitHub Actions Workflows | **Code done** — 11 reusable workflows | `phases/tasks/3b-github-workflows.md` |
-| 3c | app.yaml Schema + Generation | Not started | `phases/tasks/3c-app-yaml.md` |
-| 3d | Registry Repo | Not started | `phases/tasks/3d-registry.md` |
-| 3e | javabin CLI | Not started | `phases/tasks/3e-cli.md` |
+| 3c | app.yaml Schema + Generation | **Done** — generate-terraform.sh + docs | `phases/tasks/3c-app-yaml.md` |
+| 3d | Registry Repo | **Done** — pushed, branch protected | `phases/tasks/3d-registry.md` |
+| 3e | javabin CLI | **Code done** — 3 commands (register, status, whoami) | `phases/tasks/3e-cli.md` |
 | 3f | CI Images + Supporting Repos | Not started | `phases/tasks/3f-ci-images-and-repos.md` |
-| 4 | App Onboarding | Not started | `phases/phase-4-onboarding.md` |
+| 4 | App Onboarding | **In progress** — platform-test-app registered | `phases/phase-4-onboarding.md` |
 
 ## Agent Guidelines
 
