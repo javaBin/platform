@@ -103,6 +103,14 @@ jobs:
           echo "plan_text_key=${PREFIX}/plan-output.txt" >> "$GITHUB_OUTPUT"
           echo "plan_sha256=${SHA256}" >> "$GITHUB_OUTPUT"
 
+      - name: Upload Lambda ZIPs as artifact
+        if: steps.plan.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-zips
+          path: ${{ env.TF_ROOT }}/lambdas/builds/
+          retention-days: 1
+
       - name: Post plan to PR
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -167,9 +175,6 @@ jobs:
           mkdir -p "${{ env.TF_ROOT }}"
           aws s3 cp "s3://${PLAN_BUCKET}/${{ needs.plan.outputs.plan_text_key }}" \
             "${{ env.TF_ROOT }}/plan-output.txt"
-
-      - name: Install boto3
-        run: pip install --upgrade boto3
 
       - name: Run LLM review
         id: review
@@ -294,6 +299,12 @@ jobs:
             python3 scripts/notify-block.py || true
             exit 1
           fi
+
+      - name: Download Lambda ZIPs from artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-zips
+          path: ${{ env.TF_ROOT }}/lambdas/builds/
 
       - name: Download plan from S3
         working-directory: ${{ env.TF_ROOT }}

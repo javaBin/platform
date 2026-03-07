@@ -2,12 +2,13 @@ import json
 import logging
 import os
 import urllib.parse
-import urllib.request
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 
 import boto3
 from botocore.config import Config
+from shared.constants import USD_TO_NOK
+from shared.slack import get_webhook_url, post_to_slack
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -15,8 +16,6 @@ logger.setLevel(logging.INFO)
 ssm = boto3.client("ssm")
 
 COST_WEBHOOK_PARAM = os.environ["COST_WEBHOOK_PARAM"]
-
-_webhook_cache = {}
 
 # ---------------------------------------------------------------------------
 # Service categorisation — pattern-based, not hardcoded lists
@@ -28,13 +27,6 @@ AI_KEYWORDS = [
 
 # Threshold below which services are grouped into "Other"
 OTHER_THRESHOLD = 0.50
-
-
-def get_webhook_url(param_name):
-    if param_name not in _webhook_cache:
-        resp = ssm.get_parameter(Name=param_name, WithDecryption=True)
-        _webhook_cache[param_name] = resp["Parameter"]["Value"]
-    return _webhook_cache[param_name]
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +141,6 @@ LLM_REGION = os.environ.get("DEPLOY_REGION", "eu-central-1")
 
 MAX_SERVICES_PER_CATEGORY = 8
 SPIKE_THRESHOLD_PCT = 15.0
-USD_TO_NOK = 10.5  # Approximate exchange rate
 
 
 # ---------------------------------------------------------------------------
@@ -200,76 +191,81 @@ def fmt_change(current, previous):
 # LLM narrative generation via Bedrock — structured output
 # ---------------------------------------------------------------------------
 _NARRATIVE_TOOL = {
-    "name": "submit_narrative",
-    "description": "Submit a cost report narrative summary",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "summary": {
-                "type": "string",
-                "description": "2-3 sentence executive summary of the cost report",
+    "tools": [{
+        "toolSpec": {
+            "name": "submit_narrative",
+            "description": "Submit a cost report narrative summary",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "string",
+                            "description": "2-3 sentence executive summary of the cost report",
+                        },
+                        "notable": {
+                            "type": "boolean",
+                            "description": "True if there is something worth calling out "
+                            "(significant change, unusual pattern). False if costs are stable.",
+                        },
+                    },
+                    "required": ["summary", "notable"],
+                }
             },
-            "notable": {
-                "type": "boolean",
-                "description": "True if there is something worth calling out "
-                "(significant change, unusual pattern). False if costs are stable.",
-            },
-        },
-        "required": ["summary", "notable"],
-    },
+        }
+    }],
+    "toolChoice": {"any": {}},
 }
 
 _SPIKE_TOOL = {
-    "name": "submit_spike_analysis",
-    "description": "Submit a root cause analysis for a cost spike",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "root_cause": {
-                "type": "string",
-                "description": "2-3 sentence explanation of the likely root cause",
+    "tools": [{
+        "toolSpec": {
+            "name": "submit_spike_analysis",
+            "description": "Submit a root cause analysis for a cost spike",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "root_cause": {
+                            "type": "string",
+                            "description": "2-3 sentence explanation of the likely root cause",
+                        },
+                        "suggested_action": {
+                            "type": "string",
+                            "description": "One concrete action to investigate",
+                        },
+                        "severity": {
+                            "type": "string",
+                            "enum": ["LOW", "MEDIUM", "HIGH"],
+                            "description": "LOW = expected growth, MEDIUM = worth investigating, "
+                            "HIGH = likely anomaly needing immediate attention",
+                        },
+                    },
+                    "required": ["root_cause", "suggested_action", "severity"],
+                }
             },
-            "suggested_action": {
-                "type": "string",
-                "description": "One concrete action to investigate",
-            },
-            "severity": {
-                "type": "string",
-                "enum": ["LOW", "MEDIUM", "HIGH"],
-                "description": "LOW = expected growth, MEDIUM = worth investigating, "
-                "HIGH = likely anomaly needing immediate attention",
-            },
-        },
-        "required": ["root_cause", "suggested_action", "severity"],
-    },
+        }
+    }],
+    "toolChoice": {"any": {}},
 }
 
 
-def _llm_structured(prompt, tool):
-    """Call Bedrock invoke_model with tool use, return structured dict or None."""
+def _llm_structured(prompt, tool_config):
+    """Call Bedrock with tool use, return structured dict or None."""
     try:
         bedrock = boto3.client(
             "bedrock-runtime", region_name=LLM_REGION,
             config=Config(read_timeout=20, connect_timeout=5),
         )
-        request_body = json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1024,
-            "temperature": 0.2,
-            "messages": [{"role": "user", "content": prompt}],
-            "tools": [tool],
-            "tool_choice": {"type": "any"},
-        })
-        response = bedrock.invoke_model(
+        response = bedrock.converse(
             modelId=LLM_MODEL_ID,
-            contentType="application/json",
-            accept="application/json",
-            body=request_body,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            toolConfig=tool_config,
+            inferenceConfig={"temperature": 0.2},
         )
-        response_body = json.loads(response["body"].read())
-        for block in response_body.get("content", []):
-            if block.get("type") == "tool_use" and block.get("name") == tool["name"]:
-                return block["input"]
+        for content in response["output"]["message"]["content"]:
+            if "toolUse" in content:
+                return content["toolUse"]["input"]
     except Exception as e:
         logger.warning("LLM call failed: %s", e)
     return None
@@ -509,15 +505,7 @@ def handler(event, context):
     tw_total = sum(c for c in this_week.values() if c >= 0.01)
     fallback = f"Weekly Cost Report: ${tw_total:.2f} ({fmt_date(tw_start)}–{fmt_date(tw_end)})"
 
-    webhook_url = get_webhook_url(COST_WEBHOOK_PARAM)
-    payload = json.dumps({"blocks": blocks, "text": fallback}).encode("utf-8")
-    req = urllib.request.Request(
-        webhook_url, data=payload,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        urllib.request.urlopen(req)
-    except Exception as e:
-        logger.error("Failed to post to Slack: %s", e)
+    webhook_url = get_webhook_url(ssm, COST_WEBHOOK_PARAM)
+    post_to_slack(webhook_url, {"blocks": blocks, "text": fallback})
 
     return {"statusCode": 200, "body": fallback}

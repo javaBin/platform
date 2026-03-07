@@ -51,9 +51,6 @@ jobs:
           PREFIX=$(dirname "${{ inputs.plan_key }}")
           aws s3 cp "s3://${PLAN_BUCKET}/${PREFIX}/plan-output.txt" plan-output.txt
 
-      - name: Install boto3
-        run: pip install --upgrade boto3
-
       - name: Run LLM review
         id: review
         env:

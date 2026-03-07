@@ -1,10 +1,11 @@
 import json
 import logging
 import os
-import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import boto3
+from shared.constants import USD_TO_NOK
+from shared.slack import get_webhook_url, post_to_slack
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -13,16 +14,6 @@ ssm = boto3.client("ssm")
 
 COST_WEBHOOK_PARAM = os.environ["COST_WEBHOOK_PARAM"]
 SPIKE_THRESHOLD = float(os.environ.get("SPIKE_THRESHOLD", "1.2"))  # 20% above average
-USD_TO_NOK = 10.5  # Approximate exchange rate
-
-_webhook_cache = {}
-
-
-def get_webhook_url(param_name):
-    if param_name not in _webhook_cache:
-        resp = ssm.get_parameter(Name=param_name, WithDecryption=True)
-        _webhook_cache[param_name] = resp["Parameter"]["Value"]
-    return _webhook_cache[param_name]
 
 
 # ---------------------------------------------------------------------------
@@ -158,15 +149,7 @@ def handler(event, context):
     blocks = build_alert_blocks(spikes, yesterday)
     fallback = f"Daily cost spike: {len(spikes)} service(s) above 7-day average"
 
-    webhook_url = get_webhook_url(COST_WEBHOOK_PARAM)
-    payload = json.dumps({"blocks": blocks, "text": fallback}).encode("utf-8")
-    req = urllib.request.Request(
-        webhook_url, data=payload,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        urllib.request.urlopen(req)
-    except Exception as e:
-        logger.error("Failed to post to Slack: %s", e)
+    webhook_url = get_webhook_url(ssm, COST_WEBHOOK_PARAM)
+    post_to_slack(webhook_url, {"blocks": blocks, "text": fallback})
 
     return {"statusCode": 200, "body": fallback}
