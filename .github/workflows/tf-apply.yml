@@ -134,6 +134,10 @@ jobs:
           chmod +x .platform/scripts/generate-terraform.sh
           .platform/scripts/generate-terraform.sh
 
+      - name: Configure git credentials for module downloads
+        if: hashFiles('app.yaml') != ''
+        run: git config --global url."https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
+
       - name: Download plan from S3
         working-directory: ${{ inputs.tf_root }}
         run: aws s3 cp "s3://${PLAN_BUCKET}/${{ inputs.plan_key }}" tfplan
