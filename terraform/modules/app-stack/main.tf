@@ -16,13 +16,15 @@ locals {
   memory        = try(local.raw.compute.memory, 1024)
   desired_count = try(local.raw.compute.desired_count, 1)
 
-  # Routing (required — clear error if missing)
+  # Routing (required — domain is a convenience alias for routing.host)
+  _routing_host = try(local.raw.routing.host, try(local.raw.domain, null))
+  _routing_priority = try(local.raw.routing.priority, null)
   _validate_routing = (
-    try(local.raw.routing.host, null) != null &&
-    try(local.raw.routing.priority, null) != null
-  ) ? true : tobool("app.yaml must define routing.host and routing.priority")
-  host     = local.raw.routing.host
-  priority = local.raw.routing.priority
+    local._routing_host != null &&
+    local._routing_priority != null
+  ) ? true : tobool("app.yaml must define routing.host (or domain) and routing.priority")
+  host     = local._routing_host
+  priority = local._routing_priority
 
   # Resources (empty defaults)
   buckets   = try(local.raw.resources.buckets, [])
