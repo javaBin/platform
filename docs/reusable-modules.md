@@ -1,0 +1,169 @@
+# Reusable Terraform Modules
+
+Modules under `terraform/modules/`. App repos source via:
+```hcl
+source = "git::https://github.com/javaBin/platform.git//terraform/modules/{name}?ref=main"
+```
+
+## platform-data
+
+**Read-only data sources** — discovers shared platform infrastructure by naming convention. No resources created.
+
+| Lookup | Name Pattern |
+|--------|-------------|
+| VPC | `javabin-vpc` |
+| Subnets | tag `tier=private` / `tier=public` |
+| Security group | `javabin-ecs-tasks-sg` |
+| ALB | `javabin-alb` |
+| ECS cluster | `javabin-platform` |
+| Execution role | `javabin-ecs-execution` |
+| Route53 zone | `javazone.no` |
+
+**Key outputs:** `vpc_id`, `private_subnet_ids`, `ecs_cluster_id`, `https_listener_arn`, `execution_role_arn`, `route53_zone_id`
+
+## ecr-repo
+
+ECR repository with 4-rule lifecycle policy.
+
+| Rule | Default |
+|------|---------|
+| Keep N semver releases (`v*`) | 5 |
+| Keep N main builds (`main-*`, `master-*`) | 3 |
+| Expire untagged | 1 day |
+| Expire other tags | 7 days |
+
+**Outputs:** `repository_url`, `repository_arn`
+
+## service-routing
+
+ALB target group + listener rule (host-header routing) + Route53 A record (alias to ALB).
+
+**Required inputs:** `name`, `project`, `vpc_id`, `https_listener_arn`, `listener_rule_priority`, `host_header`, `route53_zone_id`, `alb_dns_name`, `alb_zone_id`
+**Outputs:** `target_group_arn`, `target_group_arn_suffix`, `dns_name`
+
+## service-role
+
+ECS task IAM role with CloudWatch Logs permissions + composable additional policies.
+
+Pass `additional_policy_jsons` (map of name => JSON) to attach policies from other modules:
+```hcl
+additional_policy_jsons = {
+  "bucket-data"    = module.bucket.access_policy_json
+  "database-cache" = module.database.access_policy_json
+}
+```
+
+**Outputs:** `role_arn`, `role_name`, `role_id`
+
+## ecs-service
+
+ECS Fargate task definition + service + CloudWatch log group.
+
+Supports `environment` (map) and `secrets` (map of name => ARN) for container configuration.
+
+**Outputs:** `service_name`, `task_definition_arn`, `log_group_name`
+
+## service-bucket
+
+S3 bucket with versioning, encryption, public access block, optional lifecycle expiry.
+
+**Naming:** `{project}-{name}-{account_id}`
+**Outputs:** `bucket_name`, `bucket_arn`, `access_policy_json`
+
+## service-database
+
+DynamoDB table with configurable keys, billing mode, TTL, PITR, encryption.
+
+**Naming:** `{project}-{name}`
+**Outputs:** `table_name`, `table_arn`, `access_policy_json`
+
+## service-secret
+
+Secrets Manager secret. Value is set manually after creation.
+
+**Naming:** `{project}/{name}`
+**Outputs:** `secret_arn`, `secret_name`, `access_policy_json`
+
+## service-queue
+
+SQS queue + dead-letter queue with configurable retention and visibility timeout.
+
+**Naming:** `{project}-{name}` (queue), `{project}-{name}-dlq` (DLQ)
+**Outputs:** `queue_url`, `queue_arn`, `dlq_url`, `dlq_arn`, `access_policy_json`
+
+## service-alarm
+
+CloudWatch alarms for ECS services: CPU high, memory high, unhealthy targets, 5xx errors.
+
+**Outputs:** `cpu_alarm_arn`, `memory_alarm_arn`
+
+## app-stack
+
+**Golden path module** — reads `app.yaml`, creates all infrastructure automatically.
+
+Instantiates: platform-data, ecr-repo, service-routing, service-bucket (for_each), service-database (for_each), service-secret (for_each), service-queue (for_each), service-role (auto-composed policies), ecs-service, service-alarm.
+
+Auto-wires: resource env vars (bucket names, table names, queue URLs), secret ARNs, IAM policies.
+
+**Config:** `app.yaml` at repo root. See [app-yaml-schema](#app-yaml-schema) below.
+
+## cognito-app-client
+
+**New module** — registers an app with Cognito user pools (internal, external, or both).
+
+Creates Cognito user pool clients and stores credentials in SSM at `/{project}/platform-apps/{app_name}/cognito-{pool}-client-{id,secret}`.
+
+**Inputs:** `app_name`, `pool` (internal/external/both), `internal_user_pool_id`, `external_user_pool_id`, `callback_urls`
+**Outputs:** `internal_client_id`, `external_client_id`, `ssm_parameter_arns`
+
+## Policy Composition Pattern
+
+Resource modules export `access_policy_json`. The `service-role` module accepts a map of these. The `app-stack` module auto-composes all policies from declared resources.
+
+```
+app.yaml declares bucket "data" + database "sessions"
+  → app-stack creates both resources
+  → collects access_policy_json from each
+  → passes merged map to service-role
+  → ECS task role gets exactly the permissions it needs
+```
+
+## app.yaml Schema
+
+```yaml
+name: moresleep            # required, lowercase + hyphens, max 20 chars
+port: 8080                 # default: 8000
+health_check: /health      # default: /health
+
+compute:
+  cpu: 512                 # default: 512
+  memory: 1024             # default: 1024
+  desired_count: 1         # default: 1
+
+routing:
+  host: moresleep.javazone.no  # required
+  priority: 100                # required, unique 1-50000
+
+resources:
+  buckets:
+    - name: data
+      env: DATA_BUCKET     # auto-wired to container env
+  databases:
+    - name: sessions
+      hash_key: id
+      env: SESSIONS_TABLE
+  secrets:
+    - name: api-key
+      env: API_KEY          # auto-wired to ECS secrets
+  queues:
+    - name: tasks
+      env: TASKS_QUEUE_URL
+
+environment:               # additional env vars
+  LOG_LEVEL: info
+
+alarms:
+  enabled: true
+  cpu_threshold: 80
+  memory_threshold: 80
+```

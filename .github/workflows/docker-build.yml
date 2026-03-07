@@ -1,0 +1,89 @@
+name: Docker Build
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile:
+        description: "Path to Dockerfile"
+        type: string
+        default: "Dockerfile"
+      build_context:
+        description: "Docker build context"
+        type: string
+        default: "."
+      aws_account_id:
+        description: "AWS account ID"
+        type: string
+        default: "553637109631"
+      aws_region:
+        description: "AWS region"
+        type: string
+        default: "eu-central-1"
+    outputs:
+      image_uri:
+        description: "Full image URI with tag"
+        value: ${{ jobs.build.outputs.image_uri }}
+      image_tag:
+        description: "Primary image tag (sha-*)"
+        value: ${{ jobs.build.outputs.image_tag }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.push.outputs.image_uri }}
+      image_tag: ${{ steps.tags.outputs.primary_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-deploy-${{ github.event.repository.name }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Determine image tags
+        id: tags
+        run: |
+          REPO="${{ steps.ecr.outputs.registry }}/${{ github.event.repository.name }}"
+          SHA_TAG="sha-${GITHUB_SHA::8}"
+          echo "primary_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
+          echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
+
+          TAGS="${REPO}:${SHA_TAG}"
+
+          if [ "${{ github.ref_name }}" = "main" ] || [ "${{ github.ref_name }}" = "master" ]; then
+            DATE_TAG="main-$(date -u +%Y%m%d-%H%M)"
+            TAGS="${TAGS},${REPO}:${DATE_TAG},${REPO}:latest"
+          fi
+
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAGS="${TAGS},${REPO}:${{ github.ref_name }}"
+          fi
+
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.build_context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Set output
+        id: push
+        run: |
+          echo "image_uri=${{ steps.tags.outputs.repo }}:${{ steps.tags.outputs.primary_tag }}" >> "$GITHUB_OUTPUT"

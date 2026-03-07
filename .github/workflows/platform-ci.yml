@@ -1,0 +1,382 @@
+name: Platform CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/platform/**'
+      - 'terraform/lambda-src/**'
+      - 'scripts/**'
+  pull_request:
+    paths:
+      - 'terraform/platform/**'
+      - 'terraform/lambda-src/**'
+      - 'scripts/**'
+  schedule:
+    # Drift detection — Monday 06:00 UTC
+    - cron: '0 6 * * 1'
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  TF_ROOT: terraform/platform
+  AWS_REGION: eu-central-1
+  AWS_ACCOUNT_ID: "553637109631"
+  PLAN_BUCKET: javabin-ci-plan-artifacts-553637109631
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Plan — terraform init, validate, fmt, plan
+  # --------------------------------------------------------------------------
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+      plan_key: ${{ steps.upload.outputs.plan_key }}
+      plan_text_key: ${{ steps.upload.outputs.plan_text_key }}
+      plan_sha256: ${{ steps.upload.outputs.plan_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7"
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: javabin-platform-${{ github.run_id }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_ROOT }}
+        run: terraform init -input=false
+
+      - name: Terraform Validate
+        working-directory: ${{ env.TF_ROOT }}
+        run: terraform validate
+
+      - name: Terraform Format Check
+        working-directory: ${{ env.TF_ROOT }}
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ${{ env.TF_ROOT }}
+        run: |
+          set +e
+          terraform plan -out=tfplan -detailed-exitcode -no-color > plan-output.txt 2>&1
+          PLAN_EXIT=$?
+          set -e
+
+          cat plan-output.txt
+
+          if [ "$PLAN_EXIT" = "1" ]; then
+            echo "Terraform plan failed"
+            exit 1
+          elif [ "$PLAN_EXIT" = "2" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No changes — downstream jobs will skip."
+          fi
+
+      - name: Upload plan and output to S3
+        id: upload
+        if: steps.plan.outputs.has_changes == 'true'
+        working-directory: ${{ env.TF_ROOT }}
+        run: |
+          PREFIX="plans/${{ github.repository }}/${{ github.run_id }}"
+          SHA256=$(sha256sum tfplan | awk '{print $1}')
+
+          aws s3 cp tfplan "s3://${PLAN_BUCKET}/${PREFIX}/tfplan"
+          aws s3 cp plan-output.txt "s3://${PLAN_BUCKET}/${PREFIX}/plan-output.txt"
+
+          echo "plan_key=${PREFIX}/tfplan" >> "$GITHUB_OUTPUT"
+          echo "plan_text_key=${PREFIX}/plan-output.txt" >> "$GITHUB_OUTPUT"
+          echo "plan_sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+
+      - name: Post plan to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planPath = '${{ env.TF_ROOT }}/plan-output.txt';
+            let plan = '';
+            try {
+              plan = fs.readFileSync(planPath, 'utf8');
+            } catch (e) {
+              plan = 'Plan output not available.';
+            }
+            // Truncate to fit GitHub comment limits
+            if (plan.length > 60000) {
+              plan = plan.substring(0, 60000) + '\n\n... (truncated)';
+            }
+            const hasChanges = '${{ steps.plan.outputs.has_changes }}' === 'true';
+            const status = hasChanges ? '**Changes detected** — review required.' : '**No changes** — infrastructure is up to date.';
+            const body = [
+              '## Terraform Plan',
+              '',
+              status,
+              '',
+              '<details><summary>Plan output</summary>',
+              '',
+              '```',
+              plan,
+              '```',
+              '',
+              '</details>'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  # --------------------------------------------------------------------------
+  # Review — LLM risk analysis via Bedrock
+  # --------------------------------------------------------------------------
+  review:
+    name: LLM Plan Review
+    runs-on: ubuntu-latest
+    needs: plan
+    if: needs.plan.outputs.has_changes == 'true'
+    outputs:
+      risk_level: ${{ steps.review.outputs.risk_level }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: javabin-review-${{ github.run_id }}
+
+      - name: Download plan text from S3
+        run: |
+          mkdir -p "${{ env.TF_ROOT }}"
+          aws s3 cp "s3://${PLAN_BUCKET}/${{ needs.plan.outputs.plan_text_key }}" \
+            "${{ env.TF_ROOT }}/plan-output.txt"
+
+      - name: Install boto3
+        run: pip install boto3
+
+      - name: Run LLM review
+        id: review
+        env:
+          REVIEW_RESULT_PATH: review-result.json
+        run: |
+          python3 scripts/review-plan.py "${{ env.TF_ROOT }}/plan-output.txt" 2>&1 | tee review-output.txt || true
+
+          if [ -f review-result.json ]; then
+            RISK=$(python3 -c "import json; print(json.load(open('review-result.json')).get('risk', 'FAILED'))")
+          else
+            RISK="FAILED"
+          fi
+          echo "risk_level=${RISK}" >> "$GITHUB_OUTPUT"
+          echo "LLM review risk: ${RISK}"
+
+      - name: Post review to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let review = '';
+            try {
+              review = fs.readFileSync('review-output.txt', 'utf8');
+            } catch (e) {
+              review = 'LLM review output not available.';
+            }
+            let resultJson = {};
+            try {
+              resultJson = JSON.parse(fs.readFileSync('review-result.json', 'utf8'));
+            } catch (e) {
+              resultJson = {risk: 'FAILED'};
+            }
+            const riskEmoji = {LOW: '🟢', MEDIUM: '🟡', HIGH: '🔴', FAILED: '⚪'}[resultJson.risk] || '⚪';
+
+            const body = [
+              '## 🧠 LLM Plan Review',
+              '',
+              `**Risk: ${riskEmoji} ${resultJson.risk}**`,
+              '',
+              review
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Post HIGH risk to Slack
+        if: steps.review.outputs.risk_level == 'HIGH' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          export SLACK_WEBHOOK_URL=$(aws ssm get-parameter \
+            --name /javabin/slack/platform-resource-alerts-webhook \
+            --with-decryption --query Parameter.Value --output text)
+
+          python3 << 'PYEOF'
+          import json, os, urllib.request
+          run_url = os.environ["GITHUB_RUN_URL"]
+          webhook_url = os.environ["SLACK_WEBHOOK_URL"]
+          try:
+              with open("review-result.json") as f:
+                  review = json.load(f)
+              summary = review.get("summary", "Unknown")
+          except Exception:
+              summary = "Review failed"
+          payload = json.dumps({
+              "blocks": [
+                  {"type": "header", "text": {"type": "plain_text", "text": "Terraform Apply Blocked — HIGH Risk Plan", "emoji": True}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": f"*Summary:* {summary}"}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": f"<{run_url}|View Workflow Run> — apply is paused, human review required."}},
+                  {"type": "divider"},
+                  {"type": "context", "elements": [{"type": "mrkdwn", "text": "Source: LLM Plan Review (eu.anthropic.claude-haiku-4-5-20251001-v1:0)"}]},
+              ],
+              "text": f"Terraform apply blocked: {summary}"
+          }).encode()
+          req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
+          urllib.request.urlopen(req)
+          PYEOF
+
+  # --------------------------------------------------------------------------
+  # Apply — auto-apply on LOW/MEDIUM, block on HIGH
+  # --------------------------------------------------------------------------
+  apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: [plan, review]
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      needs.plan.outputs.has_changes == 'true'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7"
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: javabin-apply-${{ github.run_id }}
+
+      - name: Check risk level
+        run: |
+          RISK="${{ needs.review.outputs.risk_level }}"
+          echo "LLM review risk: ${RISK}"
+          if [ "$RISK" != "LOW" ] && [ "$RISK" != "MEDIUM" ]; then
+            echo "Auto-apply blocked (risk=${RISK})."
+            echo "A board member can override via the approve-override workflow."
+            exit 1
+          fi
+
+      - name: Download plan from S3
+        working-directory: ${{ env.TF_ROOT }}
+        run: |
+          aws s3 cp "s3://${PLAN_BUCKET}/${{ needs.plan.outputs.plan_key }}" tfplan
+
+      - name: Verify plan integrity
+        working-directory: ${{ env.TF_ROOT }}
+        run: |
+          EXPECTED="${{ needs.plan.outputs.plan_sha256 }}"
+          ACTUAL=$(sha256sum tfplan | awk '{print $1}')
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "Plan SHA256 mismatch! Expected: ${EXPECTED}, Got: ${ACTUAL}"
+            exit 1
+          fi
+          echo "Plan integrity verified."
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_ROOT }}
+        run: terraform init -input=false
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_ROOT }}
+        run: terraform apply -auto-approve tfplan
+
+  # --------------------------------------------------------------------------
+  # Drift Detection — scheduled weekly, plan-only
+  # --------------------------------------------------------------------------
+  drift:
+    name: Drift Detection
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7"
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: javabin-drift-${{ github.run_id }}
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_ROOT }}
+        run: terraform init -input=false
+
+      - name: Check for drift
+        working-directory: ${{ env.TF_ROOT }}
+        run: |
+          set +e
+          terraform plan -detailed-exitcode -no-color > drift.txt 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          if [ "$EXIT_CODE" = "2" ]; then
+            echo "Drift detected!"
+            export DRIFT_RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+            export DRIFT_WEBHOOK_URL=$(aws ssm get-parameter \
+              --name /javabin/slack/platform-resource-alerts-webhook \
+              --with-decryption --query Parameter.Value --output text)
+
+            python3 << 'PYEOF'
+          import json, os, urllib.request
+          with open("drift.txt") as f:
+              drift = f.read()[:2800]
+          run_url = os.environ["DRIFT_RUN_URL"]
+          webhook_url = os.environ["DRIFT_WEBHOOK_URL"]
+          payload = json.dumps({
+              "blocks": [
+                  {"type": "header", "text": {"type": "plain_text", "text": "Terraform Drift Detected", "emoji": True}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": "Someone made changes outside of Terraform."}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": f"```{drift}```"}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": f"<{run_url}|View Full Plan>"}},
+              ],
+              "text": "Terraform drift detected"
+          }).encode()
+          req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
+          urllib.request.urlopen(req)
+          PYEOF
+            exit 1
+          elif [ "$EXIT_CODE" = "1" ]; then
+            echo "Terraform plan failed during drift detection."
+            exit 1
+          else
+            echo "No drift detected."
+          fi

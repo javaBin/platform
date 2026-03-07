@@ -1,0 +1,8 @@
+name: platform-owners
+description: Platform infrastructure team
+google_group: team-platform@java.no
+members:
+  - alexander.amiri
+repos:
+  - platform
+aws_budget_nok: 5000

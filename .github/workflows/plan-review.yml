@@ -1,0 +1,143 @@
+name: Plan Review
+
+on:
+  workflow_call:
+    inputs:
+      plan_key:
+        description: "S3 key of the plan artifact"
+        type: string
+        required: true
+      aws_account_id:
+        description: "AWS account ID"
+        type: string
+        default: "553637109631"
+      aws_region:
+        description: "AWS region"
+        type: string
+        default: "eu-central-1"
+    outputs:
+      risk_level:
+        description: "Risk level from LLM review (LOW, MEDIUM, HIGH, FAILED)"
+        value: ${{ jobs.review.outputs.risk_level }}
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    outputs:
+      risk_level: ${{ steps.review.outputs.risk_level }}
+    env:
+      PLAN_BUCKET: javabin-ci-plan-artifacts-${{ inputs.aws_account_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: javaBin/platform
+          ref: main
+          sparse-checkout: scripts/review-plan.py
+          path: platform
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-${{ github.event.repository.name }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Download plan text from S3
+        run: |
+          PREFIX=$(dirname "${{ inputs.plan_key }}")
+          aws s3 cp "s3://${PLAN_BUCKET}/${PREFIX}/plan-output.txt" plan-output.txt
+
+      - name: Install boto3
+        run: pip install boto3
+
+      - name: Run LLM review
+        id: review
+        env:
+          REVIEW_RESULT_PATH: review-result.json
+        run: |
+          python3 platform/scripts/review-plan.py plan-output.txt 2>&1 | tee review-output.txt || true
+
+          if [ -f review-result.json ]; then
+            RISK=$(python3 -c "import json; print(json.load(open('review-result.json')).get('risk', 'FAILED'))")
+          else
+            RISK="FAILED"
+          fi
+          echo "risk_level=${RISK}" >> "$GITHUB_OUTPUT"
+          echo "LLM review risk: ${RISK}"
+
+      - name: Post review to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let review = '';
+            try {
+              review = fs.readFileSync('review-output.txt', 'utf8');
+            } catch (e) {
+              review = 'LLM review output not available.';
+            }
+            let resultJson = {};
+            try {
+              resultJson = JSON.parse(fs.readFileSync('review-result.json', 'utf8'));
+            } catch (e) {
+              resultJson = {risk: 'FAILED'};
+            }
+            const riskEmoji = {LOW: '\u{1F7E2}', MEDIUM: '\u{1F7E1}', HIGH: '\u{1F534}', FAILED: '\u26AA'}[resultJson.risk] || '\u26AA';
+
+            const body = [
+              '## LLM Plan Review',
+              '',
+              `**Risk: ${riskEmoji} ${resultJson.risk}**`,
+              '',
+              review
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Post to Slack on direct push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          export SLACK_WEBHOOK_URL=$(aws ssm get-parameter \
+            --name /javabin/slack/platform-resource-alerts-webhook \
+            --with-decryption --query Parameter.Value --output text)
+
+          python3 << 'PYEOF'
+          import json, os, urllib.request
+          webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "")
+          if not webhook_url:
+              print("No webhook URL, skipping Slack notification")
+              exit(0)
+          run_url = os.environ["GITHUB_RUN_URL"]
+          repo = os.environ.get("GITHUB_REPOSITORY", "unknown")
+          try:
+              with open("review-result.json") as f:
+                  result = json.load(f)
+              risk = result.get("risk", "UNKNOWN")
+              summary = result.get("summary", "No summary")
+          except Exception:
+              risk = "FAILED"
+              summary = "Review failed"
+          emoji = {"LOW": "\U0001F7E2", "MEDIUM": "\U0001F7E1", "HIGH": "\U0001F534"}.get(risk, "\u26AA")
+          payload = json.dumps({
+              "blocks": [
+                  {"type": "header", "text": {"type": "plain_text", "text": f"{emoji} Plan Review: {risk}", "emoji": True}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": f"*Repo:* {repo}\n*Summary:* {summary}"}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": f"<{run_url}|View Workflow Run>"}},
+              ],
+              "text": f"Plan review: {risk} for {repo}"
+          }).encode()
+          req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
+          urllib.request.urlopen(req)
+          PYEOF

@@ -1,0 +1,73 @@
+################################################################################
+# Root module — wires together all platform sub-modules
+#
+# This is the CI-applied platform module. Push to main triggers:
+#   GitHub Actions → plan → LLM review → apply
+#
+# Sub-modules:
+#   networking  VPC, subnets, NAT, security groups
+#   ingress     ALB, ACM wildcard cert, Route53 DNS
+#   iam         GitHub OIDC, CI roles, permission boundary, ECS execution role
+#   compute     ECS cluster, public ECR images
+#   monitoring  SNS topics, EventBridge rules, Config, GuardDuty, Security Hub
+#   lambdas     slack-alert, cost-report, daily-cost-check, auto-tagger
+#   identity    IAM Identity Center, Cognito pools
+################################################################################
+
+module "networking" {
+  source  = "./networking"
+  project = var.project
+  region  = var.region
+}
+
+module "ingress" {
+  source            = "./ingress"
+  project           = var.project
+  domain            = var.domain
+  public_subnet_ids = module.networking.public_subnet_ids
+  alb_sg_id         = module.networking.alb_sg_id
+}
+
+module "iam" {
+  source               = "./iam"
+  project              = var.project
+  region               = var.region
+  aws_account_id       = var.aws_account_id
+  registered_app_repos = var.registered_app_repos
+  override_approvers   = var.override_approvers
+  github_org           = var.github_org
+}
+
+module "compute" {
+  source  = "./compute"
+  project = var.project
+  region  = var.region
+}
+
+module "monitoring" {
+  source         = "./monitoring"
+  project        = var.project
+  region         = var.region
+  aws_account_id = var.aws_account_id
+}
+
+module "lambdas" {
+  source                         = "./lambdas"
+  project                        = var.project
+  region                         = var.region
+  aws_account_id                 = var.aws_account_id
+  alerts_topic_arn               = module.monitoring.alerts_topic_arn
+  security_topic_arn             = module.monitoring.security_topic_arn
+  compliance_reporter_identities = var.auto_tagger_identities
+}
+
+# NOTE: identity module is not yet implemented.
+# Uncomment when ready.
+
+# module "identity" {
+#   source         = "./identity"
+#   project        = var.project
+#   region         = var.region
+#   aws_account_id = var.aws_account_id
+#   domain         = var.domain
+# }

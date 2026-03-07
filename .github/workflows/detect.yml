@@ -1,0 +1,62 @@
+name: Detect Repo Contents
+
+on:
+  workflow_call:
+    outputs:
+      has_yaml:
+        description: "app.yaml exists"
+        value: ${{ jobs.detect.outputs.has_yaml }}
+      has_tf:
+        description: "terraform/ directory exists"
+        value: ${{ jobs.detect.outputs.has_tf }}
+      has_docker:
+        description: "Dockerfile exists"
+        value: ${{ jobs.detect.outputs.has_docker }}
+      has_maven:
+        description: "pom.xml exists"
+        value: ${{ jobs.detect.outputs.has_maven }}
+      has_pnpm:
+        description: "pnpm-lock.yaml exists"
+        value: ${{ jobs.detect.outputs.has_pnpm }}
+      has_eb:
+        description: ".elasticbeanstalk/ directory exists"
+        value: ${{ jobs.detect.outputs.has_eb }}
+      has_cdk:
+        description: "cdk.json exists"
+        value: ${{ jobs.detect.outputs.has_cdk }}
+      app_name:
+        description: "App name from app.yaml (empty if no app.yaml)"
+        value: ${{ jobs.detect.outputs.app_name }}
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      has_yaml: ${{ steps.check.outputs.has_yaml }}
+      has_tf: ${{ steps.check.outputs.has_tf }}
+      has_docker: ${{ steps.check.outputs.has_docker }}
+      has_maven: ${{ steps.check.outputs.has_maven }}
+      has_pnpm: ${{ steps.check.outputs.has_pnpm }}
+      has_eb: ${{ steps.check.outputs.has_eb }}
+      has_cdk: ${{ steps.check.outputs.has_cdk }}
+      app_name: ${{ steps.check.outputs.app_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect repo contents
+        id: check
+        run: |
+          echo "has_yaml=$(test -f app.yaml && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "has_tf=$(test -d terraform && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "has_docker=$(test -f Dockerfile && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "has_maven=$(test -f pom.xml && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "has_pnpm=$(test -f pnpm-lock.yaml && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "has_eb=$(test -d .elasticbeanstalk && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "has_cdk=$(test -f cdk.json && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+          if [ -f app.yaml ]; then
+            APP_NAME=$(grep -m1 '^name:' app.yaml | awk '{print $2}' | tr -d '"'"'" || echo "")
+            echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "app_name=" >> "$GITHUB_OUTPUT"
+          fi

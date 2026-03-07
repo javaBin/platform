@@ -1,0 +1,9 @@
+name: Deploy
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+jobs:
+  javabin:
+    uses: javaBin/platform/.github/workflows/javabin.yml@main
+    secrets: inherit
