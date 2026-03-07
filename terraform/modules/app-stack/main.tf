@@ -248,6 +248,7 @@ module "alarms" {
   cpu_threshold           = local.cpu_threshold
   memory_threshold        = local.memory_threshold
   error_5xx_threshold     = local.error_5xx_threshold
+  enable_alb_alarms       = true
   target_group_arn_suffix = module.routing.target_group_arn_suffix
   alb_arn_suffix          = module.platform.alb_arn_suffix
 }
