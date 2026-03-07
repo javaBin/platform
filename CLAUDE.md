@@ -218,15 +218,32 @@ Registry merge ──► team-provisioner (STUB — not yet implemented)
 
 ## SSM Parameters
 
-| Path | Used By |
-|------|---------|
-| `/javabin/slack/platform-resource-alerts-webhook` | slack-alert (security events), compliance-reporter, platform-ci (HIGH risk, drift) |
-| `/javabin/slack/platform-cost-alerts-webhook` | slack-alert (cost), cost-report, daily-cost-check |
-| `/javabin/slack/platform-override-alerts-webhook` | tf-apply (block notification), approve-override (approval confirmation) |
-| `/javabin/platform/google-admin-sa` | team-provisioner (Google Admin SDK) |
-| `/javabin/platform/github-app-key` | team-provisioner (GitHub App private key) |
-| `/javabin/platform-overrides/{repo}/{sha}` | Risk gate override tokens (single-use) |
-| `/javabin/platform-apps/{name}/*` | Per-app secrets (Cognito clients, etc.) |
+All parameters are in `eu-central-1`. Use `--profile javabin --region eu-central-1` via CLI.
+
+| Path | Type | Used By |
+|------|------|---------|
+| `/javabin/slack/platform-resource-alerts-webhook` | SecureString | slack-alert, compliance-reporter, platform-ci |
+| `/javabin/slack/platform-cost-alerts-webhook` | String | slack-alert (cost), cost-report, daily-cost-check |
+| `/javabin/slack/platform-override-alerts-webhook` | SecureString | tf-apply (block notification), approve-override |
+| `/javabin/platform/google-admin-sa` | SecureString | team-provisioner (GCP SA JSON key, domain-wide delegation) |
+| `/javabin/platform/google-admin-email` | String | team-provisioner (admin email for Google Admin SDK impersonation) |
+| `/javabin/platform/github-app-id` | SecureString | team-provisioner (GitHub App ID) |
+| `/javabin/platform/github-app-key` | SecureString | team-provisioner (GitHub App private key) |
+| `/javabin/platform/github-app-client-secret` | SecureString | team-provisioner (GitHub App client secret) |
+| `/javabin/platform-overrides/{repo}/{sha}` | SecureString | Risk gate override tokens (single-use) |
+| `/javabin/platform-apps/{name}/*` | varies | Per-app secrets (Cognito clients, etc. — future) |
+
+## GCP Connection
+
+**GCP Org:** java.no
+**GCP Project:** `javabin-platform`
+**Purpose:** Service account with domain-wide delegation for Google Admin SDK
+
+A GCP service account in the `javabin-platform` project has domain-wide delegation configured
+in Google Workspace Admin. The team-provisioner Lambda uses it to manage Google Groups
+(create groups, sync membership) by impersonating the admin email stored in SSM.
+The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation target at
+`/javabin/platform/google-admin-email`.
 
 ## Work Packages
 
@@ -237,7 +254,7 @@ Registry merge ──► team-provisioner (STUB — not yet implemented)
 | 0a | AWS Discovery | **Done** |
 | 0b | Bootstrap State Backend | **Done** — S3 backend live |
 | 0c | Organizations + Permission Boundary | **Done** — org enabled, boundary deployed, SCP deferred |
-| 1 | Identity (Google + Identity Center + Cognito) | **Not started** — Google Admin access confirmed, `identity/` dir is empty, no Cognito pools deployed |
+| 1 | Identity (Google + Identity Center + Cognito) | **Partially done** — GCP SA with domain-wide delegation configured, GitHub App credentials in SSM. Identity Center and Cognito pools not deployed (`identity/` dir empty) |
 | 2a | Networking | **Deployed** — VPC, subnets, NAT |
 | 2b | Ingress | **Deployed** — ALB + ACM cert |
 | 2c | IAM / OIDC | **Deployed** — 4 CI roles + per-app roles |
@@ -256,7 +273,7 @@ Registry merge ──► team-provisioner (STUB — not yet implemented)
 ### Known Issues
 - **Registry → platform dispatch broken**: `provision-app.yml` fails because `GH_TOKEN` env var not set in workflow
 - **platform-test-app CI failing**: ECR repo `platform-test-app` doesn't exist (never provisioned), tf-plan gets 404 on platform repo checkout
-- **Team provisioner is a stub**: Lambda exists and is deployed but does nothing (logs and returns 200)
+- **Team provisioner is a stub**: Lambda deployed but only logs. SSM credentials are ready (Google SA + GitHub App) — needs actual sync implementation
 - **Identity module empty**: `terraform/platform/identity/` is an empty directory, not wired in `main.tf`
 - **Cognito pools not deployed**: `cognito-app-client` module exists but has no pools to connect to
 
