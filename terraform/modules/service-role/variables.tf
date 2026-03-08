@@ -18,6 +18,11 @@ variable "aws_account_id" {
   type        = string
 }
 
+variable "permissions_boundary_arn" {
+  description = "ARN of the permission boundary to attach to the role (required by self-replicating boundary)"
+  type        = string
+}
+
 variable "additional_policy_jsons" {
   description = "Map of policy name => IAM policy JSON to attach (e.g. from service-bucket or service-database access_policy_json outputs)"
   type        = map(string)
