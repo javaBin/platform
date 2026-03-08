@@ -46,67 +46,7 @@ jobs:
           terraform_version: "1.7"
           terraform_wrapper: false
 
-      - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-${{ github.event.repository.name }}
-          aws-region: ${{ inputs.aws_region }}
-
-      - name: Check risk level
-        env:
-          GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          RISK="${{ inputs.risk_level }}"
-          echo "LLM review risk: ${RISK}"
-
-          if [ "$RISK" != "LOW" ] && [ "$RISK" != "MEDIUM" ]; then
-            echo "Checking for override token..."
-            REPO="${{ github.repository }}"
-            SHA="${{ github.sha }}"
-            OVERRIDE_KEY="/javabin/platform-overrides/${REPO}/${SHA}"
-
-            set +e
-            aws ssm get-parameter --name "$OVERRIDE_KEY" --query Parameter.Value --output text > /dev/null 2>&1
-            OVERRIDE_EXISTS=$?
-            set -e
-
-            if [ "$OVERRIDE_EXISTS" = "0" ]; then
-              echo "Override token found — applying despite ${RISK} risk."
-              # Best-effort delete (single-use); override_cleanup Lambda handles stale tokens
-              aws ssm delete-parameter --name "$OVERRIDE_KEY" 2>/dev/null || true
-            else
-              echo "Auto-apply blocked (risk=${RISK}, no override token)."
-              echo "A board member can override via the approve-override workflow."
-
-              # Post block notification to Slack
-              export BLOCK_WEBHOOK_URL=$(aws ssm get-parameter \
-                --name /javabin/slack/platform-override-alerts-webhook \
-                --with-decryption --query Parameter.Value --output text)
-
-              python3 << 'PYEOF'
-          import json, os, urllib.request
-          webhook_url = os.environ.get("BLOCK_WEBHOOK_URL", "")
-          if not webhook_url:
-              exit(0)
-          run_url = os.environ["GITHUB_RUN_URL"]
-          repo = os.environ.get("GITHUB_REPOSITORY", "unknown")
-          payload = json.dumps({
-              "blocks": [
-                  {"type": "header", "text": {"type": "plain_text", "text": "Terraform Apply Blocked", "emoji": True}},
-                  {"type": "section", "text": {"type": "mrkdwn", "text": f"*Repo:* {repo}\n*Reason:* HIGH risk plan — override required"}},
-                  {"type": "section", "text": {"type": "mrkdwn", "text": f"<{run_url}|View Workflow> | <https://github.com/javaBin/platform/actions/workflows/approve-override.yml|Approve Override>"}},
-              ],
-              "text": f"Terraform apply blocked for {repo}"
-          }).encode()
-          req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
-          urllib.request.urlopen(req)
-          PYEOF
-              exit 1
-            fi
-          fi
-
       - name: Generate GitHub App token
-        if: hashFiles('app.yaml') != ''
         id: app-token
         uses: actions/create-github-app-token@v1
         with:
@@ -115,13 +55,21 @@ jobs:
           owner: javaBin
 
       - name: Checkout platform scripts
-        if: hashFiles('app.yaml') != ''
         uses: actions/checkout@v4
         with:
           repository: javaBin/platform
           token: ${{ steps.app-token.outputs.token }}
           path: .platform
           sparse-checkout: scripts
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-${{ github.event.repository.name }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Check risk level
+        run: sh .platform/scripts/check-risk-gate.sh "${{ inputs.risk_level }}" "${{ github.repository }}" "${{ github.sha }}" /javabin/slack/platform-override-alerts-webhook
 
       - name: Generate Terraform from app.yaml
         if: hashFiles('app.yaml') != ''
@@ -130,9 +78,7 @@ jobs:
           AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
           AWS_REGION: ${{ inputs.aws_region }}
           TF_ROOT: ${{ inputs.tf_root }}
-        run: |
-          chmod +x .platform/scripts/generate-terraform.sh
-          .platform/scripts/generate-terraform.sh
+        run: sh .platform/scripts/generate-terraform.sh
 
       - name: Configure git credentials for module downloads
         if: hashFiles('app.yaml') != ''
@@ -144,14 +90,7 @@ jobs:
 
       - name: Verify plan integrity
         working-directory: ${{ inputs.tf_root }}
-        run: |
-          EXPECTED="${{ inputs.plan_sha256 }}"
-          ACTUAL=$(sha256sum tfplan | awk '{print $1}')
-          if [ "$EXPECTED" != "$ACTUAL" ]; then
-            echo "Plan SHA256 mismatch! Expected: ${EXPECTED}, Got: ${ACTUAL}"
-            exit 1
-          fi
-          echo "Plan integrity verified."
+        run: sh "${{ github.workspace }}/.platform/scripts/verify-plan.sh" tfplan "${{ inputs.plan_sha256 }}"
 
       - name: Terraform Init
         working-directory: ${{ inputs.tf_root }}

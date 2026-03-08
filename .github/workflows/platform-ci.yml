@@ -73,39 +73,12 @@ jobs:
 
       - name: Terraform Plan
         id: plan
-        working-directory: ${{ env.TF_ROOT }}
-        run: |
-          set +e
-          terraform plan -out=tfplan -detailed-exitcode -no-color -lock-timeout=5m > plan-output.txt 2>&1
-          PLAN_EXIT=$?
-          set -e
-
-          cat plan-output.txt
-
-          if [ "$PLAN_EXIT" = "1" ]; then
-            echo "Terraform plan failed"
-            exit 1
-          elif [ "$PLAN_EXIT" = "2" ]; then
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            echo "No changes — downstream jobs will skip."
-          fi
+        run: scripts/run-plan.sh "${{ env.TF_ROOT }}" -lock-timeout=5m
 
       - name: Upload plan and output to S3
         id: upload
         if: steps.plan.outputs.has_changes == 'true'
-        working-directory: ${{ env.TF_ROOT }}
-        run: |
-          PREFIX="plans/${{ github.repository }}/${{ github.run_id }}"
-          SHA256=$(sha256sum tfplan | awk '{print $1}')
-
-          aws s3 cp tfplan "s3://${PLAN_BUCKET}/${PREFIX}/tfplan"
-          aws s3 cp plan-output.txt "s3://${PLAN_BUCKET}/${PREFIX}/plan-output.txt"
-
-          echo "plan_key=${PREFIX}/tfplan" >> "$GITHUB_OUTPUT"
-          echo "plan_text_key=${PREFIX}/plan-output.txt" >> "$GITHUB_OUTPUT"
-          echo "plan_sha256=${SHA256}" >> "$GITHUB_OUTPUT"
+        run: scripts/upload-plan.sh "${{ env.TF_ROOT }}"
 
       - name: Upload Lambda ZIPs as artifact
         if: steps.plan.outputs.has_changes == 'true'
@@ -175,25 +148,13 @@ jobs:
           role-session-name: javabin-review-${{ github.run_id }}
 
       - name: Download plan text from S3
-        run: |
-          mkdir -p "${{ env.TF_ROOT }}"
-          aws s3 cp "s3://${PLAN_BUCKET}/${{ needs.plan.outputs.plan_text_key }}" \
-            "${{ env.TF_ROOT }}/plan-output.txt"
+        run: mkdir -p "${{ env.TF_ROOT }}" && aws s3 cp "s3://${PLAN_BUCKET}/${{ needs.plan.outputs.plan_text_key }}" "${{ env.TF_ROOT }}/plan-output.txt"
 
       - name: Run LLM review
         id: review
         env:
           REVIEW_RESULT_PATH: review-result.json
-        run: |
-          python3 scripts/review-plan.py "${{ env.TF_ROOT }}/plan-output.txt" 2>&1 | tee review-output.txt || true
-
-          if [ -f review-result.json ]; then
-            RISK=$(python3 -c "import json; print(json.load(open('review-result.json')).get('risk', 'FAILED'))")
-          else
-            RISK="FAILED"
-          fi
-          echo "risk_level=${RISK}" >> "$GITHUB_OUTPUT"
-          echo "LLM review risk: ${RISK}"
+        run: sh scripts/extract-review-risk.sh scripts/review-plan.py "${{ env.TF_ROOT }}/plan-output.txt"
 
       - name: Post review to PR
         if: github.event_name == 'pull_request'
@@ -232,36 +193,7 @@ jobs:
 
       - name: Post HIGH risk to Slack
         if: steps.review.outputs.risk_level == 'HIGH' && github.ref == 'refs/heads/main'
-        env:
-          GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          export SLACK_WEBHOOK_URL=$(aws ssm get-parameter \
-            --name /javabin/slack/platform-resource-alerts-webhook \
-            --with-decryption --query Parameter.Value --output text)
-
-          python3 << 'PYEOF'
-          import json, os, urllib.request
-          run_url = os.environ["GITHUB_RUN_URL"]
-          webhook_url = os.environ["SLACK_WEBHOOK_URL"]
-          try:
-              with open("review-result.json") as f:
-                  review = json.load(f)
-              summary = review.get("summary", "Unknown")
-          except Exception:
-              summary = "Review failed"
-          payload = json.dumps({
-              "blocks": [
-                  {"type": "header", "text": {"type": "plain_text", "text": "Terraform Apply Blocked — HIGH Risk Plan", "emoji": True}},
-                  {"type": "section", "text": {"type": "mrkdwn", "text": f"*Summary:* {summary}"}},
-                  {"type": "section", "text": {"type": "mrkdwn", "text": f"<{run_url}|View Workflow Run> — apply is paused, human review required."}},
-                  {"type": "divider"},
-                  {"type": "context", "elements": [{"type": "mrkdwn", "text": "Source: LLM Plan Review (eu.anthropic.claude-haiku-4-5-20251001-v1:0)"}]},
-              ],
-              "text": f"Terraform apply blocked: {summary}"
-          }).encode()
-          req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
-          urllib.request.urlopen(req)
-          PYEOF
+        run: sh scripts/notify-high-risk.sh /javabin/slack/platform-resource-alerts-webhook "https://github.com/javaBin/platform/actions/workflows/approve-override.yml"
 
   # --------------------------------------------------------------------------
   # Apply — auto-apply on LOW/MEDIUM, block on HIGH
@@ -292,17 +224,7 @@ jobs:
       - name: Check risk level
         env:
           RISK: ${{ needs.review.outputs.risk_level }}
-        run: |
-          echo "LLM review risk: ${RISK}"
-          if [ "$RISK" = "HIGH" ] || [ "$RISK" = "FAILED" ] || [ "$RISK" = "" ]; then
-            echo "Auto-apply blocked (risk=${RISK}). Notifying Slack..."
-            export WEBHOOK_URL=$(aws ssm get-parameter \
-              --name /javabin/slack/platform-override-alerts-webhook \
-              --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")
-            export OVERRIDE_URL="https://github.com/${{ github.repository }}/actions/workflows/approve-override.yml"
-            python3 scripts/notify-block.py || true
-            exit 1
-          fi
+        run: sh scripts/check-risk-block.sh "$RISK" /javabin/slack/platform-override-alerts-webhook "https://github.com/${{ github.repository }}/actions/workflows/approve-override.yml"
 
       - name: Download Lambda ZIPs from artifact
         uses: actions/download-artifact@v4
@@ -312,19 +234,11 @@ jobs:
 
       - name: Download plan from S3
         working-directory: ${{ env.TF_ROOT }}
-        run: |
-          aws s3 cp "s3://${PLAN_BUCKET}/${{ needs.plan.outputs.plan_key }}" tfplan
+        run: aws s3 cp "s3://${PLAN_BUCKET}/${{ needs.plan.outputs.plan_key }}" tfplan
 
       - name: Verify plan integrity
         working-directory: ${{ env.TF_ROOT }}
-        run: |
-          EXPECTED="${{ needs.plan.outputs.plan_sha256 }}"
-          ACTUAL=$(sha256sum tfplan | awk '{print $1}')
-          if [ "$EXPECTED" != "$ACTUAL" ]; then
-            echo "Plan SHA256 mismatch! Expected: ${EXPECTED}, Got: ${ACTUAL}"
-            exit 1
-          fi
-          echo "Plan integrity verified."
+        run: sh "${{ github.workspace }}/scripts/verify-plan.sh" tfplan "${{ needs.plan.outputs.plan_sha256 }}"
 
       - name: Terraform Init
         working-directory: ${{ env.TF_ROOT }}
@@ -361,42 +275,4 @@ jobs:
 
       - name: Check for drift
         working-directory: ${{ env.TF_ROOT }}
-        run: |
-          set +e
-          terraform plan -detailed-exitcode -no-color -lock-timeout=5m > drift.txt 2>&1
-          EXIT_CODE=$?
-          set -e
-
-          if [ "$EXIT_CODE" = "2" ]; then
-            echo "Drift detected!"
-            export DRIFT_RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-            export DRIFT_WEBHOOK_URL=$(aws ssm get-parameter \
-              --name /javabin/slack/platform-resource-alerts-webhook \
-              --with-decryption --query Parameter.Value --output text)
-
-            python3 << 'PYEOF'
-          import json, os, urllib.request
-          with open("drift.txt") as f:
-              drift = f.read()[:2800]
-          run_url = os.environ["DRIFT_RUN_URL"]
-          webhook_url = os.environ["DRIFT_WEBHOOK_URL"]
-          payload = json.dumps({
-              "blocks": [
-                  {"type": "header", "text": {"type": "plain_text", "text": "Terraform Drift Detected", "emoji": True}},
-                  {"type": "section", "text": {"type": "mrkdwn", "text": "Someone made changes outside of Terraform."}},
-                  {"type": "section", "text": {"type": "mrkdwn", "text": f"```{drift}```"}},
-                  {"type": "section", "text": {"type": "mrkdwn", "text": f"<{run_url}|View Full Plan>"}},
-              ],
-              "text": "Terraform drift detected"
-          }).encode()
-          req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
-          urllib.request.urlopen(req)
-          PYEOF
-            exit 1
-          elif [ "$EXIT_CODE" = "1" ]; then
-            echo "Terraform plan failed during drift detection."
-            exit 1
-          else
-            echo "No drift detected."
-          fi
+        run: sh "${{ github.workspace }}/scripts/drift-check.sh" /javabin/slack/platform-resource-alerts-webhook "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

@@ -77,7 +77,7 @@ Migration happens later per-app at developer's pace — apps move from old ALB/E
 | `.piano/app.yaml` | `app.yaml` (repo root) |
 | No Identity Center | IAM Identity Center + Google Workspace SAML |
 | No Cognito | Internal + External Cognito User Pools |
-| No registry repo | `javaBin/registry` for app/team registration |
+| No registry repo | `javaBin/registry` for team registration |
 | SNS topics: ai-platform-* | SNS topics: javabin-* |
 | SSM: /ai-platform/* | SSM: /javabin/* |
 
@@ -100,6 +100,7 @@ Migration happens later per-app at developer's pace — apps move from old ALB/E
 | `docs/app-yaml-reference.md` | app.yaml schema and field reference |
 | `docs/bootstrap-runbook.md` | State backend bootstrap procedure |
 | `docs/org-runbook.md` | AWS Organizations setup procedure |
+| `docs/cognito-google-setup.md` | Cognito + Google Workspace IdP setup |
 
 ### Terraform — Platform (CI-applied)
 ```
@@ -115,7 +116,7 @@ terraform/platform/
   compute/         ECS cluster, ECR base config
   monitoring/      SNS, EventBridge, Config, GuardDuty, Security Hub
   lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, override-cleanup, team-provisioner
-  identity/        IAM Identity Center, Cognito pools (NOT YET IMPLEMENTED — empty dir)
+  identity/        Cognito user pools (internal + external). Identity Center is in terraform/org/
 ```
 
 ### Terraform — Org (human-applied, no CI)
@@ -166,7 +167,8 @@ terraform/state/
   ecs-deploy.yml       ECS task definition update
   plan-review.yml      LLM risk + cost analysis
   approve-override.yml Risk gate override (board members)
-  provision-app.yml    App provisioning triggered from registry
+  provision-app.yml    Team provisioning triggered from registry dispatch
+  commit-terraform.yml Commit generated TF files back to app repos
 ```
 
 ### Lambda Functions
@@ -177,15 +179,19 @@ terraform/state/
 | `daily-cost-check` | Daily spike detection (silent if no spikes) |
 | `compliance-reporter` | Reports untagged resources to Slack (no auto-fix) |
 | `override-cleanup` | Hourly cleanup of stale SSM override tokens |
-| `team-provisioner` | Stub — logs event and returns 200. Google/GitHub/Cognito sync not implemented |
+| `team-provisioner` | Syncs Google Groups, GitHub teams, AWS Budgets from registry team YAML |
 
 ### Scripts
 | Script | What |
 |--------|------|
 | `scripts/bootstrap.sh` | One-time: create state bucket + lock tables |
 | `scripts/generate-terraform.sh` | CI: app.yaml → Terraform files |
+| `scripts/provision-teams.py` | CI: fetch team YAMLs from registry, invoke team-provisioner Lambda |
 | `scripts/review-plan.py` | CI: LLM plan review via Bedrock |
-| `scripts/notify-block.py` | CI: post Slack notification when deploy is blocked |
+| `scripts/notify-slack.py` | CI: generic Slack webhook notification |
+| `scripts/check-risk-gate.sh` | CI: check risk level, consume override token or block |
+| `scripts/run-plan.sh` | CI: terraform plan with exit code handling |
+| `scripts/upload-plan.sh` | CI: upload plan artifact to S3 |
 
 ## Naming
 
@@ -254,7 +260,7 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 | 0a | AWS Discovery | **Done** |
 | 0b | Bootstrap State Backend | **Done** — S3 backend live |
 | 0c | Organizations + Permission Boundary | **Done** — org enabled, boundary deployed, SCP deferred |
-| 1 | Identity (Google + Identity Center + Cognito) | **Partially done** — GCP SA with domain-wide delegation configured, GitHub App credentials in SSM. Identity Center and Cognito pools not deployed (`identity/` dir empty) |
+| 1 | Identity (Google + Identity Center + Cognito) | **Partially done** — GCP SA with domain-wide delegation configured, GitHub App credentials in SSM. Cognito pool Terraform exists in `identity/` and is wired in `main.tf`, but not yet applied with Google IdP config. Identity Center lives in `terraform/org/`. |
 | 2a | Networking | **Deployed** — VPC, subnets, NAT |
 | 2b | Ingress | **Deployed** — ALB + ACM cert |
 | 2c | IAM / OIDC | **Deployed** — 4 CI roles + per-app roles |
@@ -263,19 +269,17 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 | 2f | Lambda Functions | **Deployed** — 5 working + team-provisioner (stub only) |
 | 2g | Platform CI | **Done** — plan → LLM review → apply pipeline working |
 | 3a | Reusable Terraform Modules | **Code done** — 12 modules in repo |
-| 3b | GitHub Actions Workflows | **Code done** — 13 reusable workflows |
+| 3b | GitHub Actions Workflows | **Code done** — 14 reusable workflows |
 | 3c | app.yaml Schema + Generation | **Done** — generate-terraform.sh + docs |
-| 3d | Registry Repo | **Partially working** — repo exists, provision workflow fails (missing GH_TOKEN) |
-| 3e | javabin CLI | **Code done** — 3 commands in javaBin/javabin-cli |
+| 3d | Registry Repo | **Working** — repo exists, dispatch uses GitHub App token, team provisioner invoked |
+| 3e | javabin CLI | **Code done** — 4 commands (register, init, status, whoami) in javaBin/javabin-cli |
 | 3f | CI Images + Supporting Repos | Not started |
-| 4 | App Onboarding | **Blocked** — platform-test-app registered but CI failing (ECR repo not provisioned, tf-plan 404) |
+| 4 | App Onboarding | **Partially working** — platform-test-app full pipeline passes (plan → review → apply → docker-build), ECS deploy fails on service stabilization |
 
 ### Known Issues
-- **Registry → platform dispatch broken**: `provision-app.yml` fails because `GH_TOKEN` env var not set in workflow
-- **platform-test-app CI failing**: ECR repo `platform-test-app` doesn't exist (never provisioned), tf-plan gets 404 on platform repo checkout
-- **Team provisioner is a stub**: Lambda deployed but only logs. SSM credentials are ready (Google SA + GitHub App) — needs actual sync implementation
-- **Identity module empty**: `terraform/platform/identity/` is an empty directory, not wired in `main.tf`
-- **Cognito pools not deployed**: `cognito-app-client` module exists but has no pools to connect to
+- **ECS deploy stabilization**: platform-test-app task registers but service fails health check — likely networking or port config
+- **Cognito pools not yet applied**: `identity/` has Terraform wired in `main.tf`, but requires `google_client_id`/`google_client_secret`/`certificate_arn` variables
+- **`registered_app_repos` manually managed**: Per-repo IAM roles require entries in this variable. No automated mechanism yet — add repos manually to `registered-apps.auto.tfvars`
 
 ## Agent Guidelines
 
