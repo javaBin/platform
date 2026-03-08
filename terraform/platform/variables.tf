@@ -67,6 +67,12 @@ variable "certificate_arn" {
   default     = ""
 }
 
+variable "identity_store_id" {
+  description = "IAM Identity Center identity store ID (from terraform/org/ outputs)"
+  type        = string
+  default     = "d-9967444724"
+}
+
 variable "auto_tagger_identities" {
   description = "IAM identity substrings allowed to trigger auto-tagging"
   type        = list(string)

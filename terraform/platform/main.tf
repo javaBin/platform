@@ -59,6 +59,9 @@ module "lambdas" {
   alerts_topic_arn               = module.monitoring.alerts_topic_arn
   security_topic_arn             = module.monitoring.security_topic_arn
   compliance_reporter_identities = var.auto_tagger_identities
+  internal_user_pool_id          = module.identity.internal_user_pool_id
+  internal_user_pool_arn         = module.identity.internal_user_pool_arn
+  identity_store_id              = var.identity_store_id
 }
 
 module "identity" {
