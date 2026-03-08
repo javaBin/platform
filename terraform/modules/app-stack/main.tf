@@ -233,11 +233,12 @@ module "queues" {
 module "task_role" {
   source = "../service-role"
 
-  name                    = local.qualified_name
-  project                 = var.project
-  region                  = var.region
-  aws_account_id          = var.aws_account_id
-  additional_policy_jsons = local.all_policy_jsons
+  name                     = local.qualified_name
+  project                  = var.project
+  region                   = var.region
+  aws_account_id           = var.aws_account_id
+  permissions_boundary_arn = module.platform.developer_boundary_arn
+  additional_policy_jsons  = local.all_policy_jsons
 }
 
 ################################################################################
