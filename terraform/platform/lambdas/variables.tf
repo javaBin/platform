@@ -28,3 +28,19 @@ variable "compliance_reporter_identities" {
   type        = list(string)
 }
 
+variable "internal_user_pool_id" {
+  description = "Cognito internal user pool ID"
+  type        = string
+}
+
+variable "internal_user_pool_arn" {
+  description = "Cognito internal user pool ARN"
+  type        = string
+}
+
+variable "identity_store_id" {
+  description = "IAM Identity Center identity store ID"
+  type        = string
+  default     = ""
+}
+
