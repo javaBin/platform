@@ -42,11 +42,11 @@ docs/             Architecture docs, runbooks, references
 | `compute` | ECS Fargate cluster, ECR base config |
 | `monitoring` | SNS topics, EventBridge rules, Config, GuardDuty, Security Hub |
 | `lambdas` | Slack alerts, cost reports, compliance, override cleanup, team provisioner |
-| `identity` | IAM Identity Center, Cognito user pools (stub) |
+| `identity` | IAM Identity Center (SAML + Google), Cognito user pools, 2FA |
 
 ## How App Repos Use the Platform
 
-1. **Register** your app in [javaBin/registry](https://github.com/javaBin/registry)
+1. **Register** your team in [javaBin/registry](https://github.com/javaBin/registry)
 2. **Add `app.yaml`** to your repo root ([reference](docs/app-yaml-reference.md))
 3. **Call the reusable workflow** from your repo's CI:
    ```yaml
@@ -88,7 +88,7 @@ App repos source these via `git::` URLs:
 
 ## Related Repos
 
-- [javaBin/registry](https://github.com/javaBin/registry) — app and team registration
+- [javaBin/registry](https://github.com/javaBin/registry) — team registration
 - [javaBin/app-template](https://github.com/javaBin/app-template) — starter template for new services
 - [javaBin/javabin-cli](https://github.com/javaBin/javabin-cli) — developer CLI
 - [javaBin/docs](https://github.com/javaBin/docs) — organization-wide documentation
