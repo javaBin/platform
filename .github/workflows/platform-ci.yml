@@ -90,43 +90,10 @@ jobs:
 
       - name: Post plan to PR
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const planPath = '${{ env.TF_ROOT }}/plan-output.txt';
-            let plan = '';
-            try {
-              plan = fs.readFileSync(planPath, 'utf8');
-            } catch (e) {
-              plan = 'Plan output not available.';
-            }
-            // Truncate to fit GitHub comment limits
-            if (plan.length > 60000) {
-              plan = plan.substring(0, 60000) + '\n\n... (truncated)';
-            }
-            const hasChanges = '${{ steps.plan.outputs.has_changes }}' === 'true';
-            const status = hasChanges ? '**Changes detected** — review required.' : '**No changes** — infrastructure is up to date.';
-            const body = [
-              '## Terraform Plan',
-              '',
-              status,
-              '',
-              '<details><summary>Plan output</summary>',
-              '',
-              '```',
-              plan,
-              '```',
-              '',
-              '</details>'
-            ].join('\n');
-
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: body
-            });
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: sh scripts/post-plan-comment.sh "${{ env.TF_ROOT }}/plan-output.txt" "${{ steps.plan.outputs.has_changes }}"
 
   # --------------------------------------------------------------------------
   # Review — LLM risk analysis via Bedrock
@@ -158,38 +125,10 @@ jobs:
 
       - name: Post review to PR
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            let review = '';
-            try {
-              review = fs.readFileSync('review-output.txt', 'utf8');
-            } catch (e) {
-              review = 'LLM review output not available.';
-            }
-            let resultJson = {};
-            try {
-              resultJson = JSON.parse(fs.readFileSync('review-result.json', 'utf8'));
-            } catch (e) {
-              resultJson = {risk: 'FAILED'};
-            }
-            const riskEmoji = {LOW: '🟢', MEDIUM: '🟡', HIGH: '🔴', FAILED: '⚪'}[resultJson.risk] || '⚪';
-
-            const body = [
-              '## 🧠 LLM Plan Review',
-              '',
-              `**Risk: ${riskEmoji} ${resultJson.risk}**`,
-              '',
-              review
-            ].join('\n');
-
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: body
-            });
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: sh scripts/post-review-comment.sh
 
       - name: Post HIGH risk to Slack
         if: steps.review.outputs.risk_level == 'HIGH' && github.ref == 'refs/heads/main'
