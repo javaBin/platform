@@ -23,6 +23,11 @@ output "ci_override_approver_role_arn" {
   value       = aws_iam_role.ci_override_approver.arn
 }
 
+output "ci_registry_role_arn" {
+  description = "ARN of the registry CI role"
+  value       = aws_iam_role.ci_registry.arn
+}
+
 output "github_oidc_provider_arn" {
   description = "ARN of the GitHub OIDC provider (data source)"
   value       = data.aws_iam_openid_connect_provider.github.arn

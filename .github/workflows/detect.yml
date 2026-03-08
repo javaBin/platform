@@ -53,10 +53,8 @@ jobs:
           echo "has_pnpm=$(test -f pnpm-lock.yaml && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "has_eb=$(test -d .elasticbeanstalk && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "has_cdk=$(test -f cdk.json && echo true || echo false)" >> "$GITHUB_OUTPUT"
-
           if [ -f app.yaml ]; then
-            APP_NAME=$(grep -m1 '^name:' app.yaml | awk '{print $2}' | tr -d '"'"'" || echo "")
-            echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
+            echo "app_name=$(grep -m1 '^name:' app.yaml | awk '{print $2}' | tr -d '\"'"'")" >> "$GITHUB_OUTPUT"
           else
             echo "app_name=" >> "$GITHUB_OUTPUT"
           fi

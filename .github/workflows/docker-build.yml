@@ -85,5 +85,4 @@ jobs:
 
       - name: Set output
         id: push
-        run: |
-          echo "image_uri=${{ steps.tags.outputs.repo }}:${{ steps.tags.outputs.primary_tag }}" >> "$GITHUB_OUTPUT"
+        run: echo "image_uri=${{ steps.tags.outputs.repo }}:${{ steps.tags.outputs.primary_tag }}" >> "$GITHUB_OUTPUT"

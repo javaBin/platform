@@ -46,7 +46,7 @@ jobs:
           repository: javaBin/platform
           token: ${{ steps.app-token.outputs.token }}
           ref: main
-          sparse-checkout: scripts/review-plan.py
+          sparse-checkout: scripts
           path: platform
 
       - name: Configure AWS credentials via OIDC
@@ -56,24 +56,13 @@ jobs:
           aws-region: ${{ inputs.aws_region }}
 
       - name: Download plan text from S3
-        run: |
-          PREFIX=$(dirname "${{ inputs.plan_key }}")
-          aws s3 cp "s3://${PLAN_BUCKET}/${PREFIX}/plan-output.txt" plan-output.txt
+        run: aws s3 cp "s3://${PLAN_BUCKET}/$(dirname "${{ inputs.plan_key }}")/plan-output.txt" plan-output.txt
 
       - name: Run LLM review
         id: review
         env:
           REVIEW_RESULT_PATH: review-result.json
-        run: |
-          python3 platform/scripts/review-plan.py plan-output.txt 2>&1 | tee review-output.txt || true
-
-          if [ -f review-result.json ]; then
-            RISK=$(python3 -c "import json; print(json.load(open('review-result.json')).get('risk', 'FAILED'))")
-          else
-            RISK="FAILED"
-          fi
-          echo "risk_level=${RISK}" >> "$GITHUB_OUTPUT"
-          echo "LLM review risk: ${RISK}"
+        run: sh platform/scripts/extract-review-risk.sh platform/scripts/review-plan.py plan-output.txt
 
       - name: Post review to PR
         if: github.event_name == 'pull_request'
@@ -110,40 +99,6 @@ jobs:
               body: body
             });
 
-      - name: Post to Slack on direct push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          export SLACK_WEBHOOK_URL=$(aws ssm get-parameter \
-            --name /javabin/slack/platform-resource-alerts-webhook \
-            --with-decryption --query Parameter.Value --output text)
-
-          python3 << 'PYEOF'
-          import json, os, urllib.request
-          webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "")
-          if not webhook_url:
-              print("No webhook URL, skipping Slack notification")
-              exit(0)
-          run_url = os.environ["GITHUB_RUN_URL"]
-          repo = os.environ.get("GITHUB_REPOSITORY", "unknown")
-          try:
-              with open("review-result.json") as f:
-                  result = json.load(f)
-              risk = result.get("risk", "UNKNOWN")
-              summary = result.get("summary", "No summary")
-          except Exception:
-              risk = "FAILED"
-              summary = "Review failed"
-          emoji = {"LOW": "\U0001F7E2", "MEDIUM": "\U0001F7E1", "HIGH": "\U0001F534"}.get(risk, "\u26AA")
-          payload = json.dumps({
-              "blocks": [
-                  {"type": "header", "text": {"type": "plain_text", "text": f"{emoji} Plan Review: {risk}", "emoji": True}},
-                  {"type": "section", "text": {"type": "mrkdwn", "text": f"*Repo:* {repo}\n*Summary:* {summary}"}},
-                  {"type": "section", "text": {"type": "mrkdwn", "text": f"<{run_url}|View Workflow Run>"}},
-              ],
-              "text": f"Plan review: {risk} for {repo}"
-          }).encode()
-          req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
-          urllib.request.urlopen(req)
-          PYEOF
+      - name: Alert Slack on HIGH risk
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.review.outputs.risk_level == 'HIGH'
+        run: sh platform/scripts/notify-high-risk.sh /javabin/slack/platform-override-alerts-webhook "https://github.com/javaBin/platform/actions/workflows/approve-override.yml"
