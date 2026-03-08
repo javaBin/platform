@@ -77,3 +77,8 @@ output "project" {
   description = "Platform project name"
   value       = var.project
 }
+
+output "developer_boundary_arn" {
+  description = "Permission boundary ARN for service roles"
+  value       = data.aws_iam_policy.developer_boundary.arn
+}

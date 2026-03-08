@@ -66,3 +66,7 @@ data "aws_route53_zone" "main" {
   name         = var.domain
   private_zone = false
 }
+
+data "aws_iam_policy" "developer_boundary" {
+  name = "${var.project}-developer-boundary"
+}

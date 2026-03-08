@@ -3,7 +3,8 @@
 ################################################################################
 
 resource "aws_iam_role" "this" {
-  name = "${var.project}-${var.name}"
+  name                 = "${var.project}-${var.name}"
+  permissions_boundary = var.permissions_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
