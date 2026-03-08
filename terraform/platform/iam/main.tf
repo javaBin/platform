@@ -526,6 +526,59 @@ resource "aws_iam_role_policy" "ci_override_approver_ssm" {
 }
 
 ################################################################################
+# 5. javabin-ci-registry — Registry repo team provisioning
+#
+# Trust: GitHub OIDC pinned to javaBin/registry on main branch.
+# Permissions: ONLY lambda:InvokeFunction on the team-provisioner Lambda.
+# This lets the registry invoke the Lambda directly on merge, without
+# dispatching through the platform repo.
+################################################################################
+
+resource "aws_iam_role" "ci_registry" {
+  name                 = "${var.project}-ci-registry"
+  permissions_boundary = aws_iam_policy.developer_boundary.arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = data.aws_iam_openid_connect_provider.github.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
+          StringLike = {
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/registry:ref:refs/heads/main"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${var.project}-ci-registry"
+  }
+}
+
+resource "aws_iam_role_policy" "ci_registry_lambda" {
+  name = "invoke-team-provisioner"
+  role = aws_iam_role.ci_registry.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "lambda:InvokeFunction"
+      Resource = "arn:aws:lambda:${var.region}:${var.aws_account_id}:function:${var.project}-team-provisioner"
+    }]
+  })
+}
+
+################################################################################
 # ECS Execution Role — pulls images, writes logs, reads secrets
 #
 # This is the shared execution role for all ECS tasks on the platform.

@@ -31,6 +31,10 @@ jobs:
   approve:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -38,65 +42,9 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Write override token
+        run: sh scripts/write-override-token.sh "${{ inputs.repo }}" "${{ inputs.sha }}" "${{ github.actor }}" "${{ inputs.reason }}"
+
+      - name: Notify Slack
         env:
-          OVERRIDE_REPO: ${{ inputs.repo }}
-          OVERRIDE_SHA: ${{ inputs.sha }}
-          OVERRIDE_REASON: ${{ inputs.reason }}
-          OVERRIDE_ACTOR: ${{ github.actor }}
-        run: |
-          PARAM_NAME="/javabin/platform-overrides/${OVERRIDE_REPO}/${OVERRIDE_SHA}"
-
-          python3 << 'PYEOF'
-          import json, os
-          value = json.dumps({
-              "approved_by": os.environ["OVERRIDE_ACTOR"],
-              "reason": os.environ["OVERRIDE_REASON"],
-              "approved_at": __import__('datetime').datetime.utcnow().isoformat() + "Z",
-              "run_id": os.environ.get("GITHUB_RUN_ID", ""),
-          })
-          with open("/tmp/override-value.txt", "w") as f:
-              f.write(value)
-          PYEOF
-
-          aws ssm put-parameter \
-            --name "$PARAM_NAME" \
-            --type String \
-            --value "$(cat /tmp/override-value.txt)" \
-            --overwrite
-
-          echo "Override token written: ${PARAM_NAME}"
-
-      - name: Post to Slack
-        env:
-          OVERRIDE_REPO: ${{ inputs.repo }}
-          OVERRIDE_SHA: ${{ inputs.sha }}
-          OVERRIDE_REASON: ${{ inputs.reason }}
-          OVERRIDE_ACTOR: ${{ github.actor }}
-          GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          export SLACK_WEBHOOK_URL=$(aws ssm get-parameter \
-            --name /javabin/slack/platform-override-alerts-webhook \
-            --with-decryption --query Parameter.Value --output text)
-
-          python3 << 'PYEOF'
-          import json, os, urllib.request
-          webhook_url = os.environ.get("SLACK_WEBHOOK_URL", "")
-          if not webhook_url:
-              print("No webhook URL, skipping Slack notification")
-              exit(0)
-          run_url = os.environ["GITHUB_RUN_URL"]
-          repo = os.environ["OVERRIDE_REPO"]
-          sha = os.environ["OVERRIDE_SHA"]
-          actor = os.environ["OVERRIDE_ACTOR"]
-          reason = os.environ["OVERRIDE_REASON"]
-          payload = json.dumps({
-              "blocks": [
-                  {"type": "header", "text": {"type": "plain_text", "text": "Risk Override Approved", "emoji": True}},
-                  {"type": "section", "text": {"type": "mrkdwn", "text": f"*Repo:* {repo}\n*SHA:* `{sha}`\n*By:* {actor}\n*Reason:* {reason}"}},
-                  {"type": "section", "text": {"type": "mrkdwn", "text": f"<{run_url}|View Approval Run>"}},
-              ],
-              "text": f"Risk override approved for {repo}"
-          }).encode()
-          req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
-          urllib.request.urlopen(req)
-          PYEOF
+          SSM_WEBHOOK_PARAM: /javabin/slack/platform-override-alerts-webhook
+        run: sh scripts/notify-slack.sh "Risk Override Approved" "*Repo:* ${{ inputs.repo }}\n*SHA:* \`${{ inputs.sha }}\`\n*By:* ${{ github.actor }}\n*Reason:* ${{ inputs.reason }}" "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" "View Approval Run"
