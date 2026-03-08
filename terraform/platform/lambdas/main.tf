@@ -401,6 +401,35 @@ resource "aws_iam_role_policy" "team_provisioner" {
         ]
         Resource = "arn:aws:budgets::${var.aws_account_id}:budget/javabin-team-*"
       },
+      {
+        Sid    = "CognitoGroupSync"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:CreateGroup",
+          "cognito-idp:GetGroup",
+          "cognito-idp:UpdateGroup",
+          "cognito-idp:ListUsersInGroup",
+          "cognito-idp:AdminAddUserToGroup",
+          "cognito-idp:AdminRemoveUserFromGroup",
+          "cognito-idp:ListUsers",
+        ]
+        Resource = var.internal_user_pool_arn
+      },
+      {
+        Sid    = "IdentityStoreSync"
+        Effect = "Allow"
+        Action = [
+          "identitystore:CreateGroup",
+          "identitystore:DescribeGroup",
+          "identitystore:ListGroups",
+          "identitystore:CreateGroupMembership",
+          "identitystore:ListGroupMemberships",
+          "identitystore:DeleteGroupMembership",
+          "identitystore:ListUsers",
+        ]
+        # Identity Store API requires * — store ID scoped via env var
+        Resource = "*"
+      },
     ]
   })
 }
@@ -528,6 +557,8 @@ resource "aws_lambda_function" "team_provisioner" {
       ACCOUNT_ID               = var.aws_account_id
       GITHUB_ORG               = "javaBin"
       ALERTS_TOPIC_ARN         = var.alerts_topic_arn
+      COGNITO_INTERNAL_POOL_ID = var.internal_user_pool_id
+      IDENTITY_STORE_ID        = var.identity_store_id
     }
   }
 }

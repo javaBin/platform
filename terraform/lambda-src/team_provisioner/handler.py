@@ -1,14 +1,14 @@
-"""Team provisioner — syncs teams across Google Workspace, GitHub, and AWS Budgets.
+"""Team provisioner — syncs teams across Google, GitHub, AWS Budgets, Cognito, and Identity Center.
 
-Trigger: repository_dispatch from javaBin/registry (via function URL or SNS).
+Trigger: Direct Lambda invocation from javaBin/registry CI (via javabin-ci-registry OIDC role).
 Event payload contains team YAML definitions.
 
 Integrations:
 - Google Admin SDK: Create/sync Google Workspace groups (domain-wide delegation SA)
 - GitHub API: Create/sync GitHub teams (GitHub App installation token)
 - AWS Budgets: Create team-level budget scoped to `team` tag
-- Cognito: TODO — pools not deployed yet
-- IAM Identity Center: TODO — not configured yet
+- Cognito: Create/sync groups in internal user pool, assign members by email
+- IAM Identity Center: Create/sync groups in identity store, assign members by email
 """
 
 import base64
@@ -32,6 +32,8 @@ logger.setLevel(logging.INFO)
 
 ssm = boto3.client("ssm")
 budgets_client = boto3.client("budgets")
+cognito_client = boto3.client("cognito-idp")
+identitystore_client = boto3.client("identitystore")
 
 GOOGLE_SA_PARAM = os.environ.get(
     "GOOGLE_SA_PARAM", "/javabin/platform/google-admin-sa"
@@ -51,6 +53,8 @@ INFRA_WEBHOOK_PARAM = os.environ.get(
 ACCOUNT_ID = os.environ.get("ACCOUNT_ID", "")
 GITHUB_ORG = os.environ.get("GITHUB_ORG", "javaBin")
 ALERTS_TOPIC_ARN = os.environ.get("ALERTS_TOPIC_ARN", "")
+COGNITO_INTERNAL_POOL_ID = os.environ.get("COGNITO_INTERNAL_POOL_ID", "")
+IDENTITY_STORE_ID = os.environ.get("IDENTITY_STORE_ID", "")
 
 # Cache credentials across invocations within the same Lambda container
 _credential_cache = {}
@@ -512,36 +516,202 @@ def sync_budget(team):
 # ---------------------------------------------------------------------------
 
 def sync_cognito_group(team):
-    """Sync team to Cognito user pool groups.
+    """Create or update a Cognito group in the internal user pool and sync membership.
 
-    TODO: Implement when Cognito user pools are deployed.
-    Needs: internal_pool_id, external_pool_id from identity module outputs.
-    Steps:
-      1. Create group in internal pool (for java.no members)
-      2. Create group in external pool (if team has external members)
-      3. Assign users to groups via cognito-idp:AdminAddUserToGroup
+    Members are matched by email (username in Cognito). Members not yet in the
+    pool are skipped (they'll be added on next sync after they sign up).
     """
-    logger.info(
-        "Cognito sync skipped — pools not deployed (team: %s)", team["name"]
-    )
-    return {"skipped": True, "reason": "cognito_pools_not_deployed"}
+    if not COGNITO_INTERNAL_POOL_ID:
+        logger.info("Cognito sync skipped — no pool ID configured (team: %s)", team["name"])
+        return {"skipped": True, "reason": "cognito_pool_not_configured"}
+
+    team_name = team["name"]
+    pool_id = COGNITO_INTERNAL_POOL_ID
+    group_name = f"team-{team_name}"
+
+    # Create or update group
+    try:
+        cognito_client.get_group(GroupName=group_name, UserPoolId=pool_id)
+        cognito_client.update_group(
+            GroupName=group_name,
+            UserPoolId=pool_id,
+            Description=team["description"],
+        )
+        logger.info("Updated Cognito group %s", group_name)
+    except cognito_client.exceptions.ResourceNotFoundException:
+        cognito_client.create_group(
+            GroupName=group_name,
+            UserPoolId=pool_id,
+            Description=team["description"],
+        )
+        logger.info("Created Cognito group %s", group_name)
+
+    # Current members in the group
+    current_users = set()
+    next_token = None
+    while True:
+        kwargs = {"GroupName": group_name, "UserPoolId": pool_id, "Limit": 60}
+        if next_token:
+            kwargs["NextToken"] = next_token
+        resp = cognito_client.list_users_in_group(**kwargs)
+        for user in resp.get("Users", []):
+            for attr in user.get("Attributes", []):
+                if attr["Name"] == "email":
+                    current_users.add(attr["Value"].lower())
+        next_token = resp.get("NextToken")
+        if not next_token:
+            break
+
+    # Desired members — resolve email to Cognito username
+    desired_emails = set()
+    for member in team.get("members", []):
+        m = _normalize_member(member)
+        email = m.get("email", "").lower()
+        if not email:
+            continue
+        desired_emails.add(email)
+
+        if email not in current_users:
+            # Look up user by email in the pool
+            users_resp = cognito_client.list_users(
+                UserPoolId=pool_id,
+                Filter=f'email = "{email}"',
+                Limit=1,
+            )
+            if users_resp.get("Users"):
+                username = users_resp["Users"][0]["Username"]
+                cognito_client.admin_add_user_to_group(
+                    UserPoolId=pool_id,
+                    Username=username,
+                    GroupName=group_name,
+                )
+                logger.info("Added %s to Cognito group %s", email, group_name)
+            else:
+                logger.info("User %s not in Cognito pool — skipping", email)
+
+    # Remove members no longer in the team
+    for email in current_users - desired_emails:
+        users_resp = cognito_client.list_users(
+            UserPoolId=pool_id,
+            Filter=f'email = "{email}"',
+            Limit=1,
+        )
+        if users_resp.get("Users"):
+            username = users_resp["Users"][0]["Username"]
+            cognito_client.admin_remove_user_from_group(
+                UserPoolId=pool_id,
+                Username=username,
+                GroupName=group_name,
+            )
+            logger.info("Removed %s from Cognito group %s", email, group_name)
+
+    return {"synced": True, "group": group_name, "member_count": len(desired_emails)}
 
 
 def sync_identity_center_group(team):
-    """Sync team to IAM Identity Center groups.
+    """Create or update an Identity Center group and sync membership.
 
-    TODO: Implement when Identity Center is configured.
-    Needs: identity_store_id from identity module outputs.
-    Steps:
-      1. Create group via identitystore:CreateGroup
-      2. Resolve user IDs via identitystore:ListUsers
-      3. Assign via identitystore:CreateGroupMembership
+    Members are matched by email in the identity store. Members not yet
+    provisioned in Identity Center are skipped.
     """
-    logger.info(
-        "Identity Center sync skipped — not configured (team: %s)",
-        team["name"],
+    if not IDENTITY_STORE_ID:
+        logger.info(
+            "Identity Center sync skipped — no store ID configured (team: %s)",
+            team["name"],
+        )
+        return {"skipped": True, "reason": "identity_store_not_configured"}
+
+    team_name = team["name"]
+    group_name = f"team-{team_name}"
+    store_id = IDENTITY_STORE_ID
+
+    # Find or create group
+    group_id = None
+    groups_resp = identitystore_client.list_groups(
+        IdentityStoreId=store_id,
+        Filters=[{"AttributePath": "DisplayName", "AttributeValue": group_name}],
     )
-    return {"skipped": True, "reason": "identity_center_not_configured"}
+    if groups_resp.get("Groups"):
+        group_id = groups_resp["Groups"][0]["GroupId"]
+        logger.info("Found Identity Center group %s (%s)", group_name, group_id)
+    else:
+        create_resp = identitystore_client.create_group(
+            IdentityStoreId=store_id,
+            DisplayName=group_name,
+            Description=team["description"],
+        )
+        group_id = create_resp["GroupId"]
+        logger.info("Created Identity Center group %s (%s)", group_name, group_id)
+
+    # Current group memberships
+    current_members = {}  # user_id -> membership_id
+    next_token = None
+    while True:
+        kwargs = {"IdentityStoreId": store_id, "GroupId": group_id}
+        if next_token:
+            kwargs["NextToken"] = next_token
+        resp = identitystore_client.list_group_memberships(**kwargs)
+        for membership in resp.get("GroupMemberships", []):
+            member_id = membership.get("MemberId", {}).get("UserId")
+            if member_id:
+                current_members[member_id] = membership["MembershipId"]
+        next_token = resp.get("NextToken")
+        if not next_token:
+            break
+
+    # Build reverse lookup: user_id -> email for current members
+    current_emails = {}  # email -> user_id
+    for user_id in current_members:
+        try:
+            user = identitystore_client.describe_user(
+                IdentityStoreId=store_id, UserId=user_id
+            )
+            for email_obj in user.get("Emails", []):
+                current_emails[email_obj["Value"].lower()] = user_id
+        except Exception:
+            logger.warning("Could not describe user %s", user_id)
+
+    # Desired members
+    desired_emails = set()
+    for member in team.get("members", []):
+        m = _normalize_member(member)
+        email = m.get("email", "").lower()
+        if not email:
+            continue
+        desired_emails.add(email)
+
+        if email not in current_emails:
+            # Look up user by email
+            users_resp = identitystore_client.list_users(
+                IdentityStoreId=store_id,
+                Filters=[{"AttributePath": "UserName", "AttributeValue": email}],
+            )
+            if users_resp.get("Users"):
+                user_id = users_resp["Users"][0]["UserId"]
+                try:
+                    identitystore_client.create_group_membership(
+                        IdentityStoreId=store_id,
+                        GroupId=group_id,
+                        MemberId={"UserId": user_id},
+                    )
+                    logger.info("Added %s to Identity Center group %s", email, group_name)
+                except identitystore_client.exceptions.ConflictException:
+                    logger.info("User %s already in Identity Center group %s", email, group_name)
+            else:
+                logger.info("User %s not in Identity Center — skipping", email)
+
+    # Remove members no longer in the team
+    for email, user_id in current_emails.items():
+        if email not in desired_emails:
+            membership_id = current_members.get(user_id)
+            if membership_id:
+                identitystore_client.delete_group_membership(
+                    IdentityStoreId=store_id,
+                    MembershipId=membership_id,
+                )
+                logger.info("Removed %s from Identity Center group %s", email, group_name)
+
+    return {"synced": True, "group": group_name, "member_count": len(desired_emails)}
 
 
 # ---------------------------------------------------------------------------
