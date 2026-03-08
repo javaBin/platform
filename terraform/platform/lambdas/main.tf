@@ -396,8 +396,8 @@ resource "aws_iam_role_policy" "team_provisioner" {
         Effect = "Allow"
         Action = [
           "budgets:CreateBudget",
-          "budgets:DescribeBudget",
-          "budgets:UpdateBudget",
+          "budgets:ModifyBudget",
+          "budgets:ViewBudget",
         ]
         Resource = "arn:aws:budgets::${var.aws_account_id}:budget/javabin-team-*"
       },

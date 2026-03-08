@@ -148,8 +148,13 @@ def _get_google_access_token():
         data=data,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
-    with urllib.request.urlopen(req) as resp:
-        token = json.loads(resp.read())["access_token"]
+    try:
+        with urllib.request.urlopen(req) as resp:
+            token = json.loads(resp.read())["access_token"]
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="replace")
+        logger.error("Google OAuth token exchange failed: %d %s", e.code, body_text)
+        raise
 
     _credential_cache["_google_token"] = {
         "token": token,

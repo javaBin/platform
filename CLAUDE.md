@@ -122,10 +122,12 @@ terraform/platform/
 ### Terraform — Org (human-applied, no CI)
 ```
 terraform/org/
-  main.tf          AWS Organizations, SCPs
-  providers.tf     Provider config
-  variables.tf     Variables
-  backend.tf       Separate state key
+  main.tf              AWS Organizations, SCPs
+  identity-center.tf   IAM Identity Center, permission sets, ABAC (team attribute from SAML)
+  cloudtrail.tf        CloudTrail trail + S3 bucket
+  providers.tf         Provider config
+  variables.tf         Variables
+  backend.tf           Separate state key
 ```
 
 ### Terraform — State (bootstrapped)
@@ -260,13 +262,13 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 | 0a | AWS Discovery | **Done** |
 | 0b | Bootstrap State Backend | **Done** — S3 backend live |
 | 0c | Organizations + Permission Boundary | **Done** — org enabled, boundary deployed, SCP deferred |
-| 1 | Identity (Google + Identity Center + Cognito) | **Partially done** — GCP SA with domain-wide delegation configured, GitHub App credentials in SSM. Cognito pool Terraform exists in `identity/` and is wired in `main.tf`, but not yet applied with Google IdP config. Identity Center lives in `terraform/org/`. |
+| 1 | Identity (Google + Identity Center + Cognito) | **Deployed** — GCP SA with domain-wide delegation, Identity Center with ABAC + 3 permission sets in `terraform/org/`. Cognito pool TF exists but not yet applied (needs Google OAuth client). |
 | 2a | Networking | **Deployed** — VPC, subnets, NAT |
 | 2b | Ingress | **Deployed** — ALB + ACM cert |
-| 2c | IAM / OIDC | **Deployed** — 4 CI roles + per-app roles |
+| 2c | IAM / OIDC | **Deployed** — 5 CI roles (infra, per-app, deploy, override-approver, registry) |
 | 2d | Compute | **Deployed** — ECS cluster + ECR repos |
 | 2e | Monitoring | **Deployed** — GuardDuty, Security Hub, Config, SNS |
-| 2f | Lambda Functions | **Deployed** — 5 working + team-provisioner (stub only) |
+| 2f | Lambda Functions | **Deployed** — 6 working (Google/GitHub/Budget sync live, Cognito/IdC sync not yet implemented in Lambda) |
 | 2g | Platform CI | **Done** — plan → LLM review → apply pipeline working |
 | 3a | Reusable Terraform Modules | **Code done** — 12 modules in repo |
 | 3b | GitHub Actions Workflows | **Code done** — 14 reusable workflows |
@@ -277,9 +279,10 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 | 4 | App Onboarding | **Partially working** — platform-test-app full pipeline passes (plan → review → apply → docker-build), ECS deploy fails on service stabilization |
 
 ### Known Issues
-- **ECS deploy stabilization**: platform-test-app task registers but service fails health check — likely networking or port config
-- **Cognito pools not yet applied**: `identity/` has Terraform wired in `main.tf`, but requires `google_client_id`/`google_client_secret`/`certificate_arn` variables
-- **`registered_app_repos` manually managed**: Per-repo IAM roles require entries in this variable. No automated mechanism yet — add repos manually to `registered-apps.auto.tfvars`
+- **ECS deploy stabilization**: platform-test-app task registers but service fails health check
+- **Cognito pools not yet applied**: TF exists but needs Google OAuth client credentials
+- **Team provisioner Lambda**: Google/GitHub/Budget sync working. Cognito and Identity Center sync functions are stubs — need implementation to create groups and assign members
+- **`registered_app_repos` manually managed**: Being replaced with team-scoped IAM roles (repo→team resolved via GitHub API at runtime)
 
 ## Agent Guidelines
 
