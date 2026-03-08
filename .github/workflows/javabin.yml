@@ -17,7 +17,7 @@ on:
 
 permissions:
   id-token: write
-  contents: read
+  contents: write
   pull-requests: write
 
 jobs:
@@ -109,7 +109,19 @@ jobs:
     secrets: inherit
 
   # --------------------------------------------------------------------------
-  # 8. EB deploy (transitional — for repos with .elasticbeanstalk/)
+  # 8. Commit generated Terraform back to app repo
+  # --------------------------------------------------------------------------
+  commit-terraform:
+    needs: [detect, tf-apply]
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.detect.outputs.has_yaml == 'true' &&
+      needs.tf-apply.result == 'success'
+    uses: javaBin/platform/.github/workflows/commit-terraform.yml@main
+    secrets: inherit
+
+  # --------------------------------------------------------------------------
+  # 9. EB deploy (transitional — for repos with .elasticbeanstalk/)
   # --------------------------------------------------------------------------
   eb-deploy:
     needs: [detect, build-jvm, build-ts]
