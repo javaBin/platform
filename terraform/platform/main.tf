@@ -62,6 +62,7 @@ module "lambdas" {
   internal_user_pool_id          = module.identity.internal_user_pool_id
   internal_user_pool_arn         = module.identity.internal_user_pool_arn
   identity_store_id              = var.identity_store_id
+  sso_instance_arn               = var.sso_instance_arn
 }
 
 module "identity" {
