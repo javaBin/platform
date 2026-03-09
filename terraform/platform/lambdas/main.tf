@@ -698,6 +698,85 @@ resource "aws_lambda_permission" "override_cleanup_schedule" {
   source_arn    = aws_cloudwatch_event_rule.override_cleanup_schedule.arn
 }
 
-# --- team-provisioner: no schedule — triggered via function URL or SNS (future) ---
-# For now, the stub has no trigger. It will be connected to a GitHub webhook
-# or repository dispatch event when the registry repo is set up.
+# --- team-provisioner: no schedule — triggered via direct Lambda invocation from registry CI ---
+
+################################################################################
+# Apply Gate — credential broker for Terraform apply
+################################################################################
+
+data "archive_file" "apply_gate" {
+  type        = "zip"
+  output_path = "${path.module}/builds/apply_gate.zip"
+  source_dir  = "${local.lambda_src_path}/apply_gate"
+}
+
+resource "aws_iam_role" "apply_gate" {
+  name = "${var.project}-apply-gate"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "apply_gate" {
+  name = "${var.project}-apply-gate"
+  role = aws_iam_role.apply_gate.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ReadSigningKey"
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform/override-signing-key"
+      },
+      {
+        Sid    = "PlanBucketAccess"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+        ]
+        Resource = "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*"
+      },
+      {
+        Sid      = "AssumeAppRoles"
+        Effect   = "Allow"
+        Action   = "sts:AssumeRole"
+        Resource = "arn:aws:iam::${var.aws_account_id}:role/${var.project}-ci-app-*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "apply_gate_logs" {
+  role       = aws_iam_role.apply_gate.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_function" "apply_gate" {
+  function_name    = "${var.project}-apply-gate"
+  role             = aws_iam_role.apply_gate.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 128
+  filename         = data.archive_file.apply_gate.output_path
+  source_code_hash = data.archive_file.apply_gate.output_base64sha256
+
+  environment {
+    variables = {
+      SIGNING_KEY_PARAM   = "/${var.project}/platform/override-signing-key"
+      PLAN_BUCKET         = "${var.project}-ci-plan-artifacts-${var.aws_account_id}"
+      PROJECT             = var.project
+      ACCOUNT_ID          = var.aws_account_id
+      CREDENTIAL_DURATION = "900"
+    }
+  }
+}

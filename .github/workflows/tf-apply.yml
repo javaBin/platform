@@ -11,10 +11,6 @@ on:
         description: "SHA256 hash of the plan artifact"
         type: string
         required: true
-      risk_level:
-        description: "Risk level from LLM review"
-        type: string
-        required: true
       aws_account_id:
         description: "AWS account ID"
         type: string
@@ -35,7 +31,6 @@ permissions:
 jobs:
   apply:
     runs-on: ubuntu-latest
-    environment: production
     env:
       PLAN_BUCKET: javabin-ci-plan-artifacts-${{ inputs.aws_account_id }}
     steps:
@@ -62,15 +57,14 @@ jobs:
           path: .platform
           sparse-checkout: scripts
 
-      - name: Configure AWS credentials via OIDC
+      # Step 1: Lightweight OIDC role — can only invoke gate Lambda + read S3
+      - name: Configure gate credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-${{ github.event.repository.name }}
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-apply-gate
           aws-region: ${{ inputs.aws_region }}
 
-      - name: Check risk level
-        run: sh .platform/scripts/check-risk-gate.sh "${{ inputs.risk_level }}" "${{ github.repository }}" "${{ github.sha }}" /javabin/slack/platform-override-alerts-webhook
-
+      # Step 2: Download and verify plan
       - name: Download plan from S3
         working-directory: ${{ inputs.tf_root }}
         run: aws s3 cp "s3://${PLAN_BUCKET}/${{ inputs.plan_key }}" tfplan
@@ -79,6 +73,13 @@ jobs:
         working-directory: ${{ inputs.tf_root }}
         run: sh "${{ github.workspace }}/.platform/scripts/verify-plan.sh" tfplan "${{ inputs.plan_sha256 }}"
 
+      # Step 3: Invoke gate Lambda — checks risk, verifies override if needed, returns temp credentials
+      - name: Request apply credentials from gate
+        env:
+          SSM_WEBHOOK_PARAM: /javabin/slack/platform-override-alerts-webhook
+        run: sh .platform/scripts/invoke-apply-gate.sh "${{ inputs.plan_key }}" "${{ github.event.repository.name }}"
+
+      # Step 4: Apply with credentials from the gate Lambda
       - name: Terraform Init
         working-directory: ${{ inputs.tf_root }}
         run: terraform init -input=false
