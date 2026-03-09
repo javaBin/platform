@@ -44,3 +44,9 @@ variable "identity_store_id" {
   default     = ""
 }
 
+variable "sso_instance_arn" {
+  description = "IAM Identity Center instance ARN"
+  type        = string
+  default     = ""
+}
+

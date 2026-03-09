@@ -55,6 +55,10 @@ GITHUB_ORG = os.environ.get("GITHUB_ORG", "javaBin")
 ALERTS_TOPIC_ARN = os.environ.get("ALERTS_TOPIC_ARN", "")
 COGNITO_INTERNAL_POOL_ID = os.environ.get("COGNITO_INTERNAL_POOL_ID", "")
 IDENTITY_STORE_ID = os.environ.get("IDENTITY_STORE_ID", "")
+SSO_INSTANCE_ARN = os.environ.get("SSO_INSTANCE_ARN", "")
+PROJECT = os.environ.get("PROJECT", "javabin")
+
+sso_client = boto3.client("sso-admin")
 
 # Cache credentials across invocations within the same Lambda container
 _credential_cache = {}
@@ -715,6 +719,296 @@ def sync_identity_center_group(team):
 
 
 # ---------------------------------------------------------------------------
+# Group sync — reads members from Google, syncs to Cognito + Identity Center
+# ---------------------------------------------------------------------------
+
+def _get_google_group_members(group_email):
+    """Fetch all members of a Google Workspace group."""
+    access_token = _get_google_access_token()
+    group_key = urllib.parse.quote(group_email, safe="")
+
+    members = []
+    page_token = None
+    while True:
+        path = f"/groups/{group_key}/members?maxResults=200"
+        if page_token:
+            path += f"&pageToken={urllib.parse.quote(page_token, safe='')}"
+        resp = _google_api("GET", path, access_token)
+        if resp and "members" in resp:
+            for m in resp["members"]:
+                members.append(m["email"].lower())
+        if resp and resp.get("nextPageToken"):
+            page_token = resp["nextPageToken"]
+        else:
+            break
+
+    return members
+
+
+def sync_group_to_cognito(group):
+    """Sync a Google group's members to a Cognito group.
+
+    Unlike team Cognito sync, this does NOT create the Google group — it reads
+    membership from an existing Google group and mirrors it to Cognito.
+    """
+    if not COGNITO_INTERNAL_POOL_ID:
+        return {"skipped": True, "reason": "cognito_pool_not_configured"}
+    if not group.get("cognito"):
+        return {"skipped": True, "reason": "cognito_not_enabled"}
+
+    group_name = group["name"]
+    google_email = group["google"]
+    pool_id = COGNITO_INTERNAL_POOL_ID
+
+    # Create or update Cognito group
+    try:
+        cognito_client.get_group(GroupName=group_name, UserPoolId=pool_id)
+        logger.info("Cognito group %s exists", group_name)
+    except cognito_client.exceptions.ResourceNotFoundException:
+        cognito_client.create_group(
+            GroupName=group_name,
+            UserPoolId=pool_id,
+            Description=f"{group_name} (synced from {google_email})",
+        )
+        logger.info("Created Cognito group %s", group_name)
+
+    # Get members from Google
+    google_members = _get_google_group_members(google_email)
+
+    # Current Cognito group members
+    current_users = set()
+    next_token = None
+    while True:
+        kwargs = {"GroupName": group_name, "UserPoolId": pool_id, "Limit": 60}
+        if next_token:
+            kwargs["NextToken"] = next_token
+        resp = cognito_client.list_users_in_group(**kwargs)
+        for user in resp.get("Users", []):
+            for attr in user.get("Attributes", []):
+                if attr["Name"] == "email":
+                    current_users.add(attr["Value"].lower())
+        next_token = resp.get("NextToken")
+        if not next_token:
+            break
+
+    # Sync: add missing, remove stale
+    desired = set(google_members)
+    for email in desired - current_users:
+        users_resp = cognito_client.list_users(
+            UserPoolId=pool_id, Filter=f'email = "{email}"', Limit=1,
+        )
+        if users_resp.get("Users"):
+            cognito_client.admin_add_user_to_group(
+                UserPoolId=pool_id,
+                Username=users_resp["Users"][0]["Username"],
+                GroupName=group_name,
+            )
+            logger.info("Added %s to Cognito group %s", email, group_name)
+
+    for email in current_users - desired:
+        users_resp = cognito_client.list_users(
+            UserPoolId=pool_id, Filter=f'email = "{email}"', Limit=1,
+        )
+        if users_resp.get("Users"):
+            cognito_client.admin_remove_user_from_group(
+                UserPoolId=pool_id,
+                Username=users_resp["Users"][0]["Username"],
+                GroupName=group_name,
+            )
+            logger.info("Removed %s from Cognito group %s", email, group_name)
+
+    return {"synced": True, "group": group_name, "member_count": len(desired)}
+
+
+def sync_group_to_identity_center(group):
+    """Sync a Google group to Identity Center: create group, sync members, assign permission set."""
+    if not IDENTITY_STORE_ID:
+        return {"skipped": True, "reason": "identity_store_not_configured"}
+    if not group.get("identity_center"):
+        return {"skipped": True, "reason": "identity_center_not_enabled"}
+
+    group_name = group["name"]
+    google_email = group["google"]
+    permission_set_name = group.get("permission_set")
+    store_id = IDENTITY_STORE_ID
+
+    # Find or create Identity Center group
+    group_id = None
+    groups_resp = identitystore_client.list_groups(
+        IdentityStoreId=store_id,
+        Filters=[{"AttributePath": "DisplayName", "AttributeValue": group_name}],
+    )
+    if groups_resp.get("Groups"):
+        group_id = groups_resp["Groups"][0]["GroupId"]
+    else:
+        create_resp = identitystore_client.create_group(
+            IdentityStoreId=store_id,
+            DisplayName=group_name,
+            Description=f"{group_name} (synced from {google_email})",
+        )
+        group_id = create_resp["GroupId"]
+        logger.info("Created Identity Center group %s", group_name)
+
+    # Get members from Google
+    google_members = _get_google_group_members(google_email)
+
+    # Current Identity Center group members
+    current_members = {}  # user_id -> membership_id
+    next_token = None
+    while True:
+        kwargs = {"IdentityStoreId": store_id, "GroupId": group_id}
+        if next_token:
+            kwargs["NextToken"] = next_token
+        resp = identitystore_client.list_group_memberships(**kwargs)
+        for membership in resp.get("GroupMemberships", []):
+            member_id = membership.get("MemberId", {}).get("UserId")
+            if member_id:
+                current_members[member_id] = membership["MembershipId"]
+        next_token = resp.get("NextToken")
+        if not next_token:
+            break
+
+    # Reverse lookup: email -> user_id
+    current_emails = {}
+    for user_id in current_members:
+        try:
+            user = identitystore_client.describe_user(
+                IdentityStoreId=store_id, UserId=user_id
+            )
+            for email_obj in user.get("Emails", []):
+                current_emails[email_obj["Value"].lower()] = user_id
+        except Exception:
+            pass
+
+    # Sync members
+    desired = set(google_members)
+    for email in desired - set(current_emails.keys()):
+        users_resp = identitystore_client.list_users(
+            IdentityStoreId=store_id,
+            Filters=[{"AttributePath": "UserName", "AttributeValue": email}],
+        )
+        if users_resp.get("Users"):
+            user_id = users_resp["Users"][0]["UserId"]
+            try:
+                identitystore_client.create_group_membership(
+                    IdentityStoreId=store_id,
+                    GroupId=group_id,
+                    MemberId={"UserId": user_id},
+                )
+                logger.info("Added %s to Identity Center group %s", email, group_name)
+            except identitystore_client.exceptions.ConflictException:
+                pass
+
+    for email, user_id in current_emails.items():
+        if email not in desired:
+            membership_id = current_members.get(user_id)
+            if membership_id:
+                identitystore_client.delete_group_membership(
+                    IdentityStoreId=store_id, MembershipId=membership_id,
+                )
+                logger.info("Removed %s from Identity Center group %s", email, group_name)
+
+    # Assign permission set to the group (if specified)
+    ps_result = None
+    if permission_set_name and SSO_INSTANCE_ARN:
+        ps_result = _assign_permission_set(group_id, permission_set_name)
+
+    result = {"synced": True, "group": group_name, "member_count": len(desired)}
+    if ps_result:
+        result["permission_set"] = ps_result
+    return result
+
+
+def _resolve_permission_set_arn(name):
+    """Look up a permission set ARN by name (e.g. 'admin' -> javabin-admin ARN).
+
+    Results are cached across invocations.
+    """
+    cache_key = f"_ps_{name}"
+    if cache_key in _credential_cache:
+        return _credential_cache[cache_key]
+
+    full_name = f"{PROJECT}-{name}"
+    paginator = sso_client.get_paginator("list_permission_sets")
+    for page in paginator.paginate(InstanceArn=SSO_INSTANCE_ARN):
+        for ps_arn in page.get("PermissionSets", []):
+            resp = sso_client.describe_permission_set(
+                InstanceArn=SSO_INSTANCE_ARN, PermissionSetArn=ps_arn,
+            )
+            if resp["PermissionSet"]["Name"] == full_name:
+                _credential_cache[cache_key] = ps_arn
+                return ps_arn
+
+    logger.warning("Permission set %s not found", full_name)
+    return None
+
+
+def _assign_permission_set(group_id, permission_set_name):
+    """Assign a permission set to an Identity Center group for the AWS account."""
+    ps_arn = _resolve_permission_set_arn(permission_set_name)
+    if not ps_arn:
+        return {"skipped": True, "reason": f"permission set '{permission_set_name}' not found"}
+
+    try:
+        sso_client.create_account_assignment(
+            InstanceArn=SSO_INSTANCE_ARN,
+            TargetId=ACCOUNT_ID,
+            TargetType="AWS_ACCOUNT",
+            PermissionSetArn=ps_arn,
+            PrincipalType="GROUP",
+            PrincipalId=group_id,
+        )
+        logger.info("Assigned %s to group %s", permission_set_name, group_id)
+        return {"assigned": True, "permission_set": permission_set_name}
+    except sso_client.exceptions.ConflictException:
+        logger.info("Permission set %s already assigned to group %s", permission_set_name, group_id)
+        return {"assigned": True, "already_existed": True}
+    except Exception as e:
+        logger.error("Failed to assign permission set: %s", e)
+        return {"error": str(e)[:200]}
+
+
+def handle_sync_groups(event):
+    """Handle the sync_groups action — process groups.yaml entries."""
+    groups = event.get("groups", [])
+    if not groups:
+        return {"statusCode": 200, "body": "No groups to sync"}
+
+    results = {}
+    for group in groups:
+        name = group.get("name")
+        if not name or not group.get("google"):
+            continue
+
+        logger.info("Syncing group: %s (%s)", name, group["google"])
+        gr = {}
+
+        try:
+            gr["cognito"] = sync_group_to_cognito(group)
+        except Exception as e:
+            logger.error("Cognito sync failed for %s: %s", name, e)
+            gr["cognito"] = {"error": str(e)[:200]}
+
+        try:
+            gr["identity_center"] = sync_group_to_identity_center(group)
+        except Exception as e:
+            logger.error("Identity Center sync failed for %s: %s", name, e)
+            gr["identity_center"] = {"error": str(e)[:200]}
+
+        results[name] = gr
+
+    try:
+        notify_slack(results)
+    except Exception as e:
+        logger.error("Slack notification failed: %s", e)
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps({"synced": list(results.keys()), "results": results}, default=str),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Event parsing
 # ---------------------------------------------------------------------------
 
@@ -823,6 +1117,11 @@ def notify_slack(results):
 def handler(event, context):
     logger.info("Team provisioner invoked")
     logger.info("Event: %s", json.dumps(event, default=str)[:1000])
+
+    # Dispatch by action — sync_groups uses a different flow
+    payload = _extract_payload(event)
+    if payload.get("action") == "sync_groups":
+        return handle_sync_groups(payload)
 
     teams = parse_team_payload(event)
     if not teams:

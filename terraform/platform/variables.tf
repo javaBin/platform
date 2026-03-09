@@ -73,6 +73,12 @@ variable "identity_store_id" {
   default     = "d-9967444724"
 }
 
+variable "sso_instance_arn" {
+  description = "IAM Identity Center instance ARN (from terraform/org/)"
+  type        = string
+  default     = "arn:aws:sso:::instance/ssoins-6987654c95c9a069"
+}
+
 variable "auto_tagger_identities" {
   description = "IAM identity substrings allowed to trigger auto-tagging"
   type        = list(string)
