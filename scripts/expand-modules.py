@@ -19,11 +19,11 @@ Required env vars: APP_SERVICE, AWS_ACCOUNT_ID, AWS_REGION, TF_ROOT
 Optional env vars: PLATFORM_ROOT (defaults to .platform)
 """
 
+import json
 import os
 import re
 import subprocess
 import sys
-import yaml
 
 # Import registry from the same directory
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -40,8 +40,20 @@ GENERATED_MARKER = "# GENERATED FROM app.yaml — do not edit, changes will be o
 # ---------------------------------------------------------------------------
 
 def load_yaml(path):
-    with open(path) as f:
-        return yaml.safe_load(f)
+    """Load YAML via yq (converts to JSON) — no pyyaml dependency."""
+    result = subprocess.run(
+        ["yq", "-o", "json", path],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        # Fallback: try python yaml module if available
+        try:
+            import yaml
+            with open(path) as f:
+                return yaml.safe_load(f)
+        except ImportError:
+            raise RuntimeError(f"Failed to parse {path}: yq not found and pyyaml not installed")
+    return json.loads(result.stdout)
 
 
 def yaml_get(data, dot_path, default=None):

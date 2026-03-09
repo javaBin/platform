@@ -58,11 +58,23 @@ jobs:
     secrets: inherit
 
   # --------------------------------------------------------------------------
-  # 4. Terraform plan (if terraform/ exists or app.yaml needs generation)
+  # 4. Expand app.yaml → Terraform files (commit to repo, run once)
+  # --------------------------------------------------------------------------
+  expand:
+    needs: detect
+    if: needs.detect.outputs.has_yaml == 'true'
+    uses: javaBin/platform/.github/workflows/expand-terraform.yml@main
+    secrets: inherit
+
+  # --------------------------------------------------------------------------
+  # 5. Terraform plan (after expand commits TF files, or if terraform/ already exists)
   # --------------------------------------------------------------------------
   tf-plan:
-    needs: detect
-    if: needs.detect.outputs.has_tf == 'true' || needs.detect.outputs.has_yaml == 'true'
+    needs: [detect, expand]
+    if: |
+      always() &&
+      (needs.detect.outputs.has_tf == 'true' || needs.detect.outputs.has_yaml == 'true') &&
+      (needs.expand.result == 'success' || needs.expand.result == 'skipped')
     uses: javaBin/platform/.github/workflows/tf-plan.yml@main
     secrets: inherit
 
@@ -108,17 +120,7 @@ jobs:
       image_tag: ${{ needs.docker-build.outputs.image_tag }}
     secrets: inherit
 
-  # --------------------------------------------------------------------------
-  # 8. Commit generated Terraform back to app repo
-  # --------------------------------------------------------------------------
-  commit-terraform:
-    needs: [detect, tf-apply]
-    if: >-
-      github.ref == 'refs/heads/main' &&
-      needs.detect.outputs.has_yaml == 'true' &&
-      needs.tf-apply.result == 'success'
-    uses: javaBin/platform/.github/workflows/commit-terraform.yml@main
-    secrets: inherit
+  # (commit-terraform removed — expand-terraform.yml handles it)
 
   # --------------------------------------------------------------------------
   # 9. EB deploy (transitional — for repos with .elasticbeanstalk/)

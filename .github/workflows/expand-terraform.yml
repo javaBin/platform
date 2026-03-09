@@ -1,0 +1,62 @@
+name: Expand Terraform
+
+# Expands app.yaml into raw Terraform resource definitions using the module
+# expander. Commits the generated .tf files back to the repo so that
+# tf-plan and tf-apply work on committed files — no repeated expansion.
+
+on:
+  workflow_call:
+    inputs:
+      aws_account_id:
+        description: "AWS account ID"
+        type: string
+        default: "553637109631"
+      aws_region:
+        description: "AWS region"
+        type: string
+        default: "eu-central-1"
+      tf_root:
+        description: "Terraform root directory"
+        type: string
+        default: "terraform"
+
+permissions:
+  contents: write
+
+jobs:
+  expand:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PLATFORM_APP_ID }}
+          private-key: ${{ secrets.PLATFORM_APP_PRIVATE_KEY }}
+          owner: javaBin
+
+      - name: Checkout platform scripts
+        uses: actions/checkout@v4
+        with:
+          repository: javaBin/platform
+          token: ${{ steps.app-token.outputs.token }}
+          path: .platform
+          sparse-checkout: |
+            scripts
+            terraform/modules
+
+      - name: Expand modules from app.yaml
+        env:
+          APP_SERVICE: ${{ github.event.repository.name }}
+          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          AWS_REGION: ${{ inputs.aws_region }}
+          TF_ROOT: ${{ inputs.tf_root }}
+          PLATFORM_ROOT: .platform
+        run: python3 .platform/scripts/expand-modules.py
+
+      - name: Commit and push generated files
+        run: sh .platform/scripts/commit-generated-tf.sh "${{ inputs.tf_root }}" "${{ github.ref_name }}"
