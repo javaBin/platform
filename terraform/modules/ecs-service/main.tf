@@ -82,5 +82,9 @@ resource "aws_ecs_service" "this" {
     container_port   = var.port
   }
 
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
+
   depends_on = [aws_ecs_task_definition.this]
 }
