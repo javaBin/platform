@@ -102,7 +102,6 @@ jobs:
     with:
       plan_key: ${{ needs.tf-plan.outputs.plan_key }}
       plan_sha256: ${{ needs.tf-plan.outputs.plan_sha256 }}
-      risk_level: ${{ needs.plan-review.outputs.risk_level || 'UNKNOWN' }}
     secrets: inherit
 
   # --------------------------------------------------------------------------

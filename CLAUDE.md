@@ -101,6 +101,7 @@ Migration happens later per-app at developer's pace — apps move from old ALB/E
 | `docs/bootstrap-runbook.md` | State backend bootstrap procedure |
 | `docs/org-runbook.md` | AWS Organizations setup procedure |
 | `docs/cognito-google-setup.md` | Cognito + Google Workspace IdP setup |
+| `docs/apply-gate.md` | Apply gate: credential broker, HMAC overrides, security model |
 
 ### Terraform — Platform (CI-applied)
 ```
@@ -115,7 +116,7 @@ terraform/platform/
   iam/             GitHub OIDC, CI roles, permission boundary
   compute/         ECS cluster, ECR base config
   monitoring/      SNS, EventBridge, Config, GuardDuty, Security Hub
-  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, override-cleanup, team-provisioner
+  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, override-cleanup, team-provisioner, apply-gate
   identity/        Cognito user pools (internal + external). Identity Center is in terraform/org/
 ```
 
@@ -192,7 +193,7 @@ terraform/state/
 | `scripts/provision-teams.py` | CI: fetch team YAMLs from registry, invoke team-provisioner Lambda |
 | `scripts/review-plan.py` | CI: LLM plan review via Bedrock |
 | `scripts/notify-slack.py` | CI: generic Slack webhook notification |
-| `scripts/check-risk-gate.sh` | CI: check risk level, consume override token or block |
+| `scripts/invoke-apply-gate.sh` | CI: invoke gate Lambda for apply credentials |
 | `scripts/run-plan.sh` | CI: terraform plan with exit code handling |
 | `scripts/upload-plan.sh` | CI: upload plan artifact to S3 |
 
