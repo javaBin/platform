@@ -64,6 +64,12 @@ jobs:
           REVIEW_RESULT_PATH: review-result.json
         run: sh platform/scripts/extract-review-risk.sh platform/scripts/review-plan.py plan-output.txt
 
+      - name: Upload risk assessment to S3
+        run: |
+          PLAN_DIR=$(dirname "${{ inputs.plan_key }}")
+          echo '{"level":"${{ steps.review.outputs.risk_level }}","reviewed_at":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' | \
+            aws s3 cp - "s3://${PLAN_BUCKET}/${PLAN_DIR}/risk.json" --content-type application/json
+
       - name: Post review to PR
         if: github.event_name == 'pull_request'
         env:
@@ -73,4 +79,12 @@ jobs:
 
       - name: Alert Slack on HIGH risk
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.review.outputs.risk_level == 'HIGH'
-        run: sh platform/scripts/notify-high-risk.sh /javabin/slack/platform-override-alerts-webhook "https://github.com/javaBin/platform/actions/workflows/approve-override.yml"
+        env:
+          SSM_WEBHOOK_PARAM: /javabin/slack/platform-override-alerts-webhook
+          PLAN_KEY: ${{ inputs.plan_key }}
+        run: |
+          OVERRIDE_URL="https://github.com/javaBin/platform/actions/workflows/approve-override.yml"
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          sh platform/scripts/notify-slack.sh \
+            "Deploy Blocked — HIGH Risk Plan" \
+            "*Repo:* ${GITHUB_REPOSITORY}\n*Plan:* \`${PLAN_KEY}\`\n<${OVERRIDE_URL}|Approve Override> | <${RUN_URL}|View Run>"

@@ -158,6 +158,7 @@ resource "aws_iam_role" "ci_app" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "AllowPlanAndReviewViaOIDC"
         Effect = "Allow"
         Principal = {
           Federated = data.aws_iam_openid_connect_provider.github.arn
@@ -169,15 +170,22 @@ resource "aws_iam_role" "ci_app" {
           }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/${each.key}:*"
-            # Terraform operations: plan (read), review (read), apply (write)
+            # Plan and review only — apply goes through the gate Lambda
             "token.actions.githubusercontent.com:job_workflow_ref" = [
               "${var.github_org}/platform/.github/workflows/tf-plan.yml@refs/heads/main",
               "${var.github_org}/platform/.github/workflows/plan-review.yml@refs/heads/main",
-              "${var.github_org}/platform/.github/workflows/tf-apply.yml@refs/heads/main",
             ]
           }
         }
-      }
+      },
+      {
+        Sid    = "AllowApplyViaGateLambda"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${var.aws_account_id}:role/${var.project}-apply-gate"
+        }
+        Action = "sts:AssumeRole"
+      },
     ]
   })
 
@@ -509,18 +517,16 @@ resource "aws_iam_role" "ci_override_approver" {
   }
 }
 
-resource "aws_iam_role_policy" "ci_override_approver_ssm" {
-  name = "ssm-put-overrides"
+resource "aws_iam_role_policy" "ci_override_approver" {
+  name = "invoke-apply-gate"
   role = aws_iam_role.ci_override_approver.id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
-      Action = [
-        "ssm:PutParameter",
-      ]
-      Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform-overrides/*"
+      Effect   = "Allow"
+      Action   = "lambda:InvokeFunction"
+      Resource = "arn:aws:lambda:${var.region}:${var.aws_account_id}:function:${var.project}-apply-gate"
     }]
   })
 }
@@ -575,6 +581,68 @@ resource "aws_iam_role_policy" "ci_registry_lambda" {
       Action   = "lambda:InvokeFunction"
       Resource = "arn:aws:lambda:${var.region}:${var.aws_account_id}:function:${var.project}-team-provisioner"
     }]
+  })
+}
+
+################################################################################
+# 6. javabin-ci-apply-gate — Lightweight role for tf-apply
+#
+# Trust: GitHub OIDC pinned to tf-apply.yml workflow on main.
+# Permissions: ONLY invoke the apply-gate Lambda + read plan artifacts from S3.
+# The actual infrastructure permissions come from the gate Lambda (via STS).
+################################################################################
+
+resource "aws_iam_role" "ci_apply_gate" {
+  name                 = "${var.project}-ci-apply-gate"
+  permissions_boundary = aws_iam_policy.developer_boundary.arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = data.aws_iam_openid_connect_provider.github.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
+          StringLike = {
+            "token.actions.githubusercontent.com:sub"              = "repo:${var.github_org}/*:*"
+            "token.actions.githubusercontent.com:job_workflow_ref" = "${var.github_org}/platform/.github/workflows/tf-apply.yml@refs/heads/main"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${var.project}-ci-apply-gate"
+  }
+}
+
+resource "aws_iam_role_policy" "ci_apply_gate" {
+  name = "invoke-gate-and-read-plans"
+  role = aws_iam_role.ci_apply_gate.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "InvokeGateLambda"
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = "arn:aws:lambda:${var.region}:${var.aws_account_id}:function:${var.project}-apply-gate"
+      },
+      {
+        Sid      = "ReadPlanArtifacts"
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*"
+      },
+    ]
   })
 }
 
