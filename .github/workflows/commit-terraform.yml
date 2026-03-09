@@ -60,14 +60,15 @@ jobs:
           sparse-checkout: scripts
           persist-credentials: false
 
-      - name: Generate Terraform from app.yaml
+      - name: Expand modules from app.yaml
         if: steps.check.outputs.has_yaml == 'true'
         env:
           APP_SERVICE: ${{ github.event.repository.name }}
           AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
           AWS_REGION: ${{ inputs.aws_region }}
           TF_ROOT: ${{ inputs.tf_root }}
-        run: sh .platform/scripts/generate-terraform.sh
+          PLATFORM_ROOT: .platform
+        run: python3 .platform/scripts/expand-modules.py
 
       - name: Commit and push generated files
         if: steps.check.outputs.has_yaml == 'true'

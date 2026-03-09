@@ -151,7 +151,7 @@ terraform/state/
 | `terraform/modules/service-secret/` | Secrets Manager secret with IAM policy output |
 | `terraform/modules/service-queue/` | SQS queue + DLQ with IAM policy output |
 | `terraform/modules/service-alarm/` | CloudWatch alarms for ECS service |
-| `terraform/modules/app-stack/` | Golden path — reads `app.yaml`, creates all infra |
+| ~~`terraform/modules/app-stack/`~~ | Removed — replaced by `scripts/expand-modules.py` + `scripts/registry.py` |
 | `terraform/modules/cognito-app-client/` | Cognito app client registration (code exists, no pools deployed yet) |
 
 ### GitHub Actions Workflows
@@ -187,7 +187,8 @@ terraform/state/
 | Script | What |
 |--------|------|
 | `scripts/bootstrap.sh` | One-time: create state bucket + lock tables |
-| `scripts/generate-terraform.sh` | CI: app.yaml → Terraform files |
+| `scripts/expand-modules.py` | CI: reads app.yaml + module sources, generates expanded .tf files |
+| `scripts/registry.py` | Module registry — maps app.yaml sections to platform modules |
 | `scripts/provision-teams.py` | CI: fetch team YAMLs from registry, invoke team-provisioner Lambda |
 | `scripts/review-plan.py` | CI: LLM plan review via Bedrock |
 | `scripts/notify-slack.py` | CI: generic Slack webhook notification |
@@ -268,11 +269,11 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 | 2c | IAM / OIDC | **Deployed** — 5 CI roles (infra, per-app, deploy, override-approver, registry) |
 | 2d | Compute | **Deployed** — ECS cluster + ECR repos |
 | 2e | Monitoring | **Deployed** — GuardDuty, Security Hub, Config, SNS |
-| 2f | Lambda Functions | **Deployed** — 6 working (Google/GitHub/Budget sync live, Cognito/IdC sync not yet implemented in Lambda) |
+| 2f | Lambda Functions | **Deployed** — 6 working (Google/GitHub/Budget/Cognito/Identity Center sync live) |
 | 2g | Platform CI | **Done** — plan → LLM review → apply pipeline working |
 | 3a | Reusable Terraform Modules | **Code done** — 12 modules in repo |
 | 3b | GitHub Actions Workflows | **Code done** — 14 reusable workflows |
-| 3c | app.yaml Schema + Generation | **Done** — generate-terraform.sh + docs |
+| 3c | app.yaml Schema + Generation | **Done** — expand-modules.py + registry.py (expanded raw resources) |
 | 3d | Registry Repo | **Working** — repo exists, dispatch uses GitHub App token, team provisioner invoked |
 | 3e | javabin CLI | **Code done** — 4 commands (register, init, status, whoami) in javaBin/javabin-cli |
 | 3f | CI Images + Supporting Repos | Not started |
