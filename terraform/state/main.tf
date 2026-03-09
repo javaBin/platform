@@ -6,10 +6,10 @@
 ################################################################################
 
 locals {
-  state_bucket_name    = "${var.project}-terraform-state-${var.aws_account_id}"
-  infra_lock_table     = "${var.project}-terraform-infra-lock"
-  app_lock_table       = "${var.project}-terraform-app-locks"
-  plan_artifacts_name  = "${var.project}-ci-plan-artifacts-${var.aws_account_id}"
+  state_bucket_name   = "${var.project}-terraform-state-${var.aws_account_id}"
+  infra_lock_table    = "${var.project}-terraform-infra-lock"
+  app_lock_table      = "${var.project}-terraform-app-locks"
+  plan_artifacts_name = "${var.project}-ci-plan-artifacts-${var.aws_account_id}"
 }
 
 ################################################################################

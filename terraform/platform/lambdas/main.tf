@@ -421,6 +421,7 @@ resource "aws_iam_role_policy" "team_provisioner" {
         Action = [
           "identitystore:CreateGroup",
           "identitystore:DescribeGroup",
+          "identitystore:DescribeUser",
           "identitystore:ListGroups",
           "identitystore:CreateGroupMembership",
           "identitystore:ListGroupMemberships",
@@ -428,6 +429,17 @@ resource "aws_iam_role_policy" "team_provisioner" {
           "identitystore:ListUsers",
         ]
         # Identity Store API requires * — store ID scoped via env var
+        Resource = "*"
+      },
+      {
+        Sid    = "SSOManagement"
+        Effect = "Allow"
+        Action = [
+          "sso:CreateAccountAssignment",
+          "sso:DescribeAccountAssignmentCreationStatus",
+          "sso:ListPermissionSets",
+          "sso:DescribePermissionSet",
+        ]
         Resource = "*"
       },
     ]
@@ -559,6 +571,8 @@ resource "aws_lambda_function" "team_provisioner" {
       ALERTS_TOPIC_ARN         = var.alerts_topic_arn
       COGNITO_INTERNAL_POOL_ID = var.internal_user_pool_id
       IDENTITY_STORE_ID        = var.identity_store_id
+      SSO_INSTANCE_ARN         = var.sso_instance_arn
+      PROJECT                  = var.project
     }
   }
 }
