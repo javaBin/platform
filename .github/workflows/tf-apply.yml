@@ -71,19 +71,6 @@ jobs:
       - name: Check risk level
         run: sh .platform/scripts/check-risk-gate.sh "${{ inputs.risk_level }}" "${{ github.repository }}" "${{ github.sha }}" /javabin/slack/platform-override-alerts-webhook
 
-      - name: Generate Terraform from app.yaml
-        if: hashFiles('app.yaml') != ''
-        env:
-          APP_SERVICE: ${{ github.event.repository.name }}
-          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
-          AWS_REGION: ${{ inputs.aws_region }}
-          TF_ROOT: ${{ inputs.tf_root }}
-        run: sh .platform/scripts/generate-terraform.sh
-
-      - name: Configure git credentials for module downloads
-        if: hashFiles('app.yaml') != ''
-        run: git config --global url."https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
-
       - name: Download plan from S3
         working-directory: ${{ inputs.tf_root }}
         run: aws s3 cp "s3://${PLAN_BUCKET}/${{ inputs.plan_key }}" tfplan

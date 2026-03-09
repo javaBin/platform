@@ -8,3 +8,4 @@
 *.zip
 .DS_Store
 phases/
+scripts/__pycache__/

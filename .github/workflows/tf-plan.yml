@@ -70,19 +70,6 @@ jobs:
           path: .platform
           sparse-checkout: scripts
 
-      - name: Generate Terraform from app.yaml
-        if: hashFiles('app.yaml') != ''
-        env:
-          APP_SERVICE: ${{ github.event.repository.name }}
-          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
-          AWS_REGION: ${{ inputs.aws_region }}
-          TF_ROOT: ${{ inputs.tf_root }}
-        run: sh .platform/scripts/generate-terraform.sh
-
-      - name: Configure git credentials for module downloads
-        if: hashFiles('app.yaml') != ''
-        run: git config --global url."https://x-access-token:${{ steps.app-token.outputs.token }}@github.com/".insteadOf "https://github.com/"
-
       - name: Terraform Init
         working-directory: ${{ inputs.tf_root }}
         run: terraform init -input=false
