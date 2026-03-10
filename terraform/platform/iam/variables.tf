@@ -30,3 +30,8 @@ variable "github_org" {
   type        = string
   default     = "javaBin"
 }
+
+variable "apply_gate_role_arn" {
+  description = "ARN of the apply-gate Lambda role (for ci_app trust policy)"
+  type        = string
+}
