@@ -83,14 +83,13 @@ resource "aws_cognito_user_pool_domain" "internal" {
   user_pool_id = aws_cognito_user_pool.internal.id
 }
 
-# Groups mirroring Google Workspace (managed by group provisioner from groups.yaml)
-# These are the base groups — the provisioner creates additional ones as needed.
-resource "aws_cognito_user_group" "internal_groups" {
-  for_each = toset(["helter", "styret", "drift", "pkom", "developers"])
+# Cognito groups are managed by the team provisioner (from groups.yaml and
+# team YAMLs), not by Terraform. The provisioner creates them dynamically.
 
-  name         = each.key
-  user_pool_id = aws_cognito_user_pool.internal.id
-  description  = "${each.key} group (synced from Google Workspace)"
+# Remove old Terraform-managed groups from state without deleting from Cognito.
+removed {
+  from = aws_cognito_user_group.internal_groups
+  lifecycle { destroy = false }
 }
 
 ################################################################################
