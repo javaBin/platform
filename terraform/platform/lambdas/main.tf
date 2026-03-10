@@ -439,6 +439,9 @@ resource "aws_iam_role_policy" "team_provisioner" {
           "sso:DescribeAccountAssignmentCreationStatus",
           "sso:ListPermissionSets",
           "sso:DescribePermissionSet",
+          "sso:CreatePermissionSet",
+          "sso:PutInlinePolicyToPermissionSet",
+          "sso:AttachCustomerManagedPolicyReferenceToPermissionSet",
         ]
         Resource = "*"
       },
