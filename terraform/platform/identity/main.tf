@@ -77,31 +77,16 @@ resource "aws_cognito_identity_provider" "internal_google" {
   }
 }
 
+# Cognito domain — needed for SAML ACS URL and hosted UI
 resource "aws_cognito_user_pool_domain" "internal" {
-  count = var.certificate_arn != "" ? 1 : 0
-
-  domain          = "auth-internal.${var.domain}"
-  certificate_arn = var.certificate_arn
-  user_pool_id    = aws_cognito_user_pool.internal.id
+  domain       = "${var.project}-internal"
+  user_pool_id = aws_cognito_user_pool.internal.id
 }
 
-resource "aws_route53_record" "internal_auth" {
-  count = var.route53_zone_id != "" && var.certificate_arn != "" ? 1 : 0
-
-  zone_id = var.route53_zone_id
-  name    = "auth-internal.${var.domain}"
-  type    = "A"
-
-  alias {
-    name                   = aws_cognito_user_pool_domain.internal[0].cloudfront_distribution
-    zone_id                = aws_cognito_user_pool_domain.internal[0].cloudfront_distribution_zone_id
-    evaluate_target_health = false
-  }
-}
-
-# Groups mirroring Google Workspace
+# Groups mirroring Google Workspace (managed by group provisioner from groups.yaml)
+# These are the base groups — the provisioner creates additional ones as needed.
 resource "aws_cognito_user_group" "internal_groups" {
-  for_each = toset(["heroes", "board", "pkom", "infra"])
+  for_each = toset(["helter", "styret", "drift", "pkom", "developers"])
 
   name         = each.key
   user_pool_id = aws_cognito_user_pool.internal.id
