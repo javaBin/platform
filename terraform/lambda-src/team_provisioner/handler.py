@@ -897,6 +897,54 @@ def sync_group_to_identity_center(group):
 DEVELOPER_BOUNDARY_NAME = f"{PROJECT}-developer-boundary"
 
 
+def _create_account_assignment(ps_arn, group_id, label=""):
+    """Create an account assignment and wait for it to complete.
+
+    The SSO create_account_assignment API is asynchronous. This function
+    polls until the assignment reaches SUCCEEDED or FAILED status.
+    """
+    try:
+        resp = sso_client.create_account_assignment(
+            InstanceArn=SSO_INSTANCE_ARN,
+            TargetId=ACCOUNT_ID,
+            TargetType="AWS_ACCOUNT",
+            PermissionSetArn=ps_arn,
+            PrincipalType="GROUP",
+            PrincipalId=group_id,
+        )
+    except sso_client.exceptions.ConflictException:
+        logger.info("Permission set %s already assigned to group %s", label, group_id)
+        return {"assigned": True, "already_existed": True}
+    except Exception as e:
+        logger.error("Failed to assign %s: %s", label, e)
+        return {"error": str(e)[:200]}
+
+    request_id = resp.get("AccountAssignmentCreationStatus", {}).get("RequestId")
+    if not request_id:
+        logger.info("Assigned %s to group %s (no request ID)", label, group_id)
+        return {"assigned": True}
+
+    # Poll for completion
+    for _ in range(30):  # max ~30 seconds
+        time.sleep(1)
+        status_resp = sso_client.describe_account_assignment_creation_status(
+            InstanceArn=SSO_INSTANCE_ARN,
+            AccountAssignmentCreationRequestId=request_id,
+        )
+        status = status_resp.get("AccountAssignmentCreationStatus", {})
+        state = status.get("Status", "")
+        if state == "SUCCEEDED":
+            logger.info("Assigned %s to group %s", label, group_id)
+            return {"assigned": True}
+        if state == "FAILED":
+            reason = status.get("FailureReason", "unknown")
+            logger.error("Assignment %s failed: %s", label, reason)
+            return {"error": reason}
+
+    logger.warning("Assignment %s timed out waiting for completion", label)
+    return {"assigned": True, "status": "timed_out"}
+
+
 def _ensure_team_permission_set(team_name, group_id):
     """Create a per-team permission set and assign it to the team's IC group.
 
@@ -986,24 +1034,10 @@ def _ensure_team_permission_set(team_name, group_id):
         logger.error("Failed to set inline policy for %s: %s", ps_name, e)
         return {"error": str(e)[:200]}
 
-    # Assign to group
-    try:
-        sso_client.create_account_assignment(
-            InstanceArn=SSO_INSTANCE_ARN,
-            TargetId=ACCOUNT_ID,
-            TargetType="AWS_ACCOUNT",
-            PermissionSetArn=ps_arn,
-            PrincipalType="GROUP",
-            PrincipalId=group_id,
-        )
-        logger.info("Assigned %s to team group %s", ps_name, group_id)
-    except sso_client.exceptions.ConflictException:
-        logger.info("Permission set %s already assigned to group %s", ps_name, group_id)
-    except Exception as e:
-        logger.error("Failed to assign %s: %s", ps_name, e)
-        return {"error": str(e)[:200]}
-
-    return {"assigned": True, "permission_set": ps_name}
+    # Assign to group and wait for completion
+    result = _create_account_assignment(ps_arn, group_id, ps_name)
+    result["permission_set"] = ps_name
+    return result
 
 
 def _resolve_permission_set_arn(name):
@@ -1036,23 +1070,7 @@ def _assign_permission_set(group_id, permission_set_name):
     if not ps_arn:
         return {"skipped": True, "reason": f"permission set '{permission_set_name}' not found"}
 
-    try:
-        sso_client.create_account_assignment(
-            InstanceArn=SSO_INSTANCE_ARN,
-            TargetId=ACCOUNT_ID,
-            TargetType="AWS_ACCOUNT",
-            PermissionSetArn=ps_arn,
-            PrincipalType="GROUP",
-            PrincipalId=group_id,
-        )
-        logger.info("Assigned %s to group %s", permission_set_name, group_id)
-        return {"assigned": True, "permission_set": permission_set_name}
-    except sso_client.exceptions.ConflictException:
-        logger.info("Permission set %s already assigned to group %s", permission_set_name, group_id)
-        return {"assigned": True, "already_existed": True}
-    except Exception as e:
-        logger.error("Failed to assign permission set: %s", e)
-        return {"error": str(e)[:200]}
+    return _create_account_assignment(ps_arn, group_id, permission_set_name)
 
 
 def handle_sync_groups(event):
