@@ -16,8 +16,9 @@ locals {
 # Using explicit source blocks so shared/ is at the right path for imports.
 
 data "archive_file" "slack_alert" {
-  type        = "zip"
-  output_path = "${path.module}/builds/slack_alert.zip"
+  type             = "zip"
+  output_path      = "${path.module}/builds/slack_alert.zip"
+  output_file_mode = "0644"
 
   source {
     content  = file("${local.lambda_src_path}/slack_alert/handler.py")
@@ -42,8 +43,9 @@ data "archive_file" "slack_alert" {
 }
 
 data "archive_file" "cost_report" {
-  type        = "zip"
-  output_path = "${path.module}/builds/cost_report.zip"
+  type             = "zip"
+  output_path      = "${path.module}/builds/cost_report.zip"
+  output_file_mode = "0644"
 
   source {
     content  = file("${local.lambda_src_path}/cost_report/handler.py")
@@ -64,8 +66,9 @@ data "archive_file" "cost_report" {
 }
 
 data "archive_file" "daily_cost_check" {
-  type        = "zip"
-  output_path = "${path.module}/builds/daily_cost_check.zip"
+  type             = "zip"
+  output_path      = "${path.module}/builds/daily_cost_check.zip"
+  output_file_mode = "0644"
 
   source {
     content  = file("${local.lambda_src_path}/daily_cost_check/handler.py")
@@ -86,20 +89,23 @@ data "archive_file" "daily_cost_check" {
 }
 
 data "archive_file" "compliance_reporter" {
-  type        = "zip"
-  output_path = "${path.module}/builds/compliance_reporter.zip"
-  source_dir  = "${local.lambda_src_path}/compliance_reporter"
+  type             = "zip"
+  output_path      = "${path.module}/builds/compliance_reporter.zip"
+  output_file_mode = "0644"
+  source_dir       = "${local.lambda_src_path}/compliance_reporter"
 }
 
 data "archive_file" "override_cleanup" {
-  type        = "zip"
-  output_path = "${path.module}/builds/override_cleanup.zip"
-  source_dir  = "${local.lambda_src_path}/override_cleanup"
+  type             = "zip"
+  output_path      = "${path.module}/builds/override_cleanup.zip"
+  output_file_mode = "0644"
+  source_dir       = "${local.lambda_src_path}/override_cleanup"
 }
 
 data "archive_file" "team_provisioner" {
-  type        = "zip"
-  output_path = "${path.module}/builds/team_provisioner.zip"
+  type             = "zip"
+  output_path      = "${path.module}/builds/team_provisioner.zip"
+  output_file_mode = "0644"
 
   source {
     content  = file("${local.lambda_src_path}/team_provisioner/handler.py")
@@ -722,9 +728,10 @@ resource "aws_lambda_permission" "override_cleanup_schedule" {
 ################################################################################
 
 data "archive_file" "apply_gate" {
-  type        = "zip"
-  output_path = "${path.module}/builds/apply_gate.zip"
-  source_dir  = "${local.lambda_src_path}/apply_gate"
+  type             = "zip"
+  output_path      = "${path.module}/builds/apply_gate.zip"
+  output_file_mode = "0644"
+  source_dir       = "${local.lambda_src_path}/apply_gate"
 }
 
 resource "aws_iam_role" "apply_gate" {
