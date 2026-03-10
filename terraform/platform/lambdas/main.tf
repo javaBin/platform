@@ -725,7 +725,8 @@ data "archive_file" "apply_gate" {
 }
 
 resource "aws_iam_role" "apply_gate" {
-  name = "${var.project}-apply-gate"
+  name                 = "${var.project}-apply-gate"
+  permissions_boundary = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

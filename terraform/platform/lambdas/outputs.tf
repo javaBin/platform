@@ -27,3 +27,8 @@ output "team_provisioner_function_arn" {
   description = "ARN of the team-provisioner Lambda function"
   value       = aws_lambda_function.team_provisioner.arn
 }
+
+output "apply_gate_role_arn" {
+  description = "ARN of the apply-gate Lambda IAM role"
+  value       = aws_iam_role.apply_gate.arn
+}

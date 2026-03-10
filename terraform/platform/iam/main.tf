@@ -182,7 +182,7 @@ resource "aws_iam_role" "ci_app" {
         Sid    = "AllowApplyViaGateLambda"
         Effect = "Allow"
         Principal = {
-          AWS = "arn:aws:iam::${var.aws_account_id}:role/${var.project}-apply-gate"
+          AWS = var.apply_gate_role_arn
         }
         Action = "sts:AssumeRole"
       },

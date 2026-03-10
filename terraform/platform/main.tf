@@ -36,6 +36,7 @@ module "iam" {
   registered_app_repos = var.registered_app_repos
   override_approvers   = var.override_approvers
   github_org           = var.github_org
+  apply_gate_role_arn  = module.lambdas.apply_gate_role_arn
 }
 
 module "compute" {
