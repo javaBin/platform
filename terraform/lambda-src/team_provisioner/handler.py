@@ -715,7 +715,15 @@ def sync_identity_center_group(team):
                 )
                 logger.info("Removed %s from Identity Center group %s", email, group_name)
 
-    return {"synced": True, "group": group_name, "member_count": len(desired_emails)}
+    # Create per-team permission set and assign to group
+    ps_result = None
+    if SSO_INSTANCE_ARN and ACCOUNT_ID:
+        ps_result = _ensure_team_permission_set(team_name, group_id)
+
+    result = {"synced": True, "group": group_name, "member_count": len(desired_emails)}
+    if ps_result:
+        result["permission_set"] = ps_result
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -884,6 +892,118 @@ def sync_group_to_identity_center(group):
         result["permission_set"] = _assign_permission_set(group_id, permission_set_name)
 
     return result
+
+
+DEVELOPER_BOUNDARY_NAME = f"{PROJECT}-developer-boundary"
+
+
+def _ensure_team_permission_set(team_name, group_id):
+    """Create a per-team permission set and assign it to the team's IC group.
+
+    Uses the developer permission boundary for guardrails. The inline policy
+    allows broad access but scoped to resources tagged with the team name.
+    The boundary controls what actions are actually permitted.
+    """
+    ps_name = f"{PROJECT}-team-{team_name}"
+
+    # Check if permission set already exists
+    ps_arn = _resolve_permission_set_arn(f"team-{team_name}")
+    if not ps_arn:
+        try:
+            resp = sso_client.create_permission_set(
+                InstanceArn=SSO_INSTANCE_ARN,
+                Name=ps_name,
+                Description=f"Team {team_name} — scoped by permission boundary + ABAC",
+                SessionDuration="PT4H",
+            )
+            ps_arn = resp["PermissionSet"]["PermissionSetArn"]
+            logger.info("Created permission set %s", ps_name)
+            _credential_cache[f"_ps_team-{team_name}"] = ps_arn
+        except sso_client.exceptions.ConflictException:
+            ps_arn = _resolve_permission_set_arn(f"team-{team_name}")
+        except Exception as e:
+            logger.error("Failed to create permission set %s: %s", ps_name, e)
+            return {"error": str(e)[:200]}
+
+    if not ps_arn:
+        return {"error": "could not create or find permission set"}
+
+    # Attach permission boundary
+    try:
+        sso_client.attach_customer_managed_policy_reference_to_permission_set(
+            InstanceArn=SSO_INSTANCE_ARN,
+            PermissionSetArn=ps_arn,
+            CustomerManagedPolicyReference={
+                "Name": DEVELOPER_BOUNDARY_NAME,
+            },
+        )
+    except sso_client.exceptions.ConflictException:
+        pass  # already attached
+    except Exception as e:
+        logger.error("Failed to attach boundary to %s: %s", ps_name, e)
+
+    # Set inline policy — broad allow scoped to team-tagged resources
+    policy = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "AllowTeamResources",
+                "Effect": "Allow",
+                "Action": "*",
+                "Resource": "*",
+                "Condition": {
+                    "StringEqualsIfExists": {
+                        "aws:ResourceTag/team": team_name,
+                    }
+                },
+            },
+            {
+                "Sid": "AllowUntaggedReads",
+                "Effect": "Allow",
+                "Action": [
+                    "ecs:ListClusters",
+                    "ecs:ListServices",
+                    "ecr:GetAuthorizationToken",
+                    "elasticloadbalancing:Describe*",
+                    "route53:ListHostedZones",
+                    "logs:DescribeLogGroups",
+                    "cloudwatch:ListMetrics",
+                    "ce:GetCostAndUsage",
+                    "ce:GetCostForecast",
+                ],
+                "Resource": "*",
+            },
+        ],
+    }
+
+    try:
+        sso_client.put_inline_policy_to_permission_set(
+            InstanceArn=SSO_INSTANCE_ARN,
+            PermissionSetArn=ps_arn,
+            InlinePolicy=json.dumps(policy),
+        )
+    except Exception as e:
+        logger.error("Failed to set inline policy for %s: %s", ps_name, e)
+        return {"error": str(e)[:200]}
+
+    # Assign to group
+    try:
+        sso_client.create_account_assignment(
+            InstanceArn=SSO_INSTANCE_ARN,
+            TargetId=ACCOUNT_ID,
+            TargetType="AWS_ACCOUNT",
+            PermissionSetArn=ps_arn,
+            PrincipalType="GROUP",
+            PrincipalId=group_id,
+        )
+        logger.info("Assigned %s to team group %s", ps_name, group_id)
+    except sso_client.exceptions.ConflictException:
+        logger.info("Permission set %s already assigned to group %s", ps_name, group_id)
+    except Exception as e:
+        logger.error("Failed to assign %s: %s", ps_name, e)
+        return {"error": str(e)[:200]}
+
+    return {"assigned": True, "permission_set": ps_name}
 
 
 def _resolve_permission_set_arn(name):
