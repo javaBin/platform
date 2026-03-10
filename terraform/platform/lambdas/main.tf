@@ -451,6 +451,29 @@ resource "aws_iam_role_policy" "team_provisioner" {
         ]
         Resource = "*"
       },
+      {
+        Sid    = "IAMForSSOAssignment"
+        Effect = "Allow"
+        Action = [
+          "iam:GetSAMLProvider",
+          "iam:GetRole",
+          "iam:CreateRole",
+          "iam:AttachRolePolicy",
+          "iam:PutRolePolicy",
+          "iam:UpdateRole",
+          "iam:UpdateRoleDescription",
+          "iam:ListAttachedRolePolicies",
+          "iam:ListRolePolicies",
+          "iam:DeleteRole",
+          "iam:DeleteRolePolicy",
+          "iam:DetachRolePolicy",
+        ]
+        # Scoped to SSO-managed roles and SAML providers
+        Resource = [
+          "arn:aws:iam::${var.aws_account_id}:role/aws-reserved/sso.amazonaws.com/*",
+          "arn:aws:iam::${var.aws_account_id}:saml-provider/AWSSSO_*",
+        ]
+      },
     ]
   })
 }
