@@ -115,7 +115,9 @@ def _create_jwt(payload, private_key_pem):
 
 GOOGLE_SCOPES = (
     "https://www.googleapis.com/auth/admin.directory.group "
-    "https://www.googleapis.com/auth/admin.directory.group.member"
+    "https://www.googleapis.com/auth/admin.directory.group.member "
+    "https://www.googleapis.com/auth/admin.directory.user "
+    "https://www.googleapis.com/auth/admin.directory.user.alias"
 )
 
 
@@ -1073,6 +1075,228 @@ def _assign_permission_set(group_id, permission_set_name):
     return _create_account_assignment(ps_arn, group_id, permission_set_name)
 
 
+def handle_sync_groups_and_heros(event):
+    """Handle the sync_groups_and_heros action — full hero + group reconciliation.
+
+    Processes both groups and heroes in a single pass:
+    1. Auto-create Google Workspace accounts for new heroes
+    2. Manage email aliases for heroes
+    3. Sync Google Workspace groups with resolved member lists
+    4. Sync Cognito groups where flagged
+    5. Sync Identity Center groups where flagged
+    """
+    groups = event.get("groups", [])
+    heros = event.get("heros", [])
+
+    results = {}
+
+    # Step 1: Auto-create Google Workspace accounts for heroes
+    access_token = _get_google_access_token()
+    accounts_created = []
+    accounts_failed = []
+    accounts_existed = []
+
+    for hero in heros:
+        email = hero.get("javabin_google_email", "")
+        if not email:
+            continue
+
+        user_key = urllib.parse.quote(email, safe="")
+
+        # Check if account exists
+        existing_user = _google_api("GET", f"/users/{user_key}", access_token)
+        if existing_user and not existing_user.get("already_exists"):
+            accounts_existed.append(email)
+            logger.info("Google Workspace account already exists: %s", email)
+        else:
+            # Create the account
+            import secrets
+            import string
+            temp_password = "".join(secrets.choice(string.ascii_letters + string.digits + "!@#$%") for _ in range(24))
+
+            user_body = {
+                "primaryEmail": email,
+                "name": {
+                    "givenName": hero.get("firstname", ""),
+                    "familyName": hero.get("lastname", ""),
+                },
+                "password": temp_password,
+                "changePasswordAtNextLogin": True,
+            }
+
+            try:
+                create_result = _google_api("POST", "/users", access_token, user_body)
+                if create_result and not create_result.get("already_exists"):
+                    accounts_created.append(email)
+                    logger.info("Created Google Workspace account: %s", email)
+
+                    # Send password reset to personal email so the hero can set up their account
+                    personal_email = hero.get("personal_email", "")
+                    if personal_email:
+                        try:
+                            _google_api(
+                                "POST",
+                                f"/users/{user_key}/sendAs",
+                                access_token,
+                            )
+                        except Exception:
+                            # sendAs may not be available; hero can use "forgot password" flow
+                            logger.info(
+                                "Could not send invite for %s — hero can use forgot password with %s",
+                                email, personal_email,
+                            )
+                else:
+                    accounts_existed.append(email)
+            except Exception as e:
+                logger.error("Failed to create account %s: %s", email, e)
+                accounts_failed.append({"email": email, "error": str(e)[:200]})
+
+    results["accounts"] = {
+        "created": accounts_created,
+        "existed": accounts_existed,
+        "failed": accounts_failed,
+    }
+
+    # Step 2: Manage email aliases
+    aliases_created = []
+    aliases_failed = []
+
+    for hero in heros:
+        alias = hero.get("alias", "")
+        email = hero.get("javabin_google_email", "")
+        if not alias or not email:
+            continue
+
+        user_key = urllib.parse.quote(email, safe="")
+
+        # Check if alias already exists
+        try:
+            existing_aliases = _google_api("GET", f"/users/{user_key}/aliases", access_token)
+            existing_alias_emails = set()
+            if existing_aliases and "aliases" in existing_aliases:
+                existing_alias_emails = {a["alias"].lower() for a in existing_aliases["aliases"]}
+
+            if alias.lower() not in existing_alias_emails:
+                alias_result = _google_api(
+                    "POST", f"/users/{user_key}/aliases", access_token, {"alias": alias}
+                )
+                if alias_result:
+                    aliases_created.append({"user": email, "alias": alias})
+                    logger.info("Created alias %s for %s", alias, email)
+        except Exception as e:
+            logger.error("Failed to create alias %s for %s: %s", alias, email, e)
+            aliases_failed.append({"user": email, "alias": alias, "error": str(e)[:200]})
+
+    results["aliases"] = {
+        "created": aliases_created,
+        "failed": aliases_failed,
+    }
+
+    # Step 3: Sync Google Workspace groups with resolved member lists
+    for group in groups:
+        name = group.get("name")
+        google_email = group.get("google")
+        members = group.get("members", [])
+
+        if not name or not google_email:
+            continue
+
+        logger.info("Syncing group: %s (%s) with %d members", name, google_email, len(members))
+        gr = {}
+
+        # Sync Google Workspace group
+        try:
+            group_key = urllib.parse.quote(google_email, safe="")
+            group_body = {
+                "email": google_email,
+                "name": name,
+                "description": f"javaBin group: {name}",
+            }
+
+            existing = _google_api("GET", f"/groups/{group_key}", access_token)
+            if existing and not existing.get("already_exists"):
+                _google_api("PUT", f"/groups/{group_key}", access_token, group_body)
+            else:
+                _google_api("POST", "/groups", access_token, group_body)
+
+            # Paginated current member list
+            current_emails = set()
+            page_token = None
+            while True:
+                path = f"/groups/{group_key}/members?maxResults=200"
+                if page_token:
+                    path += f"&pageToken={urllib.parse.quote(page_token, safe='')}"
+                resp = _google_api("GET", path, access_token)
+                if resp and "members" in resp:
+                    for m in resp["members"]:
+                        current_emails.add(m["email"].lower())
+                if resp and resp.get("nextPageToken"):
+                    page_token = resp["nextPageToken"]
+                else:
+                    break
+
+            # Desired members
+            desired_emails = {m.lower() for m in members if m}
+
+            # Add missing members
+            added = 0
+            for email in desired_emails - current_emails:
+                _google_api(
+                    "POST", f"/groups/{group_key}/members", access_token,
+                    {"email": email, "role": "MEMBER"},
+                )
+                added += 1
+
+            # Remove stale members
+            removed = 0
+            for email in current_emails - desired_emails:
+                member_key = urllib.parse.quote(email, safe="")
+                _google_api("DELETE", f"/groups/{group_key}/members/{member_key}", access_token)
+                removed += 1
+
+            gr["google"] = {
+                "synced": True,
+                "group": google_email,
+                "member_count": len(desired_emails),
+                "added": added,
+                "removed": removed,
+            }
+        except Exception as e:
+            logger.error("Google group sync failed for %s: %s", name, e)
+            gr["google"] = {"error": str(e)[:200]}
+
+        # Step 4: Sync Cognito if flagged
+        if group.get("cognito"):
+            try:
+                gr["cognito"] = sync_group_to_cognito(group)
+            except Exception as e:
+                logger.error("Cognito sync failed for %s: %s", name, e)
+                gr["cognito"] = {"error": str(e)[:200]}
+
+        # Step 5: Sync Identity Center if flagged
+        if group.get("identity_center"):
+            try:
+                gr["identity_center"] = sync_group_to_identity_center(group)
+            except Exception as e:
+                logger.error("Identity Center sync failed for %s: %s", name, e)
+                gr["identity_center"] = {"error": str(e)[:200]}
+
+        results[name] = gr
+
+    try:
+        notify_slack(results)
+    except Exception as e:
+        logger.error("Slack notification failed: %s", e)
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps(
+            {"synced": list(results.keys()), "results": results},
+            default=str,
+        ),
+    }
+
+
 def handle_sync_groups(event):
     """Handle the sync_groups action — process groups.yaml entries."""
     groups = event.get("groups", [])
@@ -1223,8 +1447,10 @@ def handler(event, context):
     logger.info("Team provisioner invoked")
     logger.info("Event: %s", json.dumps(event, default=str)[:1000])
 
-    # Dispatch by action — sync_groups uses a different flow
+    # Dispatch by action
     payload = _extract_payload(event)
+    if payload.get("action") == "sync_groups_and_heros":
+        return handle_sync_groups_and_heros(payload)
     if payload.get("action") == "sync_groups":
         return handle_sync_groups(payload)
 
