@@ -913,7 +913,7 @@ def _ensure_team_permission_set(team_name, group_id):
             resp = sso_client.create_permission_set(
                 InstanceArn=SSO_INSTANCE_ARN,
                 Name=ps_name,
-                Description=f"Team {team_name} — scoped by permission boundary + ABAC",
+                Description=f"Developer access for team {team_name}",
                 SessionDuration="PT4H",
             )
             ps_arn = resp["PermissionSet"]["PermissionSetArn"]
