@@ -30,6 +30,7 @@ permissions:
 
 jobs:
   apply:
+    name: Terraform Apply
     runs-on: ubuntu-latest
     env:
       PLAN_BUCKET: javabin-ci-plan-artifacts-${{ inputs.aws_account_id }}

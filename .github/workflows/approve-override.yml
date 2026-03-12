@@ -34,6 +34,7 @@ env:
 
 jobs:
   approve:
+    name: Approve Override
     runs-on: ubuntu-latest
     environment: override-approval
     steps:

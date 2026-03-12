@@ -30,6 +30,7 @@ on:
 
 jobs:
   detect:
+    name: Detect Repo Contents
     runs-on: ubuntu-latest
     outputs:
       has_yaml: ${{ steps.check.outputs.has_yaml }}
