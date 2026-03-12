@@ -37,12 +37,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: override-approval
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           sparse-checkout: scripts
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-override-approver
           aws-region: ${{ env.AWS_REGION }}

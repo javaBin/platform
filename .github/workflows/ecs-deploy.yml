@@ -41,7 +41,7 @@ jobs:
           owner: javaBin
 
       - name: Checkout platform scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: javaBin/platform
           token: ${{ steps.app-token.outputs.token }}
@@ -50,7 +50,7 @@ jobs:
           path: .platform
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-deploy-${{ github.event.repository.name }}
           aws-region: ${{ inputs.aws_region }}
