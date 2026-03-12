@@ -33,16 +33,12 @@ def resolve_memberships(groups, heros):
     for group in groups.get("groups", []):
         name = group["name"]
 
-        if name == "helter":
-            # All heroes are implicitly in helter
-            member_emails = [h["javabin_google_email"] for h in members_list if h.get("javabin_google_email")]
-        else:
-            # Heroes whose memberships list includes this group name
-            member_emails = [
-                h["javabin_google_email"]
-                for h in members_list
-                if h.get("javabin_google_email") and name in (h.get("memberships") or [])
-            ]
+        # All groups use explicit memberships — no implicit membership
+        member_emails = [
+            h["javabin_google_email"]
+            for h in members_list
+            if h.get("javabin_google_email") and name in (h.get("memberships") or [])
+        ]
 
         resolved = dict(group)
         resolved["members"] = member_emails

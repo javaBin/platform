@@ -1247,19 +1247,22 @@ def handle_sync_groups_and_heros(event):
                 )
                 added += 1
 
-            # Remove stale members
-            removed = 0
-            for email in current_emails - desired_emails:
-                member_key = urllib.parse.quote(email, safe="")
-                _google_api("DELETE", f"/groups/{group_key}/members/{member_key}", access_token)
-                removed += 1
+            # Additive only — never remove members automatically.
+            # Members added manually via Google Admin UI are preserved.
+            # To remove members, use a separate explicit process.
+            extra = current_emails - desired_emails
+            if extra:
+                logger.info(
+                    "Group %s has %d members not in YAML (preserved): %s",
+                    google_email, len(extra), ", ".join(sorted(extra)[:5]),
+                )
 
             gr["google"] = {
                 "synced": True,
                 "group": google_email,
-                "member_count": len(desired_emails),
+                "member_count": len(desired_emails | current_emails),
                 "added": added,
-                "removed": removed,
+                "extra_preserved": len(extra),
             }
         except Exception as e:
             logger.error("Google group sync failed for %s: %s", name, e)

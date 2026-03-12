@@ -190,6 +190,8 @@ def map_groups(groups_str):
             mapped.append(group_id)
         else:
             print(f"  Warning: unknown group '{g}' — not in GROUP_MAP, skipping", file=sys.stderr)
+    # Always include helter — all heroes are helter members
+    mapped.append("helter")
     return sorted(set(mapped))
 
 
