@@ -24,12 +24,12 @@ That's it. The pipeline auto-detects your repo contents and runs the right jobs.
 ```
 detect ──► build-jvm ──► docker-build ──► ecs-deploy
        ├─► build-ts  ──┘                     │
-       ├─► tf-plan ──► plan-review ──► tf-apply
+       ├─► tf-plan (includes LLM review) ──► tf-apply
        └─► eb-deploy (transitional)
 ```
 
-- **PRs:** detect → build → tf-plan → plan-review → PR comments
-- **Main:** detect → build → docker-build → tf-plan → plan-review → tf-apply → ecs-deploy
+- **PRs:** detect → build → tf-plan (plan + review) → PR comments
+- **Main:** detect → build → docker-build → tf-plan (plan + review) → tf-apply → ecs-deploy
 
 ## Workflow Reference
 
@@ -79,15 +79,10 @@ Docker BuildKit build + ECR push. Uses GitHub Actions cache (zero ECR storage fo
 
 Generates `terraform/` from `app.yaml` if present (via `generate-terraform.sh`), runs plan, uploads to S3 with SHA256. Posts plan to PR.
 
-**OIDC role:** `javabin-ci-app-{repo}`
-**Outputs:** `has_changes`, `plan_key`, `plan_sha256`
-
-### plan-review.yml
-
-Downloads plan text from S3, runs LLM risk analysis via Bedrock Claude Haiku. Posts review to PR (on PRs) or Slack (on direct push).
+LLM review is now performed inline within this workflow (no separate `plan-review.yml`). After planning, it downloads the plan text and runs `scripts/review-plan.py` via Bedrock Claude Haiku for risk analysis.
 
 **OIDC role:** `javabin-ci-app-{repo}`
-**Outputs:** `risk_level` (LOW, MEDIUM, HIGH, FAILED)
+**Outputs:** `has_changes`, `plan_key`, `plan_sha256`, `risk_level`
 
 ### tf-apply.yml
 
