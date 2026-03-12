@@ -27,7 +27,7 @@ jobs:
   commit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.ref }}
 
@@ -35,7 +35,7 @@ jobs:
         id: check
         run: echo "has_yaml=$(test -f app.yaml && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         if: steps.check.outputs.has_yaml == 'true'
         with:
           terraform_version: "1.7"
@@ -52,7 +52,7 @@ jobs:
 
       - name: Checkout platform scripts
         if: steps.check.outputs.has_yaml == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: javaBin/platform
           token: ${{ steps.app-token.outputs.token }}

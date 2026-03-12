@@ -34,9 +34,9 @@ jobs:
     env:
       PLAN_BUCKET: javabin-ci-plan-artifacts-${{ inputs.aws_account_id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.7"
           terraform_wrapper: false
@@ -50,7 +50,7 @@ jobs:
           owner: javaBin
 
       - name: Checkout platform scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: javaBin/platform
           token: ${{ steps.app-token.outputs.token }}
@@ -59,7 +59,7 @@ jobs:
 
       # Step 1: Lightweight OIDC role — can only invoke gate Lambda + read S3
       - name: Configure gate credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-apply-gate
           aws-region: ${{ inputs.aws_region }}
