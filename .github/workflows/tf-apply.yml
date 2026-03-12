@@ -34,7 +34,7 @@ jobs:
     env:
       PLAN_BUCKET: javabin-ci-plan-artifacts-${{ inputs.aws_account_id }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - uses: hashicorp/setup-terraform@v4
         with:
@@ -43,14 +43,14 @@ jobs:
 
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ secrets.PLATFORM_APP_ID }}
           private-key: ${{ secrets.PLATFORM_APP_PRIVATE_KEY }}
           owner: javaBin
 
       - name: Checkout platform scripts
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: javaBin/platform
           token: ${{ steps.app-token.outputs.token }}
@@ -59,7 +59,7 @@ jobs:
 
       # Step 1: Lightweight OIDC role — can only invoke gate Lambda + read S3
       - name: Configure gate credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v5
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-apply-gate
           aws-region: ${{ inputs.aws_region }}

@@ -41,7 +41,7 @@ jobs:
       has_cdk: ${{ steps.check.outputs.has_cdk }}
       app_name: ${{ steps.check.outputs.app_name }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Detect repo contents
         id: check
