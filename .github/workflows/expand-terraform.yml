@@ -25,6 +25,7 @@ permissions:
 
 jobs:
   expand:
+    name: Expand Terraform
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

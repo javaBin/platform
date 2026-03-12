@@ -25,6 +25,7 @@ permissions:
 
 jobs:
   deploy:
+    name: EB Deploy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

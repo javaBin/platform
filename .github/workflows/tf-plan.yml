@@ -36,6 +36,7 @@ permissions:
 
 jobs:
   plan:
+    name: Terraform Plan
     runs-on: ubuntu-latest
     outputs:
       has_changes: ${{ steps.plan.outputs.has_changes }}
