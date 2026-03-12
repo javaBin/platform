@@ -204,18 +204,16 @@ def _send_welcome_email(access_token, javabin_email, personal_email, firstname):
     """
     admin_email = _get_ssm_param(GOOGLE_ADMIN_EMAIL_PARAM)
 
-    subject = f"Your java.no account is ready — {javabin_email}"
+    subject = f"Velkommen til javaBin — din {javabin_email} konto"
     body_text = (
-        f"Hi {firstname},\n\n"
-        f"Your javaBin Google Workspace account has been created:\n\n"
-        f"    Email: {javabin_email}\n\n"
-        f"To set your password:\n"
-        f"  1. Go to https://accounts.google.com\n"
-        f"  2. Enter {javabin_email} as your email\n"
-        f"  3. Click \"Forgot password\"\n"
-        f"  4. A password reset link will be sent to this email ({personal_email})\n\n"
-        f"Once signed in, you'll have access to javaBin Google Workspace services.\n\n"
-        f"— javaBin platform"
+        f"Hei {firstname},\n\n"
+        f"Velkommen som javaBin-helt! Din Google Workspace-konto er opprettet.\n\n"
+        f"Brukernavn: {javabin_email}\n\n"
+        f"For a sette passord, ga til accounts.google.com og logg inn med\n"
+        f"adressen over. Velg \"Glemt passord\" sa sendes en lenke hit.\n\n"
+        f"Med denne kontoen far du tilgang til javaBin sine tjenester,\n"
+        f"e-post og delte dokumenter.\n\n"
+        f"Hilsen javaBin"
     )
 
     # Build RFC 2822 email message
