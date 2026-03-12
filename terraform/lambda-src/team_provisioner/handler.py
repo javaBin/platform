@@ -1215,7 +1215,10 @@ def handle_sync_groups_and_heros(event):
 
             existing = _google_api("GET", f"/groups/{group_key}", access_token)
             if existing and not existing.get("already_exists"):
-                _google_api("PUT", f"/groups/{group_key}", access_token, group_body)
+                # Group exists — do NOT update name/description/email.
+                # Updating existing groups can rename unrelated groups that
+                # share a display name or alias (e.g. jz-ledelsen → javazone).
+                logger.info("Google group %s already exists — skipping metadata update", google_email)
             else:
                 _google_api("POST", "/groups", access_token, group_body)
 
