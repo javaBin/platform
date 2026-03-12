@@ -94,13 +94,30 @@ resource "aws_iam_role_policy" "ci_infra_plan_extras" {
         Resource = "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*"
       },
       {
-        Sid    = "BedrockForReview"
+        Sid    = "BedrockInferenceProfile"
         Effect = "Allow"
         Action = [
           "bedrock:InvokeModel",
           "bedrock:Converse",
         ]
         Resource = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
+      },
+      {
+        # Cross-region inference profiles route to foundation models in EU
+        # destination regions. IAM requires access to destination model ARNs.
+        # Condition scopes this to only work via our inference profiles.
+        Sid    = "BedrockFoundationModels"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:Converse",
+        ]
+        Resource = "arn:aws:bedrock:eu-*::foundation-model/anthropic.*"
+        Condition = {
+          StringLike = {
+            "bedrock:InferenceProfileArn" = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
+          }
+        }
       },
       {
         Sid      = "SSMReadSlackWebhook"

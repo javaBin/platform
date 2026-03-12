@@ -21,3 +21,8 @@ fi
 
 echo "risk_level=${RISK}" >> "$GITHUB_OUTPUT"
 echo "LLM review risk: ${RISK}"
+
+if [ "$RISK" = "FAILED" ]; then
+  echo "LLM review failed — blocking pipeline."
+  exit 1
+fi
