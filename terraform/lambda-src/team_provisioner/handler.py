@@ -117,7 +117,8 @@ GOOGLE_SCOPES = (
     "https://www.googleapis.com/auth/admin.directory.group "
     "https://www.googleapis.com/auth/admin.directory.group.member "
     "https://www.googleapis.com/auth/admin.directory.user "
-    "https://www.googleapis.com/auth/admin.directory.user.alias"
+    "https://www.googleapis.com/auth/admin.directory.user.alias "
+    "https://www.googleapis.com/auth/gmail.send"
 )
 
 
@@ -192,6 +193,52 @@ def _google_api(method, path, access_token, body=None):
             return None
         body_text = e.read().decode("utf-8", errors="replace")
         logger.error("Google API %s %s → %d: %s", method, path, e.code, body_text)
+        raise
+
+
+def _send_welcome_email(access_token, javabin_email, personal_email, firstname):
+    """Send a welcome email to the hero's personal address via Gmail API.
+
+    Uses domain-wide delegation to send as the admin email. The email instructs
+    the hero to set up their @java.no account via the forgot-password flow.
+    """
+    admin_email = _get_ssm_param(GOOGLE_ADMIN_EMAIL_PARAM)
+
+    subject = f"Your java.no account is ready — {javabin_email}"
+    body_text = (
+        f"Hi {firstname},\n\n"
+        f"Your javaBin Google Workspace account has been created:\n\n"
+        f"    Email: {javabin_email}\n\n"
+        f"To set your password:\n"
+        f"  1. Go to https://accounts.google.com\n"
+        f"  2. Enter {javabin_email} as your email\n"
+        f"  3. Click \"Forgot password\"\n"
+        f"  4. A password reset link will be sent to this email ({personal_email})\n\n"
+        f"Once signed in, you'll have access to javaBin Google Workspace services.\n\n"
+        f"— javaBin platform"
+    )
+
+    # Build RFC 2822 email message
+    import email.mime.text
+    msg = email.mime.text.MIMEText(body_text)
+    msg["To"] = personal_email
+    msg["From"] = admin_email
+    msg["Subject"] = subject
+    raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+
+    # Send via Gmail API (impersonating admin)
+    gmail_url = f"https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+    gmail_body = json.dumps({"raw": raw_message}).encode("utf-8")
+    req = urllib.request.Request(gmail_url, data=gmail_body, method="POST")
+    req.add_header("Authorization", f"Bearer {access_token}")
+    req.add_header("Content-Type", "application/json")
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            logger.info("Sent welcome email to %s for account %s", personal_email, javabin_email)
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="replace")
+        logger.error("Gmail send failed: %d %s", e.code, body_text)
         raise
 
 
@@ -1114,6 +1161,7 @@ def handle_sync_groups_and_heros(event):
             import string
             temp_password = "".join(secrets.choice(string.ascii_letters + string.digits + "!@#$%") for _ in range(24))
 
+            personal_email = hero.get("personal_email", "")
             user_body = {
                 "primaryEmail": email,
                 "name": {
@@ -1122,29 +1170,21 @@ def handle_sync_groups_and_heros(event):
                 },
                 "password": temp_password,
                 "changePasswordAtNextLogin": True,
+                "recoveryEmail": personal_email,
             }
 
             try:
                 create_result = _google_api("POST", "/users", access_token, user_body)
                 if create_result and not create_result.get("already_exists"):
                     accounts_created.append(email)
-                    logger.info("Created Google Workspace account: %s", email)
+                    logger.info("Created Google Workspace account: %s (recovery: %s)", email, personal_email)
 
-                    # Send password reset to personal email so the hero can set up their account
-                    personal_email = hero.get("personal_email", "")
+                    # Send welcome email to personal address via Gmail API
                     if personal_email:
                         try:
-                            _google_api(
-                                "POST",
-                                f"/users/{user_key}/sendAs",
-                                access_token,
-                            )
-                        except Exception:
-                            # sendAs may not be available; hero can use "forgot password" flow
-                            logger.info(
-                                "Could not send invite for %s — hero can use forgot password with %s",
-                                email, personal_email,
-                            )
+                            _send_welcome_email(access_token, email, personal_email, hero.get("firstname", ""))
+                        except Exception as we:
+                            logger.warning("Could not send welcome email to %s: %s", personal_email, we)
                 else:
                     accounts_existed.append(email)
             except Exception as e:
