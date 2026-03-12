@@ -166,6 +166,7 @@ REGISTRY = [
             "security_group_ids": "list:ref:platform.ecs_tasks_security_group_id",
             "target_group_arn": "ref:routing.target_group_arn",
             "region": "env:AWS_REGION",
+            "container_user": "yaml:compute.user|default:1000",
             "environment": "collect:env_vars",
             "secrets": "collect:secret_vars",
         },

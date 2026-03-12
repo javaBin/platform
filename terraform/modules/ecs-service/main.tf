@@ -20,11 +20,26 @@ resource "aws_ecs_task_definition" "this" {
   execution_role_arn       = var.execution_role_arn
   task_role_arn            = var.task_role_arn
 
+  volume {
+    name = "tmp"
+  }
+
   container_definitions = jsonencode([
     {
       name      = var.name
       image     = var.image
       essential = true
+      user      = tostring(var.container_user)
+
+      readonlyRootFilesystem = true
+
+      mountPoints = [
+        {
+          sourceVolume  = "tmp"
+          containerPath = "/tmp"
+          readOnly      = false
+        }
+      ]
 
       portMappings = [
         {

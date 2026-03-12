@@ -84,3 +84,9 @@ variable "region" {
   description = "AWS region for CloudWatch logs"
   type        = string
 }
+
+variable "container_user" {
+  description = "User to run the container as (non-root for ECS.20 compliance)"
+  type        = string
+  default     = "1000"
+}
