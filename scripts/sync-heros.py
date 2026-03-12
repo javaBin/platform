@@ -209,7 +209,7 @@ def format_yaml(members):
         "# creates a PR updating this file.",
         "#",
         "# Rules:",
-        "#   - All members are implicitly in the 'helter' group (not listed in memberships)",
+        "#   - The sync script auto-adds 'helter' to every hero's memberships",
         "#   - memberships references group names from groups.yaml",
         "#   - alias is optional — heroes can PR their preferred alias",
         "#   - javabin_google_email is the Google Workspace account (firstname.lastname@java.no)",
