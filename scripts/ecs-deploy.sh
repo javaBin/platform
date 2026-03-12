@@ -10,11 +10,9 @@ set -e
 SCRIPT_DIR=$(dirname "$0")
 export ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
 
-TASK_DEF_ARN=$(aws ecs describe-services \
-  --cluster "$CLUSTER" --services "$SERVICE" \
-  --query 'services[0].taskDefinition' --output text)
-
-aws ecs describe-task-definition --task-definition "$TASK_DEF_ARN" \
+# Use the latest family revision (includes structural changes from Terraform)
+# rather than the revision currently running on the service.
+aws ecs describe-task-definition --task-definition "$SERVICE" \
   --query 'taskDefinition' > task-def.json
 
 sh "$SCRIPT_DIR/update-task-def.sh" task-def.json task-def-new.json

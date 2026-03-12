@@ -3,19 +3,21 @@
 ################################################################################
 
 resource "aws_lb_target_group" "this" {
-  name        = "${var.project}-${var.name}"
-  port        = var.port
-  protocol    = "HTTP"
-  vpc_id      = var.vpc_id
-  target_type = "ip"
+  name                          = "${var.project}-${var.name}"
+  port                          = var.port
+  protocol                      = "HTTP"
+  vpc_id                        = var.vpc_id
+  target_type                   = "ip"
+  deregistration_delay          = var.deregistration_delay
+  load_balancing_algorithm_type = "round_robin"
 
   health_check {
     path                = var.health_check_path
     protocol            = "HTTP"
     healthy_threshold   = 2
-    unhealthy_threshold = 3
+    unhealthy_threshold = 2
     timeout             = 5
-    interval            = 30
+    interval            = 10
     matcher             = var.health_check_matcher
   }
 
