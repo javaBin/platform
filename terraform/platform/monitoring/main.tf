@@ -465,3 +465,27 @@ resource "aws_cloudwatch_event_target" "securityhub_findings_sns" {
   target_id = "send-to-security-sns"
   arn       = aws_sns_topic.security.arn
 }
+
+################################################################################
+# DynamoDB — alert dedup table (Security Hub + compliance)
+################################################################################
+
+resource "aws_dynamodb_table" "alert_dedup" {
+  name         = "${var.project}-alert-dedup"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "finding_key"
+
+  attribute {
+    name = "finding_key"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
+  tags = {
+    Name = "${var.project}-alert-dedup"
+  }
+}

@@ -170,10 +170,9 @@ resource "aws_iam_role" "ci_app" {
           }
           StringLike = {
             "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/${each.key}:*"
-            # Plan and review only — apply goes through the gate Lambda
+            # Plan + review (merged into tf-plan) — apply goes through the gate Lambda
             "token.actions.githubusercontent.com:job_workflow_ref" = [
               "${var.github_org}/platform/.github/workflows/tf-plan.yml@refs/heads/main",
-              "${var.github_org}/platform/.github/workflows/plan-review.yml@refs/heads/main",
             ]
           }
         }

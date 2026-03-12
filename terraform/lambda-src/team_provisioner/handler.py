@@ -1473,25 +1473,144 @@ def _result_line(provider, outcome):
         reason = outcome.get("reason", "skipped")
         return f":white_circle: {provider}: {reason}"
     if outcome.get("error"):
-        return f":red_circle: {provider}: {outcome['error']}"
-    return f":white_check_mark: {provider}: synced"
+        return f":red_circle: {provider}: {outcome['error'][:200]}"
+    # Include detail counts when available (google group sync)
+    parts = [f":white_check_mark: {provider}: synced"]
+    details = []
+    if outcome.get("added"):
+        details.append(f"+{outcome['added']} added")
+    if outcome.get("member_count"):
+        details.append(f"{outcome['member_count']} total")
+    if outcome.get("extra_preserved"):
+        details.append(f"{outcome['extra_preserved']} manual")
+    if details:
+        parts.append(f"({', '.join(details)})")
+    return " ".join(parts)
+
+
+def _status_cell(status):
+    """Build a rich_text table cell with emoji for account/alias status."""
+    emoji_map = {
+        "created": ("white_check_mark", "Created"),
+        "existed": ("heavy_minus_sign", "Existed"),
+        "failed": ("x", "Failed"),
+    }
+    emoji_name, label = emoji_map.get(status, ("question", status))
+    return {
+        "type": "rich_text",
+        "elements": [{
+            "type": "rich_text_section",
+            "elements": [
+                {"type": "emoji", "name": emoji_name},
+                {"type": "text", "text": f" {label}"},
+            ],
+        }],
+    }
+
+
+def _hero_sync_table(accounts, aliases):
+    """Build a single table for all hero account + alias provisioning.
+
+    Combines accounts and aliases into one table. Returns None if nothing happened.
+    Only 1 table block allowed per Slack message.
+    """
+    created = accounts.get("created", [])
+    existed = accounts.get("existed", [])
+    failed = accounts.get("failed", [])
+    aliases_created = aliases.get("created", []) if aliases else []
+    aliases_failed = aliases.get("failed", []) if aliases else []
+
+    if not any([created, existed, failed, aliases_created, aliases_failed]):
+        return None
+
+    header = [
+        {"type": "raw_text", "text": "Type"},
+        {"type": "raw_text", "text": "Email / Alias"},
+        {"type": "raw_text", "text": "Status"},
+    ]
+    rows = [header]
+
+    for email in created:
+        rows.append([
+            {"type": "raw_text", "text": "Account"},
+            {"type": "raw_text", "text": email},
+            _status_cell("created"),
+        ])
+    for email in existed:
+        rows.append([
+            {"type": "raw_text", "text": "Account"},
+            {"type": "raw_text", "text": email},
+            _status_cell("existed"),
+        ])
+    for entry in failed:
+        email = entry.get("email", "?")
+        error = entry.get("error", "unknown")[:80]
+        rows.append([
+            {"type": "raw_text", "text": "Account"},
+            {"type": "raw_text", "text": f"{email} ({error})"},
+            _status_cell("failed"),
+        ])
+    for entry in aliases_created:
+        rows.append([
+            {"type": "raw_text", "text": "Alias"},
+            {"type": "raw_text", "text": f"{entry.get('alias', '?')} -> {entry.get('user', '?')}"},
+            _status_cell("created"),
+        ])
+    for entry in aliases_failed:
+        rows.append([
+            {"type": "raw_text", "text": "Alias"},
+            {"type": "raw_text", "text": f"{entry.get('alias', '?')} ({entry.get('error', '')[:60]})"},
+            _status_cell("failed"),
+        ])
+
+    return {
+        "type": "table",
+        "column_settings": [
+            {"align": "center"},
+            {"is_wrapped": True},
+            {"align": "center"},
+        ],
+        "rows": rows[:51],  # Block Kit limit
+    }
 
 
 def notify_slack(results):
-    """Post provisioning summary to Slack."""
+    """Post provisioning summary to Slack.
+
+    Handles two result structures:
+    - Hero sync: results contains top-level 'accounts' and 'aliases' keys
+      alongside per-group results
+    - Team sync: results maps team_name -> {provider: outcome}
+
+    Uses a table for hero account/alias results. Omits sections with no content.
+    """
     webhook_url = get_webhook_url(ssm, INFRA_WEBHOOK_PARAM)
+
+    # Detect hero sync results by checking for 'accounts' key
+    accounts = results.pop("accounts", None)
+    aliases = results.pop("aliases", None)
+    is_hero_sync = accounts is not None
+
+    header_text = (
+        ":busts_in_silhouette: Hero & Group Sync Complete"
+        if is_hero_sync
+        else ":busts_in_silhouette: Team Provisioning Complete"
+    )
 
     blocks = [
         {
             "type": "header",
-            "text": {
-                "type": "plain_text",
-                "text": ":busts_in_silhouette: Team Provisioning Complete",
-                "emoji": True,
-            },
+            "text": {"type": "plain_text", "text": header_text, "emoji": True},
         }
     ]
 
+    # Hero-specific: single table for accounts + aliases
+    if accounts is not None:
+        table = _hero_sync_table(accounts, aliases)
+        if table:
+            blocks.append(table)
+
+    # Per-group / per-team results
     for team_name, result in results.items():
         lines = [_result_line(p, o) for p, o in result.items()]
         blocks.append(
@@ -1521,7 +1640,11 @@ def notify_slack(results):
         webhook_url,
         {
             "blocks": blocks,
-            "text": f"Team provisioning: {', '.join(results.keys())}",
+            "text": (
+                f"Hero sync: {', '.join(results.keys())}"
+                if is_hero_sync
+                else f"Team provisioning: {', '.join(results.keys())}"
+            ),
         },
     )
 
