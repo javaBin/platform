@@ -4,9 +4,9 @@ on:
   workflow_call:
     inputs:
       image_tag:
-        description: "Container image tag to deploy"
+        description: "Container image tag (unused — kept for workflow_call compat)"
         type: string
-        required: true
+        default: ""
       service_name:
         description: "ECS service name (defaults to repo name)"
         type: string
@@ -59,8 +59,4 @@ jobs:
         env:
           SERVICE: ${{ inputs.service_name || github.event.repository.name }}
           CLUSTER: ${{ inputs.cluster_name }}
-          IMAGE_TAG: ${{ inputs.image_tag }}
-          ECR_REPO: ${{ github.event.repository.name }}
-          ACCOUNT_ID: ${{ inputs.aws_account_id }}
-          REGION: ${{ inputs.aws_region }}
         run: sh .platform/scripts/ecs-deploy.sh

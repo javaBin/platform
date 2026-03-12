@@ -1,30 +1,21 @@
 #!/bin/sh
 # Deploy a new container image to an ECS service.
 #
+# Forces a new deployment so ECS pulls the latest image for the current
+# task definition. Does NOT create new task definition revisions — that's
+# Terraform's job. This avoids drift between TF-managed task defs
+# (with security hardening, volumes, etc.) and deploy-time revisions.
+#
 # Usage: ecs-deploy.sh
 #
-# Env: CLUSTER, SERVICE, ECR_REPO, IMAGE_TAG, ACCOUNT_ID, REGION
+# Env: CLUSTER, SERVICE
 
 set -e
 
-SCRIPT_DIR=$(dirname "$0")
-export ECR_URI="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
-
-# Use the latest family revision (includes structural changes from Terraform)
-# rather than the revision currently running on the service.
-aws ecs describe-task-definition --task-definition "$SERVICE" \
-  --query 'taskDefinition' > task-def.json
-
-sh "$SCRIPT_DIR/update-task-def.sh" task-def.json task-def-new.json
-
-NEW_ARN=$(aws ecs register-task-definition \
-  --cli-input-json file://task-def-new.json \
-  --query 'taskDefinition.taskDefinitionArn' --output text)
-echo "New task definition: $NEW_ARN"
-
+echo "Forcing new deployment for ${SERVICE} on ${CLUSTER}..."
 aws ecs update-service \
   --cluster "$CLUSTER" --service "$SERVICE" \
-  --task-definition "$NEW_ARN" > /dev/null
+  --force-new-deployment > /dev/null
 
 echo "Waiting for service to stabilize..."
 aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
