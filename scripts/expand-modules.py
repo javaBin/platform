@@ -695,6 +695,20 @@ def main():
                     f.write(f'  {ds["body"]}\n')
                     f.write("}\n")
 
+    # -- Clean up stale generated files --
+    generated_filenames = {"backend.tf", "providers.tf", "outputs.tf"}
+    generated_filenames.update(file_contents.keys())
+
+    for f in os.listdir(tf_root):
+        if not f.endswith(".tf") or f in generated_filenames:
+            continue
+        filepath = os.path.join(tf_root, f)
+        with open(filepath) as fh:
+            first_line = fh.readline()
+        if GENERATED_MARKER in first_line:
+            os.remove(filepath)
+            print(f"  removed stale {f}")
+
     # -- Fingerprint --
     import hashlib
     with open(app_yaml_path, "rb") as f:
