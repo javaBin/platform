@@ -440,10 +440,12 @@ resource "aws_securityhub_standards_subscription" "aws_foundational" {
   depends_on    = [aws_securityhub_account.main]
 }
 
-# Route Security Hub findings with severity >= MEDIUM to security SNS
+# Route Security Hub findings with severity >= HIGH to security SNS.
+# MEDIUM findings are too noisy (SSL, logging, tags) — these are covered
+# by Config rules and compliance reporter already.
 resource "aws_cloudwatch_event_rule" "securityhub_findings" {
   name        = "${var.project}-securityhub-findings"
-  description = "Route Security Hub findings (MEDIUM and above) to SNS"
+  description = "Route Security Hub findings (HIGH and above) to SNS"
 
   event_pattern = jsonencode({
     source      = ["aws.securityhub"]
@@ -451,7 +453,7 @@ resource "aws_cloudwatch_event_rule" "securityhub_findings" {
     detail = {
       findings = {
         Severity = {
-          Label = ["MEDIUM", "HIGH", "CRITICAL"]
+          Label = ["HIGH", "CRITICAL"]
         }
       }
     }
