@@ -5,27 +5,24 @@ Defined in `.github/workflows/platform-ci.yml`. Runs on pushes to `terraform/pla
 ## Pipeline
 
 ```
-push to main ──► plan ──► review ──► apply
-PR             ──► plan ──► review ──► PR comments (no apply)
+push to main ──► plan (includes LLM review) ──► apply
+PR             ──► plan (includes LLM review) ──► PR comments (no apply)
 Monday 06:00   ──► drift detection ──► Slack if drift found
+Monday 08:00   ──► securityhub-summary Lambda ──► #javabin-infra-alerts
 ```
 
 ## Jobs
 
-### plan
-- OIDC → `javabin-ci-infra` role
+### plan (includes LLM review)
+- OIDC → `javabin-ci-infra-plan` role (read-only)
 - `terraform init`, `validate`, `fmt -check`, `plan`
 - Uploads `tfplan` + `plan-output.txt` to S3 with SHA256 hash
 - Posts plan output as PR comment on pull requests
-- Outputs: `has_changes`, `plan_key`, `plan_sha256`
-
-### review
-- Downloads plan text from S3 (does NOT re-run terraform plan)
-- Runs `scripts/review-plan.py` which calls Bedrock (Claude Haiku) for risk analysis
+- Runs `scripts/review-plan.py` inline — calls Bedrock (Claude Haiku) for risk analysis
 - Structured output via Bedrock Converse tool use: `{risk: LOW|MEDIUM|HIGH, summary: ..., findings: [...]}`
 - Posts review as PR comment
 - HIGH risk on main → sends Slack notification
-- Output: `risk_level`
+- Outputs: `has_changes`, `plan_key`, `plan_sha256`, `risk_level`
 
 ### apply
 - Only on `push` to `main` with changes

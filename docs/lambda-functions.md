@@ -17,6 +17,8 @@ Terraform in `terraform/platform/lambdas/`.
 
 Features: GitHub OIDC attribution (extracts actor/repo/SHA from session tags), cost estimation via shared pricing module, Security Hub finding formatting.
 
+Uses the `javabin-alert-dedup` DynamoDB table for deduplication of alerts (prevents repeated notifications for the same finding).
+
 ## cost-report
 
 **Trigger:** EventBridge schedule — Monday 08:00 UTC
@@ -54,6 +56,17 @@ Filters by identity: only reports resources created by known CI/platform identit
 **Purpose:** Deletes stale SSM parameters under `/javabin/platform-overrides/` older than 24 hours. Override tokens are meant to be single-use; this cleans up any that weren't consumed.
 
 No Slack integration. Logs cleanup actions to CloudWatch.
+
+## securityhub-summary
+
+**Trigger:** EventBridge schedule — Monday 08:00 UTC
+**Purpose:** Weekly summary of active HIGH/CRITICAL Security Hub findings. Reuses the slack-alert code with the `summary_handler` entry point.
+
+| SSM Parameter | Channel |
+|---------------|---------|
+| `/javabin/slack/platform-resource-alerts-webhook` | #javabin-infra-alerts |
+
+Queries Security Hub for active findings at HIGH and CRITICAL severity, aggregates by resource type and finding title, and posts a formatted summary to Slack.
 
 ## team-provisioner
 
