@@ -50,3 +50,13 @@ variable "sso_instance_arn" {
   default     = ""
 }
 
+variable "alert_dedup_table_name" {
+  description = "DynamoDB table name for alert deduplication"
+  type        = string
+}
+
+variable "alert_dedup_table_arn" {
+  description = "DynamoDB table ARN for alert deduplication"
+  type        = string
+}
+

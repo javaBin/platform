@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 ssm = boto3.client("ssm")
+dynamodb = boto3.resource("dynamodb")
 
 # SSM parameter names passed via environment
 INFRA_WEBHOOK_PARAM = os.environ["INFRA_WEBHOOK_PARAM"]
@@ -22,10 +24,50 @@ COST_WEBHOOK_PARAM = os.environ["COST_WEBHOOK_PARAM"]
 SECURITY_TOPIC_ARN = os.environ["SECURITY_TOPIC_ARN"]
 PROJECT_PREFIX = os.environ.get("PROJECT_PREFIX", "javabin")
 GITHUB_ORG_URL = os.environ.get("GITHUB_ORG_URL", "https://github.com/javaBin")
+DEDUP_TABLE_NAME = os.environ.get("DEDUP_TABLE_NAME", "javabin-alert-dedup")
 
 # Dedup cache: "{action}:{resource}" -> timestamp
 _recent_alerts = {}
 DEDUP_WINDOW = 300  # 5 minutes
+DEDUP_TTL_DAYS = 30
+
+
+# ---------------------------------------------------------------------------
+# DynamoDB dedup — persistent dedup for Security Hub + compliance alerts
+# ---------------------------------------------------------------------------
+def _dedup_table():
+    return dynamodb.Table(DEDUP_TABLE_NAME)
+
+
+def _finding_dedup_key(finding):
+    """Build a dedup key from a Security Hub finding."""
+    resources = finding.get("Resources", [])
+    resource_arn = resources[0].get("Id", "unknown") if resources else "unknown"
+    title_hash = hashlib.sha256(finding.get("Title", "").encode()).hexdigest()[:12]
+    return f"{resource_arn}:{title_hash}"
+
+
+def is_finding_already_alerted(dedup_key):
+    """Check DynamoDB for an existing alert entry."""
+    try:
+        resp = _dedup_table().get_item(Key={"finding_key": dedup_key})
+        return "Item" in resp
+    except Exception as e:
+        logger.warning("DynamoDB dedup check failed (allowing alert): %s", e)
+        return False
+
+
+def record_finding_alert(dedup_key):
+    """Write dedup entry with TTL."""
+    try:
+        expires_at = int(time.time()) + (DEDUP_TTL_DAYS * 86400)
+        _dedup_table().put_item(Item={
+            "finding_key": dedup_key,
+            "alerted_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": expires_at,
+        })
+    except Exception as e:
+        logger.warning("DynamoDB dedup write failed: %s", e)
 
 # ---------------------------------------------------------------------------
 # Console URL builder — derives service from eventSource, minimal overrides
@@ -602,8 +644,15 @@ def format_compliance_alert(parsed):
     if PROJECT_PREFIX not in resource_id.lower():
         return None
 
-    compliance = detail.get("newEvaluationResult", {}).get("complianceType", "UNKNOWN")
+    # DynamoDB dedup for compliance alerts
     rule_name = detail.get("configRuleName", "unknown")
+    dedup_key = f"compliance:{resource_id}:{rule_name}"
+    if is_finding_already_alerted(dedup_key):
+        logger.info("Compliance alert suppressed (already alerted): %s", dedup_key)
+        return None
+    record_finding_alert(dedup_key)
+
+    compliance = detail.get("newEvaluationResult", {}).get("complianceType", "UNKNOWN")
     short_type = resource_type.replace("AWS::", "").replace("::", " ")
 
     blocks = [
@@ -780,7 +829,7 @@ def format_guardduty_finding(parsed):
 
 
 def format_securityhub_finding(parsed):
-    """Security Hub finding alert — Block Kit."""
+    """Security Hub finding alert — Block Kit with DynamoDB dedup and Acknowledge button."""
     findings = parsed.get("detail", {}).get("findings", [])
     if not findings:
         return None
@@ -791,6 +840,14 @@ def format_securityhub_finding(parsed):
     description = finding.get("Description", "")
     region = parsed.get("region", "unknown")
     account = parsed.get("account", "unknown")
+    finding_id = finding.get("Id", "")
+
+    # DynamoDB dedup — suppress if already alerted for this resource+finding
+    dedup_key = _finding_dedup_key(finding)
+    if is_finding_already_alerted(dedup_key):
+        logger.info("Security Hub finding suppressed (already alerted): %s", dedup_key)
+        return None
+    record_finding_alert(dedup_key)
 
     sev_emoji = {
         "CRITICAL": ":red_circle:",
@@ -801,8 +858,6 @@ def format_securityhub_finding(parsed):
 
     resources = finding.get("Resources", [])
     resource_ids = [r.get("Id", "unknown").split("/")[-1] for r in resources[:3]]
-
-    sh_url = f"https://{region}.console.aws.amazon.com/securityhub/home?region={region}#/findings"
 
     fields = [
         {"type": "mrkdwn", "text": f"*Severity*\n{sev_emoji} {severity_label}"},
@@ -823,10 +878,21 @@ def format_securityhub_finding(parsed):
             "text": {"type": "mrkdwn", "text": f"_{description[:500]}_"}
         })
 
+    # Link button to view & suppress in Security Hub console
+    encoded_id = finding_id.replace("/", "%2F").replace(":", "%3A")
+    sh_finding_url = (
+        f"https://{region}.console.aws.amazon.com/securityhub/home"
+        f"?region={region}#/findings?search=Id%3D{encoded_id}"
+    )
     blocks.append({
-        "type": "section",
-        "text": {"type": "mrkdwn", "text": f"<{sh_url}|View in Security Hub>"}
+        "type": "actions",
+        "elements": [{
+            "type": "button",
+            "text": {"type": "plain_text", "text": "View & Suppress in Security Hub", "emoji": True},
+            "url": sh_finding_url,
+        }],
     })
+
     blocks.append({"type": "divider"})
     blocks.append({
         "type": "context",
@@ -909,6 +975,151 @@ def format_budget_alert(parsed):
 
     fallback = f"Budget alert: {budget_name} at {threshold}% (${actual} / ${limit})"
     return {"blocks": blocks, "text": fallback}
+
+
+# ---------------------------------------------------------------------------
+# Weekly Security Hub summary
+# ---------------------------------------------------------------------------
+def _extract_resource_type(finding):
+    """Extract a short resource type from a Security Hub finding."""
+    resources = finding.get("Resources", [])
+    if not resources:
+        return "Unknown"
+    # Type looks like "AwsS3Bucket", "AwsEc2SecurityGroup", etc.
+    raw = resources[0].get("Type", "Other")
+    # Strip "Aws" prefix and insert spaces before capitals
+    name = raw.removeprefix("Aws")
+    return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
+
+
+def _severity_cell(label):
+    """Build a rich_text table cell with emoji for severity."""
+    emoji_name = "red_circle" if label == "CRITICAL" else "large_orange_circle"
+    return {
+        "type": "rich_text",
+        "elements": [{
+            "type": "rich_text_section",
+            "elements": [
+                {"type": "emoji", "name": emoji_name},
+                {"type": "text", "text": f" {label}"},
+            ],
+        }],
+    }
+
+
+def format_securityhub_summary():
+    """Query Security Hub for active HIGH/CRITICAL findings and format a table summary."""
+    securityhub = boto3.client("securityhub", region_name=DEPLOY_REGION)
+
+    findings = []
+    next_token = None
+    while True:
+        kwargs = {
+            "Filters": {
+                "SeverityLabel": [
+                    {"Value": "HIGH", "Comparison": "EQUALS"},
+                    {"Value": "CRITICAL", "Comparison": "EQUALS"},
+                ],
+                "WorkflowStatus": [
+                    {"Value": "NEW", "Comparison": "EQUALS"},
+                    {"Value": "NOTIFIED", "Comparison": "EQUALS"},
+                ],
+                "RecordState": [
+                    {"Value": "ACTIVE", "Comparison": "EQUALS"},
+                ],
+            },
+            "MaxResults": 100,
+        }
+        if next_token:
+            kwargs["NextToken"] = next_token
+        resp = securityhub.get_findings(**kwargs)
+        findings.extend(resp.get("Findings", []))
+        next_token = resp.get("NextToken")
+        if not next_token:
+            break
+
+    if not findings:
+        return None
+
+    # Sort: CRITICAL first, then HIGH, then by resource
+    sev_order = {"CRITICAL": 0, "HIGH": 1}
+    findings.sort(key=lambda f: (
+        sev_order.get(f.get("Severity", {}).get("Label", "HIGH"), 1),
+        f.get("Resources", [{}])[0].get("Id", "") if f.get("Resources") else "",
+    ))
+
+    # Build table rows — header + one row per finding
+    header_row = [
+        {"type": "raw_text", "text": "Severity"},
+        {"type": "raw_text", "text": "Type"},
+        {"type": "raw_text", "text": "Resource"},
+        {"type": "raw_text", "text": "Finding"},
+    ]
+
+    rows = [header_row]
+    for f in findings[:50]:  # Cap at 50 rows to stay within Block Kit limits
+        sev_label = f.get("Severity", {}).get("Label", "HIGH")
+        resource_type = _extract_resource_type(f)
+        resources = f.get("Resources", [])
+        resource_id = resources[0].get("Id", "unknown").split("/")[-1] if resources else "unknown"
+        title = f.get("Title", "Unknown")
+
+        rows.append([
+            _severity_cell(sev_label),
+            {"type": "raw_text", "text": resource_type},
+            {"type": "raw_text", "text": resource_id},
+            {"type": "raw_text", "text": title[:120]},
+        ])
+
+    region = DEPLOY_REGION
+    sh_url = f"https://{region}.console.aws.amazon.com/securityhub/home?region={region}#/findings"
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    blocks = [
+        {"type": "header",
+         "text": {"type": "plain_text",
+                  "text": "Weekly Security Hub Summary", "emoji": True}},
+        {"type": "section",
+         "text": {"type": "mrkdwn",
+                  "text": f"*{len(findings)} active HIGH/CRITICAL findings*"}},
+        {
+            "type": "table",
+            "column_settings": [
+                {"align": "center"},
+                {"is_wrapped": True},
+                {"is_wrapped": True},
+                {"is_wrapped": True},
+            ],
+            "rows": rows,
+        },
+        {"type": "section",
+         "text": {"type": "mrkdwn",
+                  "text": f"<{sh_url}|View all findings in Security Hub>"}},
+        {"type": "divider"},
+        {"type": "context",
+         "elements": [{"type": "mrkdwn", "text": f"Weekly summary | {ts}"}]},
+    ]
+
+    return {
+        "blocks": blocks,
+        "text": f"Weekly Security Hub Summary: {len(findings)} active findings",
+    }
+
+
+def summary_handler(event, context):
+    """Lambda handler for the weekly Security Hub summary."""
+    webhook_url = _get_webhook(INFRA_WEBHOOK_PARAM)
+    try:
+        result = format_securityhub_summary()
+        if result:
+            post_to_slack(webhook_url, result)
+            logger.info("Posted weekly Security Hub summary")
+        else:
+            logger.info("No active HIGH/CRITICAL findings — skipping summary")
+    except Exception as e:
+        logger.error("Weekly summary failed: %s", e)
+
+    return {"statusCode": 200}
 
 
 # ---------------------------------------------------------------------------
