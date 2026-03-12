@@ -27,7 +27,7 @@ jobs:
   expand:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.ref }}
 
@@ -40,7 +40,7 @@ jobs:
           owner: javaBin
 
       - name: Checkout platform scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: javaBin/platform
           token: ${{ steps.app-token.outputs.token }}

@@ -7,11 +7,13 @@ on:
       - 'terraform/platform/**'
       - 'terraform/lambda-src/**'
       - 'scripts/**'
+      - '.github/workflows/**'
   pull_request:
     paths:
       - 'terraform/platform/**'
       - 'terraform/lambda-src/**'
       - 'scripts/**'
+      - '.github/workflows/**'
   schedule:
     # Drift detection — Monday 06:00 UTC
     - cron: '0 6 * * 1'
@@ -45,15 +47,15 @@ jobs:
       plan_text_key: ${{ steps.upload.outputs.plan_text_key }}
       plan_sha256: ${{ steps.upload.outputs.plan_sha256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.7"
           terraform_wrapper: false
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
           aws-region: ${{ env.AWS_REGION }}
@@ -82,7 +84,7 @@ jobs:
 
       - name: Upload Lambda ZIPs as artifact
         if: steps.plan.outputs.has_changes == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: lambda-zips
           path: ${{ env.TF_ROOT }}/lambdas/builds/
@@ -106,9 +108,9 @@ jobs:
     outputs:
       risk_level: ${{ steps.review.outputs.risk_level }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
           aws-region: ${{ env.AWS_REGION }}
@@ -147,14 +149,14 @@ jobs:
       needs.plan.outputs.has_changes == 'true'
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.7"
           terraform_wrapper: false
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
           aws-region: ${{ env.AWS_REGION }}
@@ -166,7 +168,7 @@ jobs:
         run: sh scripts/check-risk-block.sh "$RISK" /javabin/slack/platform-override-alerts-webhook "https://github.com/${{ github.repository }}/actions/workflows/approve-override.yml"
 
       - name: Download Lambda ZIPs from artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: lambda-zips
           path: ${{ env.TF_ROOT }}/lambdas/builds/
@@ -195,14 +197,14 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: "1.7"
           terraform_wrapper: false
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
           aws-region: ${{ env.AWS_REGION }}
