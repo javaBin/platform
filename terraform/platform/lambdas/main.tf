@@ -6,6 +6,11 @@
 locals {
   lambda_src_path = "${path.module}/../../lambda-src"
   github_org_url  = "https://github.com/javaBin"
+
+  # EU cross-region inference profiles route to any eu-* region.
+  # IAM requires foundation model access in destination regions.
+  bedrock_eu_foundation_model_arns = "arn:aws:bedrock:eu-*::foundation-model/anthropic.*"
+  bedrock_inference_profile_arn    = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
 }
 
 ################################################################################
@@ -159,13 +164,21 @@ resource "aws_iam_role_policy" "slack_alert" {
         ]
       },
       {
-        Sid    = "Bedrock"
-        Effect = "Allow"
-        Action = [
-          "bedrock:InvokeModel",
-          "bedrock:Converse",
-        ]
-        Resource = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
+        Sid      = "BedrockInferenceProfile"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:Converse"]
+        Resource = local.bedrock_inference_profile_arn
+      },
+      {
+        Sid      = "BedrockFoundationModels"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:Converse"]
+        Resource = local.bedrock_eu_foundation_model_arns
+        Condition = {
+          StringLike = {
+            "bedrock:InferenceProfileArn" = local.bedrock_inference_profile_arn
+          }
+        }
       },
       {
         Sid    = "PricingRead"
@@ -236,13 +249,21 @@ resource "aws_iam_role_policy" "cost_report" {
         Resource = "*"
       },
       {
-        Sid    = "Bedrock"
-        Effect = "Allow"
-        Action = [
-          "bedrock:InvokeModel",
-          "bedrock:Converse",
-        ]
-        Resource = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
+        Sid      = "BedrockInferenceProfile"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:Converse"]
+        Resource = local.bedrock_inference_profile_arn
+      },
+      {
+        Sid      = "BedrockFoundationModels"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:Converse"]
+        Resource = local.bedrock_eu_foundation_model_arns
+        Condition = {
+          StringLike = {
+            "bedrock:InferenceProfileArn" = local.bedrock_inference_profile_arn
+          }
+        }
       },
     ]
   })
