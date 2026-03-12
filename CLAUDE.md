@@ -116,7 +116,7 @@ terraform/platform/
   iam/             GitHub OIDC, CI roles, permission boundary
   compute/         ECS cluster, ECR base config
   monitoring/      SNS, EventBridge, Config, GuardDuty, Security Hub
-  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, override-cleanup, team-provisioner, apply-gate
+  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, override-cleanup, team-provisioner, apply-gate, securityhub-summary
   identity/        Cognito user pools (internal + external). Identity Center is in terraform/org/
 ```
 
@@ -168,11 +168,12 @@ terraform/state/
   tf-apply.yml         SHA verify + apply via project role
   eb-deploy.yml        Elastic Beanstalk deploy (transition)
   ecs-deploy.yml       ECS task definition update
-  plan-review.yml      LLM risk + cost analysis
   approve-override.yml Risk gate override (board members)
   provision-app.yml    Team provisioning triggered from registry dispatch
-  commit-terraform.yml Commit generated TF files back to app repos
 ```
+
+> **Note:** Plan + LLM review are combined inline in `platform-ci.yml` for the platform repo
+> and in `tf-plan.yml` for app repos (no separate `plan-review.yml` or `commit-terraform.yml`).
 
 ### Lambda Functions
 | Function | Purpose |
@@ -183,6 +184,7 @@ terraform/state/
 | `compliance-reporter` | Reports untagged resources to Slack (no auto-fix) |
 | `override-cleanup` | Hourly cleanup of stale SSM override tokens |
 | `team-provisioner` | Syncs Google Groups, GitHub teams, AWS Budgets from registry team YAML |
+| `securityhub-summary` | Weekly Security Hub findings summary (Monday 08:00 UTC) |
 
 ### Scripts
 | Script | What |
@@ -202,7 +204,7 @@ terraform/state/
 | Type | Pattern |
 |------|---------|
 | Resources | `javabin-{purpose}` |
-| IAM roles | `javabin-ci-{purpose}` (CI), `javabin-{service}` (runtime) |
+| IAM roles | `javabin-ci-{purpose}` (CI — 6 roles including `ci-infra` / `ci-infra-plan` split), `javabin-{service}` (runtime) |
 | Lambdas | `javabin-{function}` |
 | S3 buckets | `javabin-{purpose}-{account_id}` |
 | SSM params | `/javabin/{namespace}/{name}` |
@@ -219,6 +221,7 @@ Cost Anomaly ──► javabin-alerts SNS ──► slack-alert Lambda ──►
 
 Scheduled:
   Monday 08:00 UTC ──► cost-report ──► #javabin-cost-alerts
+  Monday 08:00 UTC ──► securityhub-summary ──► #javabin-infra-alerts
   Daily 08:00 UTC  ──► daily-cost-check ──► #javabin-cost-alerts (only on spikes)
 
 EventBridge (Create/Run) ──► compliance-reporter (report to Slack, no auto-fix)
@@ -267,10 +270,10 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 | 1 | Identity (Google + Identity Center + Cognito) | **Deployed** — GCP SA with domain-wide delegation, Identity Center with ABAC + 3 permission sets in `terraform/org/`. Cognito pool TF exists but not yet applied (needs Google OAuth client). |
 | 2a | Networking | **Deployed** — VPC, subnets, NAT |
 | 2b | Ingress | **Deployed** — ALB + ACM cert |
-| 2c | IAM / OIDC | **Deployed** — 5 CI roles (infra, per-app, deploy, override-approver, registry) |
+| 2c | IAM / OIDC | **Deployed** — 6 CI roles (infra, infra-plan, per-app, deploy, override-approver, registry) |
 | 2d | Compute | **Deployed** — ECS cluster + ECR repos |
 | 2e | Monitoring | **Deployed** — GuardDuty, Security Hub, Config, SNS |
-| 2f | Lambda Functions | **Deployed** — 6 working (Google/GitHub/Budget/Cognito/Identity Center sync live) |
+| 2f | Lambda Functions | **Deployed** — 8 functions (Google/GitHub/Budget/Cognito/Identity Center sync live) |
 | 2g | Platform CI | **Done** — plan → LLM review → apply pipeline working |
 | 3a | Reusable Terraform Modules | **Code done** — 12 modules in repo |
 | 3b | GitHub Actions Workflows | **Code done** — 14 reusable workflows |

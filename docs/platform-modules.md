@@ -47,10 +47,12 @@ GitHub OIDC provider (data source), CI roles, permission boundary, ECS execution
 
 | Role | Trust | Purpose |
 |------|-------|---------|
-| `javabin-ci-infra` | platform repo, main branch | Plan + apply platform TF |
+| `javabin-ci-infra` | platform repo, main branch | Apply platform TF |
+| `javabin-ci-infra-plan` | platform repo, main branch + PRs | Read-only plan + review for platform TF |
 | `javabin-ci-app-{repo}` | Per-app, pinned to `tf-plan.yml` | App TF plan + apply |
 | `javabin-ci-deploy-{repo}` | Per-app, pinned to `tf-apply.yml` | ECR push, ECS deploy |
 | `javabin-ci-override-approver` | Board members, pinned to `approve-override.yml` | SSM override tokens |
+| `javabin-ci-registry` | Registry repo | Team provisioning dispatch |
 | `javabin-ecs-execution` | ECS tasks | Pull images, write logs, read secrets |
 
 **Key design:** `job_workflow_ref` condition prevents app repos from writing rogue workflows.
@@ -76,10 +78,11 @@ SNS topics, EventBridge rules, Config, GuardDuty, Security Hub.
 | AWS Config | Configuration recorder + S3 delivery |
 | GuardDuty | Threat detection |
 | Security Hub | Findings aggregation |
+| `javabin-alert-dedup` DynamoDB | Deduplication table used by slack-alert Lambda |
 
 ## lambdas
 
-6 Lambda functions — see [lambda-functions.md](lambda-functions.md) for details.
+8 Lambda functions — see [lambda-functions.md](lambda-functions.md) for details.
 
 ## identity
 
