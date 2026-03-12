@@ -30,6 +30,7 @@ permissions:
 
 jobs:
   deploy:
+    name: ECS Deploy
     runs-on: ubuntu-latest
     steps:
       - name: Generate GitHub App token
