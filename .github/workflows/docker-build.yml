@@ -38,10 +38,10 @@ jobs:
       image_uri: ${{ steps.push.outputs.image_uri }}
       image_tag: ${{ steps.tags.outputs.primary_tag }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Configure AWS credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v5
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-deploy-${{ github.event.repository.name }}
           aws-region: ${{ inputs.aws_region }}
