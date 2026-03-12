@@ -7,7 +7,7 @@ Reads both YAML files, resolves which heroes belong to which groups based on
 the memberships field in heros.yaml, and invokes the javabin-team-provisioner
 Lambda with action=sync_groups_and_heros.
 
-All heroes are implicitly members of the 'helter' group.
+All group memberships are explicit — heroes must list each group in their memberships field.
 
 Requires: aws CLI, PyYAML (available on GitHub Actions ubuntu-latest runners)
 """
