@@ -27,20 +27,20 @@ jobs:
   expand:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.ref }}
 
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ secrets.PLATFORM_APP_ID }}
           private-key: ${{ secrets.PLATFORM_APP_PRIVATE_KEY }}
           owner: javaBin
 
       - name: Checkout platform scripts
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: javaBin/platform
           token: ${{ steps.app-token.outputs.token }}
