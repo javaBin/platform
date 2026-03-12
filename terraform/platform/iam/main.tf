@@ -20,9 +20,109 @@ data "aws_iam_openid_connect_provider" "github" {
 ################################################################################
 
 ################################################################################
-# 1. javabin-ci-infra — Platform repo only (plan + apply)
+# 1a. javabin-ci-infra-plan — Platform repo plan + review (read-only)
 #
-# Trust: GitHub OIDC, only repo:javaBin/platform on main branch.
+# Trust: GitHub OIDC, repo:javaBin/platform on ANY ref (PRs need plan too).
+# Permissions: ReadOnlyAccess + specific writes for plan operations:
+#   - S3: upload plan artifacts
+#   - DynamoDB: Terraform state locking
+#   - Bedrock: LLM plan review (inline in plan job)
+#   - SSM: read Slack webhook for HIGH risk alerts
+#
+# This role CANNOT create, modify, or delete infrastructure.
+################################################################################
+
+resource "aws_iam_role" "ci_infra_plan" {
+  name                 = "${var.project}-ci-infra-plan"
+  permissions_boundary = aws_iam_policy.developer_boundary.arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = data.aws_iam_openid_connect_provider.github.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+          }
+          StringLike = {
+            # Any ref — PRs and main both need plan
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/platform:*"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "${var.project}-ci-infra-plan"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ci_infra_plan_readonly" {
+  role       = aws_iam_role.ci_infra_plan.name
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+}
+
+resource "aws_iam_role_policy" "ci_infra_plan_extras" {
+  name = "plan-specific-writes"
+  role = aws_iam_role.ci_infra_plan.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "TerraformStateLocking"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+        ]
+        Resource = "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/${var.project}-terraform-infra-lock"
+      },
+      {
+        Sid    = "UploadPlanArtifacts"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+        ]
+        Resource = "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*"
+      },
+      {
+        Sid    = "BedrockForReview"
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel",
+          "bedrock:Converse",
+        ]
+        Resource = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
+      },
+      {
+        Sid      = "SSMReadSlackWebhook"
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/slack/*"
+      },
+      {
+        # Pricing API for cost estimation during review
+        Sid      = "PricingRead"
+        Effect   = "Allow"
+        Action   = "pricing:GetProducts"
+        Resource = "*"
+      },
+    ]
+  })
+}
+
+################################################################################
+# 1b. javabin-ci-infra — Platform repo apply only
+#
+# Trust: GitHub OIDC, ONLY main branch (not PRs).
 # Permissions: Allow *:* with permission boundary + explicit deny on operations
 # that should never happen via CI (organizations, IAM users, destructive security ops).
 ################################################################################
@@ -45,8 +145,8 @@ resource "aws_iam_role" "ci_infra" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            # Allow main branch pushes and PR merge refs (plan runs on PRs too)
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/platform:*"
+            # Main branch ONLY — apply never runs on PRs
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/platform:ref:refs/heads/main"
           }
         }
       }
@@ -569,17 +669,29 @@ resource "aws_iam_role" "ci_registry" {
   }
 }
 
-resource "aws_iam_role_policy" "ci_registry_lambda" {
-  name = "invoke-team-provisioner"
+resource "aws_iam_role_policy" "ci_registry" {
+  name = "registry-operations"
   role = aws_iam_role.ci_registry.id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = "lambda:InvokeFunction"
-      Resource = "arn:aws:lambda:${var.region}:${var.aws_account_id}:function:${var.project}-team-provisioner"
-    }]
+    Statement = [
+      {
+        Sid      = "InvokeTeamProvisioner"
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = "arn:aws:lambda:${var.region}:${var.aws_account_id}:function:${var.project}-team-provisioner"
+      },
+      {
+        Sid    = "SSMReadGoogleCreds"
+        Effect = "Allow"
+        Action = "ssm:GetParameter"
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform/google-admin-sa",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform/google-admin-email",
+        ]
+      },
+    ]
   })
 }
 

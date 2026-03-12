@@ -57,9 +57,9 @@ jobs:
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra-plan
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: javabin-platform-${{ github.run_id }}
+          role-session-name: javabin-platform-plan-${{ github.run_id }}
 
       - name: Terraform Init
         working-directory: ${{ env.TF_ROOT }}
