@@ -65,3 +65,9 @@ variable "alb_zone_id" {
   description = "ALB hosted zone ID for the Route53 alias target"
   type        = string
 }
+
+variable "deregistration_delay" {
+  description = "Seconds to wait for in-flight requests before deregistering targets"
+  type        = number
+  default     = 30
+}
