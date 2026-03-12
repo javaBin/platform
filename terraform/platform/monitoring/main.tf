@@ -3,8 +3,7 @@
 ################################################################################
 
 resource "aws_sns_topic" "alerts" {
-  name              = "${var.project}-alerts"
-  kms_master_key_id = "alias/aws/sns"
+  name = "${var.project}-alerts"
 
   tags = {
     Name = "${var.project}-alerts"
@@ -12,8 +11,7 @@ resource "aws_sns_topic" "alerts" {
 }
 
 resource "aws_sns_topic" "security" {
-  name              = "${var.project}-security"
-  kms_master_key_id = "alias/aws/sns"
+  name = "${var.project}-security"
 
   tags = {
     Name = "${var.project}-security"
