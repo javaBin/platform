@@ -44,8 +44,8 @@ jobs:
     outputs:
       has_changes: ${{ steps.plan.outputs.has_changes }}
       plan_key: ${{ steps.upload.outputs.plan_key }}
-      plan_text_key: ${{ steps.upload.outputs.plan_text_key }}
       plan_sha256: ${{ steps.upload.outputs.plan_sha256 }}
+      risk_level: ${{ steps.review.outputs.risk_level }}
     steps:
       - uses: actions/checkout@v5
 
@@ -97,36 +97,18 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: sh scripts/post-plan-comment.sh "${{ env.TF_ROOT }}/plan-output.txt" "${{ steps.plan.outputs.has_changes }}"
 
-  # --------------------------------------------------------------------------
-  # Review — LLM risk analysis via Bedrock
-  # --------------------------------------------------------------------------
-  review:
-    name: LLM Plan Review
-    runs-on: ubuntu-latest
-    needs: plan
-    if: needs.plan.outputs.has_changes == 'true'
-    outputs:
-      risk_level: ${{ steps.review.outputs.risk_level }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
-          aws-region: ${{ env.AWS_REGION }}
-          role-session-name: javabin-review-${{ github.run_id }}
-
-      - name: Download plan text from S3
-        run: mkdir -p "${{ env.TF_ROOT }}" && aws s3 cp "s3://${PLAN_BUCKET}/${{ needs.plan.outputs.plan_text_key }}" "${{ env.TF_ROOT }}/plan-output.txt"
-
+      # ----------------------------------------------------------------
+      # LLM Plan Review (inline — plan-output.txt already in workspace)
+      # ----------------------------------------------------------------
       - name: Run LLM review
         id: review
+        if: steps.plan.outputs.has_changes == 'true'
         env:
           REVIEW_RESULT_PATH: review-result.json
         run: sh scripts/extract-review-risk.sh scripts/review-plan.py "${{ env.TF_ROOT }}/plan-output.txt"
 
       - name: Post review to PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.plan.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -134,7 +116,7 @@ jobs:
 
       - name: Post HIGH risk to Slack
         if: steps.review.outputs.risk_level == 'HIGH' && github.ref == 'refs/heads/main'
-        run: sh scripts/notify-high-risk.sh /javabin/slack/platform-resource-alerts-webhook "https://github.com/javaBin/platform/actions/workflows/approve-override.yml"
+        run: sh scripts/notify-high-risk.sh /javabin/slack/platform-override-alerts-webhook "https://github.com/javaBin/platform/actions/workflows/approve-override.yml"
 
   # --------------------------------------------------------------------------
   # Apply — auto-apply on LOW/MEDIUM, block on HIGH
@@ -142,7 +124,7 @@ jobs:
   apply:
     name: Terraform Apply
     runs-on: ubuntu-latest
-    needs: [plan, review]
+    needs: plan
     if: >-
       github.ref == 'refs/heads/main' &&
       github.event_name == 'push' &&
@@ -164,8 +146,8 @@ jobs:
 
       - name: Check risk level
         env:
-          RISK: ${{ needs.review.outputs.risk_level }}
-        run: sh scripts/check-risk-block.sh "$RISK" /javabin/slack/platform-override-alerts-webhook "https://github.com/${{ github.repository }}/actions/workflows/approve-override.yml"
+          RISK: ${{ needs.plan.outputs.risk_level }}
+        run: sh scripts/check-risk-block.sh "$RISK"
 
       - name: Download Lambda ZIPs from artifact
         uses: actions/download-artifact@v5

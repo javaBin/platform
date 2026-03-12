@@ -44,7 +44,7 @@ jobs:
   # 3. Docker build + ECR push (main only, after builds pass)
   # --------------------------------------------------------------------------
   docker-build:
-    needs: [detect, build-jvm, build-ts, tf-plan, plan-review, tf-apply]
+    needs: [detect, build-jvm, build-ts, tf-plan, tf-apply]
     if: |
       always() &&
       github.ref == 'refs/heads/main' &&
@@ -52,7 +52,6 @@ jobs:
       (needs.build-jvm.result == 'success' || needs.build-jvm.result == 'skipped') &&
       (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped') &&
       needs.tf-plan.result != 'failure' &&
-      needs.plan-review.result != 'failure' &&
       (needs.tf-apply.result == 'success' || needs.tf-apply.result == 'skipped')
     uses: javaBin/platform/.github/workflows/docker-build.yml@main
     secrets: inherit
@@ -79,25 +78,13 @@ jobs:
     secrets: inherit
 
   # --------------------------------------------------------------------------
-  # 5. LLM plan review (only when plan has changes)
-  # --------------------------------------------------------------------------
-  plan-review:
-    needs: tf-plan
-    if: needs.tf-plan.outputs.has_changes == 'true'
-    uses: javaBin/platform/.github/workflows/plan-review.yml@main
-    with:
-      plan_key: ${{ needs.tf-plan.outputs.plan_key }}
-    secrets: inherit
-
-  # --------------------------------------------------------------------------
-  # 6. Terraform apply (main only, after review — blocked on HIGH risk)
+  # 6. Terraform apply (main only, after plan + review — blocked on HIGH risk)
   # --------------------------------------------------------------------------
   tf-apply:
-    needs: [tf-plan, plan-review]
+    needs: tf-plan
     if: >-
       github.ref == 'refs/heads/main' &&
-      needs.tf-plan.outputs.has_changes == 'true' &&
-      needs.plan-review.result == 'success'
+      needs.tf-plan.outputs.has_changes == 'true'
     uses: javaBin/platform/.github/workflows/tf-apply.yml@main
     with:
       plan_key: ${{ needs.tf-plan.outputs.plan_key }}

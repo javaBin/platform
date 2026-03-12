@@ -174,6 +174,22 @@ resource "aws_iam_role_policy" "slack_alert" {
         # Pricing API is global and only supports * for resource
         Resource = "*"
       },
+      {
+        Sid    = "DynamoDBDedup"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+        ]
+        Resource = var.alert_dedup_table_arn
+      },
+      {
+        Sid    = "SecurityHubRead"
+        Effect = "Allow"
+        Action = "securityhub:GetFindings"
+        # Security Hub requires * for resource
+        Resource = "*"
+      },
     ]
   })
 }
@@ -505,6 +521,7 @@ resource "aws_lambda_function" "slack_alert" {
       PROJECT_PREFIX      = var.project
       GITHUB_ORG_URL      = local.github_org_url
       DEPLOY_REGION       = var.region
+      DEDUP_TABLE_NAME    = var.alert_dedup_table_name
     }
   }
 }
@@ -745,6 +762,54 @@ resource "aws_lambda_permission" "override_cleanup_schedule" {
 }
 
 # --- team-provisioner: no schedule — triggered via direct Lambda invocation from registry CI ---
+
+# --- securityhub-summary: Monday 08:00 UTC (same as cost report) ---
+resource "aws_cloudwatch_event_rule" "securityhub_summary_schedule" {
+  name                = "${var.project}-securityhub-summary-schedule"
+  description         = "Weekly Security Hub summary — Monday 08:00 UTC"
+  schedule_expression = "cron(0 8 ? * MON *)"
+}
+
+resource "aws_cloudwatch_event_target" "securityhub_summary" {
+  rule      = aws_cloudwatch_event_rule.securityhub_summary_schedule.name
+  target_id = "invoke-securityhub-summary"
+  arn       = aws_lambda_function.securityhub_summary.arn
+}
+
+resource "aws_lambda_permission" "securityhub_summary_schedule" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.securityhub_summary.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.securityhub_summary_schedule.arn
+}
+
+################################################################################
+# Security Hub Summary — weekly summary Lambda (reuses slack-alert code)
+################################################################################
+
+resource "aws_lambda_function" "securityhub_summary" {
+  function_name    = "${var.project}-securityhub-summary"
+  role             = aws_iam_role.slack_alert.arn
+  handler          = "handler.summary_handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 256
+  filename         = data.archive_file.slack_alert.output_path
+  source_code_hash = data.archive_file.slack_alert.output_base64sha256
+
+  environment {
+    variables = {
+      INFRA_WEBHOOK_PARAM = "/javabin/slack/platform-resource-alerts-webhook"
+      COST_WEBHOOK_PARAM  = "/javabin/slack/platform-cost-alerts-webhook"
+      SECURITY_TOPIC_ARN  = var.security_topic_arn
+      PROJECT_PREFIX      = var.project
+      GITHUB_ORG_URL      = local.github_org_url
+      DEPLOY_REGION       = var.region
+      DEDUP_TABLE_NAME    = var.alert_dedup_table_name
+    }
+  }
+}
 
 ################################################################################
 # Apply Gate — credential broker for Terraform apply

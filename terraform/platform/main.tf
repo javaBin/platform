@@ -64,6 +64,8 @@ module "lambdas" {
   internal_user_pool_arn         = module.identity.internal_user_pool_arn
   identity_store_id              = var.identity_store_id
   sso_instance_arn               = var.sso_instance_arn
+  alert_dedup_table_name         = module.monitoring.alert_dedup_table_name
+  alert_dedup_table_arn          = module.monitoring.alert_dedup_table_arn
 }
 
 module "identity" {
