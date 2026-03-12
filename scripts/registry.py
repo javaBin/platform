@@ -104,6 +104,7 @@ REGISTRY = [
             "route53_zone_id": "ref:platform.route53_zone_id",
             "alb_dns_name": "ref:platform.alb_dns_name",
             "alb_zone_id": "ref:platform.alb_zone_id",
+            "deregistration_delay": "yaml:routing.deregistration_delay|default:30",
         },
         "rename": "routing",
         "output_map": {
