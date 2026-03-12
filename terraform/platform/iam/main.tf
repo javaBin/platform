@@ -112,12 +112,7 @@ resource "aws_iam_role_policy" "ci_infra_plan_extras" {
           "bedrock:InvokeModel",
           "bedrock:Converse",
         ]
-        Resource = [
-          "arn:aws:bedrock:eu-central-1::foundation-model/anthropic.*",
-          "arn:aws:bedrock:eu-north-1::foundation-model/anthropic.*",
-          "arn:aws:bedrock:eu-west-1::foundation-model/anthropic.*",
-          "arn:aws:bedrock:eu-west-3::foundation-model/anthropic.*",
-        ]
+        Resource = "arn:aws:bedrock:eu-*::foundation-model/anthropic.*"
         Condition = {
           StringLike = {
             "bedrock:InferenceProfileArn" = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"

@@ -7,15 +7,10 @@ locals {
   lambda_src_path = "${path.module}/../../lambda-src"
   github_org_url  = "https://github.com/javaBin"
 
-  # EU cross-region inference profile destination regions.
-  # IAM requires foundation model access in all regions the profile can route to.
-  bedrock_eu_foundation_model_arns = [
-    "arn:aws:bedrock:eu-central-1::foundation-model/anthropic.*",
-    "arn:aws:bedrock:eu-north-1::foundation-model/anthropic.*",
-    "arn:aws:bedrock:eu-west-1::foundation-model/anthropic.*",
-    "arn:aws:bedrock:eu-west-3::foundation-model/anthropic.*",
-  ]
-  bedrock_inference_profile_arn = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
+  # EU cross-region inference profiles route to any eu-* region.
+  # IAM requires foundation model access in destination regions.
+  bedrock_eu_foundation_model_arns = "arn:aws:bedrock:eu-*::foundation-model/anthropic.*"
+  bedrock_inference_profile_arn    = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
 }
 
 ################################################################################
