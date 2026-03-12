@@ -9,11 +9,6 @@ on:
       - 'scripts/**'
       - '.github/workflows/**'
   pull_request:
-    paths:
-      - 'terraform/platform/**'
-      - 'terraform/lambda-src/**'
-      - 'scripts/**'
-      - '.github/workflows/**'
   schedule:
     # Drift detection — Monday 06:00 UTC
     - cron: '0 6 * * 1'
@@ -48,13 +43,28 @@ jobs:
       risk_level: ${{ steps.review.outputs.risk_level }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check for infra changes
+        id: changes
+        run: |
+          BASE="${{ github.event.pull_request.base.sha || github.event.before || 'HEAD~1' }}"
+          if git diff --name-only "$BASE" HEAD | grep -qE '^(terraform/|scripts/|\.github/workflows/)'; then
+            echo "has_infra_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_infra_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No infrastructure changes — skipping plan."
+          fi
 
       - uses: hashicorp/setup-terraform@v4
+        if: steps.changes.outputs.has_infra_changes == 'true'
         with:
           terraform_version: "1.7"
           terraform_wrapper: false
 
       - name: Configure AWS credentials via OIDC
+        if: steps.changes.outputs.has_infra_changes == 'true'
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra-plan
@@ -62,19 +72,23 @@ jobs:
           role-session-name: javabin-platform-plan-${{ github.run_id }}
 
       - name: Terraform Init
+        if: steps.changes.outputs.has_infra_changes == 'true'
         working-directory: ${{ env.TF_ROOT }}
         run: terraform init -input=false
 
       - name: Terraform Validate
+        if: steps.changes.outputs.has_infra_changes == 'true'
         working-directory: ${{ env.TF_ROOT }}
         run: terraform validate
 
       - name: Terraform Format
+        if: steps.changes.outputs.has_infra_changes == 'true'
         working-directory: ${{ env.TF_ROOT }}
         run: terraform fmt -recursive
 
       - name: Terraform Plan
         id: plan
+        if: steps.changes.outputs.has_infra_changes == 'true'
         run: scripts/run-plan.sh "${{ env.TF_ROOT }}" -lock-timeout=5m
 
       - name: Upload plan and output to S3
@@ -91,7 +105,7 @@ jobs:
           retention-days: 1
 
       - name: Post plan to PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.changes.outputs.has_infra_changes == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
