@@ -204,21 +204,64 @@ def _send_welcome_email(access_token, javabin_email, personal_email, firstname):
     """
     admin_email = _get_ssm_param(GOOGLE_ADMIN_EMAIL_PARAM)
 
-    subject = f"Velkommen til javaBin — din {javabin_email} konto"
-    body_text = (
-        f"Hei {firstname},\n\n"
-        f"Velkommen som javaBin-helt! Din Google Workspace-konto er opprettet.\n\n"
-        f"Brukernavn: {javabin_email}\n\n"
-        f"For a sette passord, ga til accounts.google.com og logg inn med\n"
-        f"adressen over. Velg \"Glemt passord\" sa sendes en lenke hit.\n\n"
-        f"Med denne kontoen far du tilgang til javaBin sine tjenester,\n"
-        f"e-post og delte dokumenter.\n\n"
-        f"Hilsen javaBin"
-    )
+    subject = "Velkommen som JavaBin-Helt!"
+    body_html = f"""\
+<html>
+<body style="margin:0;padding:0;background-color:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f5f5f5;padding:40px 0;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;overflow:hidden;">
+        <!-- Header -->
+        <tr>
+          <td style="background-color:#1a1a2e;padding:30px 40px;text-align:center;">
+            <img src="https://java.no/_next/static/media/javaBin-logo-horizontal-WHITE.434dba55.png" alt="javaBin" width="200" style="display:inline-block;" />
+          </td>
+        </tr>
+        <!-- Body -->
+        <tr>
+          <td style="padding:40px;">
+            <h1 style="color:#1a1a2e;font-size:22px;margin:0 0 20px;">Hei {firstname}!</h1>
+            <p style="color:#333;font-size:16px;line-height:1.6;">
+              Velkommen som javaBin-helt! Din Google Workspace-konto er n\u00e5 opprettet.
+            </p>
+            <table style="background-color:#f0f4f8;border-radius:6px;padding:20px;margin:20px 0;width:100%;">
+              <tr><td>
+                <p style="margin:0;color:#666;font-size:13px;text-transform:uppercase;letter-spacing:1px;">Brukernavn</p>
+                <p style="margin:4px 0 0;color:#1a1a2e;font-size:18px;font-weight:600;">{javabin_email}</p>
+              </td></tr>
+            </table>
+            <p style="color:#333;font-size:16px;line-height:1.6;"><strong>Slik setter du passord:</strong></p>
+            <ol style="color:#333;font-size:15px;line-height:1.8;padding-left:20px;">
+              <li>G\u00e5 til <strong>accounts.google.com</strong></li>
+              <li>Skriv inn <strong>{javabin_email}</strong></li>
+              <li>Trykk p\u00e5 \u00abGlemt passord\u00bb</li>
+              <li>Du f\u00e5r en lenke til <strong>{personal_email}</strong></li>
+            </ol>
+            <p style="color:#333;font-size:16px;line-height:1.6;">
+              N\u00e5r du er logget inn har du tilgang til javaBin sine tjenester, e-post og delte dokumenter.
+            </p>
+          </td>
+        </tr>
+        <!-- Footer -->
+        <tr>
+          <td style="background-color:#f8f9fa;padding:20px 40px;border-top:1px solid #e9ecef;">
+            <p style="margin:0;color:#999;font-size:13px;text-align:center;">
+              javaBin \u2014 Norges st\u00f8rste brukergruppe for Java og JVM
+              <br/><a href="https://java.no" style="color:#666;text-decoration:none;">java.no</a>
+              &nbsp;\u00b7&nbsp;
+              <a href="https://javazone.no" style="color:#666;text-decoration:none;">javazone.no</a>
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
 
     # Build RFC 2822 email message
     import email.mime.text
-    msg = email.mime.text.MIMEText(body_text)
+    msg = email.mime.text.MIMEText(body_html, "html", "utf-8")
     msg["To"] = personal_email
     msg["From"] = admin_email
     msg["Subject"] = subject
