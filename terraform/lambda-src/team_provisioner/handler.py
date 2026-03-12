@@ -1114,6 +1114,7 @@ def handle_sync_groups_and_heros(event):
             import string
             temp_password = "".join(secrets.choice(string.ascii_letters + string.digits + "!@#$%") for _ in range(24))
 
+            personal_email = hero.get("personal_email", "")
             user_body = {
                 "primaryEmail": email,
                 "name": {
@@ -1122,29 +1123,14 @@ def handle_sync_groups_and_heros(event):
                 },
                 "password": temp_password,
                 "changePasswordAtNextLogin": True,
+                "recoveryEmail": personal_email,
             }
 
             try:
                 create_result = _google_api("POST", "/users", access_token, user_body)
                 if create_result and not create_result.get("already_exists"):
                     accounts_created.append(email)
-                    logger.info("Created Google Workspace account: %s", email)
-
-                    # Send password reset to personal email so the hero can set up their account
-                    personal_email = hero.get("personal_email", "")
-                    if personal_email:
-                        try:
-                            _google_api(
-                                "POST",
-                                f"/users/{user_key}/sendAs",
-                                access_token,
-                            )
-                        except Exception:
-                            # sendAs may not be available; hero can use "forgot password" flow
-                            logger.info(
-                                "Could not send invite for %s — hero can use forgot password with %s",
-                                email, personal_email,
-                            )
+                    logger.info("Created Google Workspace account: %s (recovery: %s)", email, personal_email)
                 else:
                     accounts_existed.append(email)
             except Exception as e:
