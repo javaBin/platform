@@ -878,7 +878,7 @@ def format_securityhub_finding(parsed):
             "text": {"type": "mrkdwn", "text": f"_{description[:500]}_"}
         })
 
-    # Link button to view & suppress in Security Hub console
+    # Link to view & suppress in Security Hub console
     encoded_id = finding_id.replace("/", "%2F").replace(":", "%3A")
     sh_finding_url = (
         f"https://{region}.console.aws.amazon.com/securityhub/home"
@@ -888,7 +888,7 @@ def format_securityhub_finding(parsed):
         "type": "actions",
         "elements": [{
             "type": "button",
-            "text": {"type": "plain_text", "text": "View & Suppress in Security Hub", "emoji": True},
+            "text": {"type": "plain_text", "text": "View in Security Hub", "emoji": True},
             "url": sh_finding_url,
         }],
     })

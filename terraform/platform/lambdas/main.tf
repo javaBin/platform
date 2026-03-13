@@ -130,6 +130,17 @@ data "archive_file" "team_provisioner" {
   }
 }
 
+data "archive_file" "password_set" {
+  type             = "zip"
+  output_path      = "${path.module}/builds/password_set.zip"
+  output_file_mode = "0644"
+
+  source {
+    content  = file("${local.lambda_src_path}/password_set/handler.py")
+    filename = "handler.py"
+  }
+}
+
 ################################################################################
 # IAM Roles
 ################################################################################
@@ -520,6 +531,59 @@ resource "aws_iam_role_policy_attachment" "team_provisioner_logs" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# --- password-set role ---
+resource "aws_iam_role" "password_set" {
+  name = "${var.project}-password-set"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "password_set" {
+  name = "${var.project}-password-set"
+  role = aws_iam_role.password_set.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "SSMRead"
+        Effect = "Allow"
+        Action = "ssm:GetParameter"
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/javabin/platform/*",
+        ]
+      },
+      {
+        Sid    = "DynamoDBDedup"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+        ]
+        Resource = var.alert_dedup_table_arn
+      },
+      {
+        Sid      = "InvokeTeamProvisioner"
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = aws_lambda_function.team_provisioner.arn
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "password_set_logs" {
+  role       = aws_iam_role.password_set.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
 ################################################################################
 # Lambda Functions
 ################################################################################
@@ -643,8 +707,42 @@ resource "aws_lambda_function" "team_provisioner" {
       IDENTITY_STORE_ID        = var.identity_store_id
       SSO_INSTANCE_ARN         = var.sso_instance_arn
       PROJECT                  = var.project
+      SIGNING_KEY_PARAM        = "/javabin/platform/password-token-signing-key"
+      PASSWORD_SET_URL_PARAM   = "/javabin/platform/password-set-function-url"
     }
   }
+}
+
+resource "aws_lambda_function" "password_set" {
+  function_name    = "${var.project}-password-set"
+  role             = aws_iam_role.password_set.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 128
+  filename         = data.archive_file.password_set.output_path
+  source_code_hash = data.archive_file.password_set.output_base64sha256
+
+  environment {
+    variables = {
+      SIGNING_KEY_PARAM         = "/javabin/platform/password-token-signing-key"
+      DEDUP_TABLE_NAME          = var.alert_dedup_table_name
+      TEAM_PROVISIONER_FUNCTION = aws_lambda_function.team_provisioner.function_name
+    }
+  }
+}
+
+resource "aws_lambda_function_url" "password_set" {
+  function_name      = aws_lambda_function.password_set.function_name
+  authorization_type = "NONE"
+}
+
+# Store function URL in SSM so team-provisioner can read it at runtime
+# (avoids circular dependency between team-provisioner and password-set)
+resource "aws_ssm_parameter" "password_set_function_url" {
+  name  = "/javabin/platform/password-set-function-url"
+  type  = "String"
+  value = aws_lambda_function_url.password_set.function_url
 }
 
 ################################################################################
