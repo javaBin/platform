@@ -152,7 +152,8 @@ jobs:
           terraform_version: "1.7"
           terraform_wrapper: false
 
-      - uses: aws-actions/configure-aws-credentials@v6
+      # Pinned to v5 — v6 breaks OIDC AssumeRoleWithWebIdentity for this role
+      - uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
           aws-region: ${{ env.AWS_REGION }}
@@ -200,7 +201,8 @@ jobs:
           terraform_version: "1.7"
           terraform_wrapper: false
 
-      - uses: aws-actions/configure-aws-credentials@v6
+      # Pinned to v5 — v6 breaks OIDC AssumeRoleWithWebIdentity for this role
+      - uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
           aws-region: ${{ env.AWS_REGION }}
