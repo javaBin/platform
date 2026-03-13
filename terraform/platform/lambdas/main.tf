@@ -854,10 +854,8 @@ resource "aws_cloudwatch_event_rule" "compliance_reporter_trigger" {
     detail-type = ["AWS API Call via CloudTrail"]
     detail = {
       eventName = [
-        "CreateBucket", "RunInstances", "CreateDBInstance",
-        "CreateService", "CreateFunction20150331", "CreateLoadBalancer",
-        "CreateSecurityGroup", "CreateNatGateway", "CreateVpc", "CreateSubnet",
-        "CreateTargetGroup",
+        { "prefix" : "Create" },
+        { "prefix" : "Run" },
       ]
     }
   })
