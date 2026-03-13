@@ -88,10 +88,11 @@ resource "aws_cloudwatch_event_rule" "iam_changes" {
     detail = {
       eventSource = ["iam.amazonaws.com"]
       eventName = [
-        "CreateRole", "DeleteRole",
-        "PutRolePolicy", "AttachRolePolicy",
-        "DetachRolePolicy", "DeleteRolePolicy",
-        "CreatePolicy", "DeletePolicy",
+        { "prefix" : "Create" },
+        { "prefix" : "Delete" },
+        { "prefix" : "Put" },
+        { "prefix" : "Attach" },
+        { "prefix" : "Detach" },
       ]
     }
   })
@@ -166,9 +167,8 @@ resource "aws_cloudwatch_event_rule" "resource_creation" {
     detail-type = ["AWS API Call via CloudTrail"]
     detail = {
       eventName = [
-        "CreateBucket", "RunInstances", "CreateDBInstance",
-        "CreateService", "CreateFunction", "CreateQueue",
-        "CreateTable", "CreateLoadBalancer",
+        { "prefix" : "Create" },
+        { "prefix" : "Run" },
       ]
     }
   })
@@ -196,10 +196,11 @@ resource "aws_cloudwatch_event_rule" "resource_modification" {
     detail-type = ["AWS API Call via CloudTrail"]
     detail = {
       eventName = [
-        "ModifyDBInstance",
-        "DeleteBucket",
-        "StopInstances", "TerminateInstances",
-        "DeleteService", "DeleteFunction",
+        { "prefix" : "Modify" },
+        { "prefix" : "Update" },
+        { "prefix" : "Delete" },
+        { "prefix" : "Stop" },
+        { "prefix" : "Terminate" },
       ]
     }
   })
