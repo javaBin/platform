@@ -57,6 +57,12 @@ COGNITO_INTERNAL_POOL_ID = os.environ.get("COGNITO_INTERNAL_POOL_ID", "")
 IDENTITY_STORE_ID = os.environ.get("IDENTITY_STORE_ID", "")
 SSO_INSTANCE_ARN = os.environ.get("SSO_INSTANCE_ARN", "")
 PROJECT = os.environ.get("PROJECT", "javabin")
+SIGNING_KEY_PARAM = os.environ.get(
+    "SIGNING_KEY_PARAM", "/javabin/platform/password-token-signing-key"
+)
+PASSWORD_SET_URL_PARAM = os.environ.get(
+    "PASSWORD_SET_URL_PARAM", "/javabin/platform/password-set-function-url"
+)
 
 sso_client = boto3.client("sso-admin")
 
@@ -196,15 +202,39 @@ def _google_api(method, path, access_token, body=None):
         raise
 
 
-def _send_welcome_email(access_token, javabin_email, personal_email, firstname):
+def _send_welcome_email(access_token, javabin_email, personal_email, firstname, password_set_url=None):
     """Send a welcome email to the hero's personal address via Gmail API.
 
-    Uses domain-wide delegation to send as the admin email. The email instructs
-    the hero to set up their @java.no account via the forgot-password flow.
+    Uses domain-wide delegation to send as the admin email. If password_set_url
+    is provided, the email includes a "Set your password" button. Otherwise falls
+    back to forgot-password instructions.
     """
     admin_email = _get_ssm_param(GOOGLE_ADMIN_EMAIL_PARAM)
 
     subject = "Velkommen som JavaBin-Helt!"
+
+    if password_set_url:
+        password_section = f"""\
+            <p style="color:#333;font-size:16px;line-height:1.6;">
+              Klikk p\u00e5 knappen under for \u00e5 sette passordet ditt. Lenken er gyldig i 48 timer.
+            </p>
+            <table cellpadding="0" cellspacing="0" style="margin:24px 0;">
+              <tr><td align="center" style="background-color:#1a1a2e;border-radius:6px;">
+                <a href="{password_set_url}" style="display:inline-block;padding:14px 32px;color:#ffffff;font-size:16px;font-weight:600;text-decoration:none;">
+                  Sett passord
+                </a>
+              </td></tr>
+            </table>"""
+    else:
+        password_section = f"""\
+            <p style="color:#333;font-size:16px;line-height:1.6;"><strong>Slik setter du passord:</strong></p>
+            <ol style="color:#333;font-size:15px;line-height:1.8;padding-left:20px;">
+              <li>G\u00e5 til <strong>accounts.google.com</strong></li>
+              <li>Skriv inn <strong>{javabin_email}</strong></li>
+              <li>Trykk p\u00e5 \u00abGlemt passord\u00bb</li>
+              <li>Du f\u00e5r en lenke til <strong>{personal_email}</strong></li>
+            </ol>"""
+
     body_html = f"""\
 <html>
 <body style="margin:0;padding:0;background-color:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
@@ -230,13 +260,7 @@ def _send_welcome_email(access_token, javabin_email, personal_email, firstname):
                 <p style="margin:4px 0 0;color:#1a1a2e;font-size:18px;font-weight:600;">{javabin_email}</p>
               </td></tr>
             </table>
-            <p style="color:#333;font-size:16px;line-height:1.6;"><strong>Slik setter du passord:</strong></p>
-            <ol style="color:#333;font-size:15px;line-height:1.8;padding-left:20px;">
-              <li>G\u00e5 til <strong>accounts.google.com</strong></li>
-              <li>Skriv inn <strong>{javabin_email}</strong></li>
-              <li>Trykk p\u00e5 \u00abGlemt passord\u00bb</li>
-              <li>Du f\u00e5r en lenke til <strong>{personal_email}</strong></li>
-            </ol>
+{password_section}
             <p style="color:#333;font-size:16px;line-height:1.6;">
               N\u00e5r du er logget inn har du tilgang til javaBin sine tjenester, e-post og delte dokumenter.
             </p>
@@ -1223,7 +1247,11 @@ def handle_sync_groups_and_heros(event):
                     # Send welcome email to personal address via Gmail API
                     if personal_email:
                         try:
-                            _send_welcome_email(access_token, email, personal_email, hero.get("firstname", ""))
+                            pw_url = _generate_password_set_url(email)
+                            _send_welcome_email(
+                                access_token, email, personal_email,
+                                hero.get("firstname", ""), password_set_url=pw_url,
+                            )
                         except Exception as we:
                             logger.warning("Could not send welcome email to %s: %s", personal_email, we)
                 else:
@@ -1382,6 +1410,87 @@ def handle_sync_groups_and_heros(event):
             default=str,
         ),
     }
+
+
+def _generate_password_set_url(email):
+    """Generate a signed password-set URL for a new hero account.
+
+    Uses the same HMAC-SHA256 token format as the password-set Lambda.
+    Reads the function URL from SSM (avoids circular TF dependency).
+    """
+    import hashlib
+    import hmac
+    import uuid
+
+    try:
+        base_url = _get_ssm_param(PASSWORD_SET_URL_PARAM).rstrip("/")
+    except Exception as e:
+        logger.warning("Could not read interactive function URL from SSM: %s", e)
+        return None
+
+    signing_key = _get_ssm_param(SIGNING_KEY_PARAM)
+    payload = json.dumps({
+        "email": email,
+        "exp": int(time.time()) + 48 * 3600,  # 48 hours
+        "jti": str(uuid.uuid4()),
+    })
+    payload_b64 = _b64url(payload)
+    sig = hmac.new(
+        signing_key.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    token = f"{payload_b64}.{sig}"
+
+    return f"{base_url}/set-password?token={token}"
+
+
+def handle_resend_password_link(event):
+    """Handle the resend_password_link action — generate a new password-set link and email it.
+
+    Use when the original 48h link has expired. Can be triggered by direct Lambda
+    invocation with: {"action": "resend_password_link", "email": "user@java.no",
+    "personal_email": "user@gmail.com", "firstname": "Name"}
+    """
+    email = event.get("email", "")
+    personal_email = event.get("personal_email", "")
+    firstname = event.get("firstname", email.split("@")[0])
+
+    if not email or not personal_email:
+        return {"statusCode": 400, "body": "Missing email or personal_email"}
+
+    access_token = _get_google_access_token()
+    pw_url = _generate_password_set_url(email)
+    if not pw_url:
+        return {"statusCode": 500, "body": "Could not generate password-set URL"}
+
+    _send_welcome_email(access_token, email, personal_email, firstname, password_set_url=pw_url)
+    logger.info("Resent password-set link for %s to %s", email, personal_email)
+    return {"statusCode": 200, "body": f"Password-set link sent to {personal_email}"}
+
+
+def handle_set_password(event):
+    """Handle the set_password action — set a user's Google Workspace password.
+
+    Called by the password-set Lambda after validating the password-set token.
+    """
+    email = event.get("email", "")
+    password = event.get("password", "")
+
+    if not email or not password:
+        return {"statusCode": 400, "body": "Missing email or password"}
+
+    access_token = _get_google_access_token()
+    user_key = urllib.parse.quote(email, safe="")
+
+    result = _google_api("PATCH", f"/users/{user_key}", access_token, {
+        "password": password,
+        "changePasswordAtNextLogin": False,
+    })
+
+    if result is None:
+        return {"statusCode": 404, "body": f"User not found: {email}"}
+
+    logger.info("Password set for %s via self-service flow", email)
+    return {"statusCode": 200, "body": f"Password set for {email}"}
 
 
 def handle_sync_groups(event):
@@ -1659,6 +1768,10 @@ def handler(event, context):
 
     # Dispatch by action
     payload = _extract_payload(event)
+    if payload.get("action") == "set_password":
+        return handle_set_password(payload)
+    if payload.get("action") == "resend_password_link":
+        return handle_resend_password_link(payload)
     if payload.get("action") == "sync_groups_and_heros":
         return handle_sync_groups_and_heros(payload)
     if payload.get("action") == "sync_groups":
