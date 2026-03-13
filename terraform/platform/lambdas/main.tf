@@ -533,7 +533,8 @@ resource "aws_iam_role_policy_attachment" "team_provisioner_logs" {
 
 # --- password-set role ---
 resource "aws_iam_role" "password_set" {
-  name = "${var.project}-password-set"
+  name                 = "${var.project}-password-set"
+  permissions_boundary = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
