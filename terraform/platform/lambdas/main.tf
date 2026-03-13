@@ -738,6 +738,23 @@ resource "aws_lambda_function_url" "password_set" {
   authorization_type = "NONE"
 }
 
+# Public access for function URL — since Oct 2025, both InvokeFunctionUrl
+# and InvokeFunction are required for public NONE-auth function URLs.
+resource "aws_lambda_permission" "password_set_public_url" {
+  statement_id           = "FunctionURLAllowPublicAccess"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.password_set.function_name
+  principal              = "*"
+  function_url_auth_type = "NONE"
+}
+
+resource "aws_lambda_permission" "password_set_public_invoke" {
+  statement_id  = "AllowPublicInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.password_set.function_name
+  principal     = "*"
+}
+
 # Store function URL in SSM so team-provisioner can read it at runtime
 # (avoids circular dependency between team-provisioner and password-set)
 resource "aws_ssm_parameter" "password_set_function_url" {
