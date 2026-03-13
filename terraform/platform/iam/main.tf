@@ -162,8 +162,13 @@ resource "aws_iam_role" "ci_infra" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            # Main branch ONLY — apply never runs on PRs
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/platform:ref:refs/heads/main"
+            # Main branch OR production environment — the apply job uses
+            # `environment: production`, which changes the OIDC sub claim
+            # from ref-based to environment-based.
+            "token.actions.githubusercontent.com:sub" = [
+              "repo:${var.github_org}/platform:ref:refs/heads/main",
+              "repo:${var.github_org}/platform:environment:production",
+            ]
           }
         }
       }
