@@ -48,6 +48,7 @@ REPO="${GITHUB_REPOSITORY:-unknown}"
 SHA=$(echo "${GITHUB_SHA:-unknown}" | cut -c1-8)
 ACTOR="${GITHUB_ACTOR:-unknown}"
 RUN_ID="${GITHUB_RUN_ID:-}"
+PLAN_KEY="plans/${REPO}/${RUN_ID}/tfplan"
 
 # Build source line
 if [ -n "$RUN_ID" ] && [ "$REPO" != "unknown" ]; then
@@ -57,16 +58,18 @@ else
 fi
 
 # Build the Block Kit payload
-# Note: findings section only included if there are findings
 FINDINGS_BLOCK=""
 if [ -n "$FINDINGS_TEXT" ]; then
-  # Escape for JSON
   ESCAPED_FINDINGS=$(echo "$FINDINGS_TEXT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read())[1:-1])")
   FINDINGS_BLOCK=",{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*Findings*\n${ESCAPED_FINDINGS}\"}}"
 fi
 
+# Build override command — user can copy-paste this to approve
+OVERRIDE_CMD="gh workflow run approve-override.yml --repo ${REPO} -f plan_key=${PLAN_KEY} -f repo=${REPO} -f run_id=${RUN_ID} -f reason=\\\"Override approved\\\""
+
 ESCAPED_SUMMARY=$(echo "$SUMMARY" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip())[1:-1])")
 ESCAPED_SOURCE=$(echo "$SOURCE_LINE" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip())[1:-1])")
+ESCAPED_CMD=$(echo "$OVERRIDE_CMD" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip())[1:-1])")
 
 PAYLOAD=$(cat <<EOF
 {
@@ -75,9 +78,10 @@ PAYLOAD=$(cat <<EOF
     {"type":"section","text":{"type":"mrkdwn","text":"${ESCAPED_SOURCE}"}},
     {"type":"section","text":{"type":"mrkdwn","text":"*Summary*\n${ESCAPED_SUMMARY}"}}
     ${FINDINGS_BLOCK},
+    {"type":"section","text":{"type":"mrkdwn","text":"*Override*\n\`\`\`${ESCAPED_CMD}\`\`\`"}},
     {"type":"actions","elements":[{"type":"button","text":{"type":"plain_text","text":":unlock: Approve Override","emoji":true},"url":"${OVERRIDE_URL}","style":"danger"}]},
     {"type":"divider"},
-    {"type":"context","elements":[{"type":"mrkdwn","text":"Risk: :red_circle: HIGH | Auto-apply blocked — board member override required"}]}
+    {"type":"context","elements":[{"type":"mrkdwn","text":"Risk: :red_circle: HIGH | Auto-apply blocked — override required"}]}
   ],
   "text": "Deploy Blocked — HIGH Risk Plan: ${REPO}"
 }

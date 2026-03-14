@@ -34,14 +34,6 @@ variable "registered_app_repos" {
   default     = ["platform-test-app"]
 }
 
-variable "override_approvers" {
-  description = "GitHub usernames permitted to approve risk gate overrides"
-  type        = list(string)
-  default     = ["alexander-amiri"]
-  # Add board members and infra leads here.
-  # Changing this list requires a PR to platform reviewed by platform-owners.
-}
-
 variable "github_org" {
   description = "GitHub organization name for OIDC trust policies"
   type        = string

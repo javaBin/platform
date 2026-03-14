@@ -598,8 +598,9 @@ resource "aws_iam_role_policy" "ci_deploy_ssm" {
 ################################################################################
 # 4. javabin-ci-override-approver — Risk gate override
 #
-# Trust: GitHub OIDC pinned to approve-override.yml workflow on main, AND
-# the GitHub actor must be in the override_approvers list.
+# Trust: GitHub OIDC pinned to approve-override.yml workflow on main.
+# Access control is handled by GitHub: only repo admins/CODEOWNERS can trigger
+# workflow_dispatch, and the override-approval environment can require reviewers.
 # Permissions: ONLY ssm:PutParameter on /javabin/platform-overrides/*
 ################################################################################
 
@@ -618,15 +619,12 @@ resource "aws_iam_role" "ci_override_approver" {
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
-            "token.actions.githubusercontent.com:aud"              = "sts.amazonaws.com"
-            "token.actions.githubusercontent.com:job_workflow_ref" = "${var.github_org}/platform/.github/workflows/approve-override.yml@refs/heads/main"
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            # Any repo in the org — the workflow_ref + actor conditions are the real gates
             "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/*:*"
-          }
-          "ForAnyValue:StringEquals" = {
-            "token.actions.githubusercontent.com:actor" = var.override_approvers
+            # Pin to the approve-override workflow on main branch
+            "token.actions.githubusercontent.com:job_workflow_ref" = "${var.github_org}/platform/.github/workflows/approve-override.yml@refs/heads/main"
           }
         }
       }
