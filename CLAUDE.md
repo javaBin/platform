@@ -116,7 +116,7 @@ terraform/platform/
   iam/             GitHub OIDC, CI roles, permission boundary
   compute/         ECS cluster, ECR base config
   monitoring/      SNS, EventBridge, Config, GuardDuty, Security Hub
-  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, override-cleanup, team-provisioner, apply-gate, securityhub-summary
+  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set
   identity/        Cognito user pools (internal + external). Identity Center is in terraform/org/
 ```
 
@@ -185,6 +185,7 @@ terraform/state/
 | `override-cleanup` | Hourly cleanup of stale SSM override tokens |
 | `team-provisioner` | Syncs Google Groups, GitHub teams, AWS Budgets from registry team YAML |
 | `securityhub-summary` | Weekly Security Hub findings summary (Monday 08:00 UTC) |
+| `password-set` | Self-service password-set for new hero accounts (Function URL) |
 
 ### Scripts
 | Script | What |
@@ -226,7 +227,7 @@ Scheduled:
 
 EventBridge (Create/Run) ──► compliance-reporter (report to Slack, no auto-fix)
   Hourly             ──► override-cleanup (delete stale SSM override tokens)
-Registry merge ──► team-provisioner (STUB — not yet implemented)
+Registry merge ──► team-provisioner (Google/GitHub/Budget/Cognito/Identity Center sync + hero provisioning)
 ```
 
 ## SSM Parameters
@@ -267,7 +268,7 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 | 0a | AWS Discovery | **Done** |
 | 0b | Bootstrap State Backend | **Done** — S3 backend live |
 | 0c | Organizations + Permission Boundary | **Done** — org enabled, boundary deployed, SCP deferred |
-| 1 | Identity (Google + Identity Center + Cognito) | **Deployed** — GCP SA with domain-wide delegation, Identity Center with ABAC + 3 permission sets in `terraform/org/`. Cognito pool TF exists but not yet applied (needs Google OAuth client). |
+| 1 | Identity (Google + Identity Center + Cognito) | **Deployed** — GCP SA with domain-wide delegation, Identity Center with ABAC + 3 permission sets in `terraform/org/`. Google Workspace SAML IdP for SSO (auto-provisions users, groups synced via CI/team-provisioner). Cognito pool TF exists but not yet applied (needs Google OAuth client). |
 | 2a | Networking | **Deployed** — VPC, subnets, NAT |
 | 2b | Ingress | **Deployed** — ALB + ACM cert |
 | 2c | IAM / OIDC | **Deployed** — 6 CI roles (infra, infra-plan, per-app, deploy, override-approver, registry) |
@@ -286,7 +287,7 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 ### Known Issues
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
 - **Cognito pools not yet applied**: TF exists but needs Google OAuth client credentials
-- **Team provisioner Lambda**: Google/GitHub/Budget sync working. Cognito and Identity Center sync functions are stubs — need implementation to create groups and assign members
+- **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
 - **`registered_app_repos` manually managed**: Being replaced with team-scoped IAM roles (repo→team resolved via GitHub API at runtime)
 
 ## Agent Guidelines
