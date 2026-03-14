@@ -64,12 +64,8 @@ if [ -n "$FINDINGS_TEXT" ]; then
   FINDINGS_BLOCK=",{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*Findings*\n${ESCAPED_FINDINGS}\"}}"
 fi
 
-# Build override command — user can copy-paste this to approve
-OVERRIDE_CMD="gh workflow run approve-override.yml --repo ${REPO} -f plan_key=${PLAN_KEY} -f repo=${REPO} -f run_id=${RUN_ID} -f reason=\\\"Override approved\\\""
-
 ESCAPED_SUMMARY=$(echo "$SUMMARY" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip())[1:-1])")
 ESCAPED_SOURCE=$(echo "$SOURCE_LINE" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip())[1:-1])")
-ESCAPED_CMD=$(echo "$OVERRIDE_CMD" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip())[1:-1])")
 
 PAYLOAD=$(cat <<EOF
 {
@@ -78,7 +74,11 @@ PAYLOAD=$(cat <<EOF
     {"type":"section","text":{"type":"mrkdwn","text":"${ESCAPED_SOURCE}"}},
     {"type":"section","text":{"type":"mrkdwn","text":"*Summary*\n${ESCAPED_SUMMARY}"}}
     ${FINDINGS_BLOCK},
-    {"type":"section","text":{"type":"mrkdwn","text":"*Override*\n\`\`\`${ESCAPED_CMD}\`\`\`"}},
+    {"type":"section","fields":[
+      {"type":"mrkdwn","text":"*Plan key*\n\`${PLAN_KEY}\`"},
+      {"type":"mrkdwn","text":"*Repository*\n\`${REPO}\`"},
+      {"type":"mrkdwn","text":"*Run ID*\n\`${RUN_ID}\`"}
+    ]},
     {"type":"actions","elements":[{"type":"button","text":{"type":"plain_text","text":":unlock: Approve Override","emoji":true},"url":"${OVERRIDE_URL}","style":"danger"}]},
     {"type":"divider"},
     {"type":"context","elements":[{"type":"mrkdwn","text":"Risk: :red_circle: HIGH | Auto-apply blocked — override required"}]}
