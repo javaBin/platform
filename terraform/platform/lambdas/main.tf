@@ -738,8 +738,16 @@ resource "aws_lambda_function_url" "password_set" {
   authorization_type = "NONE"
 }
 
-# Public access — the function URL auto-creates FunctionURLAllowPublicAccess
-# for InvokeFunctionUrl. Since Oct 2025, InvokeFunction is also required.
+# Public access for function URL — both permissions required since Oct 2025.
+# FunctionURLAllowPublicAccess is imported (auto-created by the function URL).
+resource "aws_lambda_permission" "password_set_public_url" {
+  statement_id           = "FunctionURLAllowPublicAccess"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.password_set.function_name
+  principal              = "*"
+  function_url_auth_type = "NONE"
+}
+
 resource "aws_lambda_permission" "password_set_public_invoke" {
   statement_id  = "AllowPublicInvoke"
   action        = "lambda:InvokeFunction"
