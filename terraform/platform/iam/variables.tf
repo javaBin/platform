@@ -19,12 +19,6 @@ variable "registered_app_repos" {
   default     = []
 }
 
-variable "override_approvers" {
-  description = "GitHub usernames allowed to approve risk gate overrides"
-  type        = list(string)
-  default     = ["alexander-amiri"]
-}
-
 variable "github_org" {
   description = "GitHub organization name"
   type        = string
