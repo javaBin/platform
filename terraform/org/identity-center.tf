@@ -176,6 +176,7 @@ resource "aws_ssoadmin_managed_policy_attachment" "readonly" {
 ################################################################################
 # Group → Permission Set Assignments
 #
-# TODO: Add group lookups and assignments after Google SAML sync is configured
-# and Identity Center groups (infra@, heroes@, board@, pkom@) exist.
+# Managed by the team-provisioner Lambda (CI-triggered from registry).
+# Groups are synced and permission sets assigned dynamically — no static
+# Terraform resources needed here.
 ################################################################################
