@@ -98,15 +98,8 @@ jobs:
         if: steps.plan.outputs.has_changes == 'true'
         run: .platform/scripts/upload-plan.sh "${{ inputs.tf_root }}"
 
-      - name: Post plan to PR
-        if: github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: sh .platform/scripts/post-plan-comment.sh "${{ inputs.tf_root }}/plan-output.txt" "${{ steps.plan.outputs.has_changes }}"
-
       # ----------------------------------------------------------------
-      # LLM Plan Review (runs in same job — plan-output.txt already here)
+      # LLM Plan Review (runs before PR comment so both are combined)
       # ----------------------------------------------------------------
       - name: Run LLM review
         id: review
@@ -122,12 +115,12 @@ jobs:
           echo '{"level":"${{ steps.review.outputs.risk_level }}","reviewed_at":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' | \
             aws s3 cp - "s3://${PLAN_BUCKET}/${PLAN_DIR}/risk.json" --content-type application/json
 
-      - name: Post review to PR
-        if: github.event_name == 'pull_request' && steps.plan.outputs.has_changes == 'true'
+      - name: Post plan + review to PR
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: sh .platform/scripts/post-review-comment.sh
+        run: sh .platform/scripts/post-plan-comment.sh "${{ inputs.tf_root }}/plan-output.txt" "${{ steps.plan.outputs.has_changes }}"
 
       - name: Alert Slack on HIGH risk
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.review.outputs.risk_level == 'HIGH'
