@@ -156,22 +156,65 @@ def fmt_usd_nok(usd):
     return f"${usd:.2f} (~{nok:.0f} NOK)"
 
 
-def fmt_service_lines(services, start, end, week_total):
-    """Return sorted mrkdwn lines with % of total."""
-    url = cost_explorer_url(start, end)
+def build_service_table(services, week_total, prev_week=None):
+    """Build a Block Kit table block for a category of services."""
     sorted_svcs = sorted(services.items(), key=lambda x: x[1], reverse=True)
-    lines = []
+
+    has_prev = prev_week is not None
+    header = [
+        {"type": "raw_text", "text": "Service"},
+        {"type": "raw_text", "text": "Amount"},
+        {"type": "raw_text", "text": "%"},
+    ]
+    if has_prev:
+        header.append({"type": "raw_text", "text": "WoW"})
+
+    rows = [header]
     for i, (svc, cost) in enumerate(sorted_svcs):
-        pct = (cost / week_total * 100) if week_total > 0 else 0
-        if i < MAX_SERVICES_PER_CATEGORY:
-            lines.append(f"  * {svc} — *${cost:.2f}* ({pct:.1f}%)")
-        else:
+        if i >= MAX_SERVICES_PER_CATEGORY:
             remaining = len(sorted_svcs) - MAX_SERVICES_PER_CATEGORY
             remaining_cost = sum(c for _, c in sorted_svcs[MAX_SERVICES_PER_CATEGORY:])
-            lines.append(f"  _+{remaining} more — ${remaining_cost:.2f}_")
+            row = [
+                {"type": "raw_text", "text": f"+{remaining} more"},
+                {"type": "raw_text", "text": f"${remaining_cost:.2f}"},
+                {"type": "raw_text", "text": ""},
+            ]
+            if has_prev:
+                row.append({"type": "raw_text", "text": ""})
+            rows.append(row)
             break
-    lines.append(f"  <{url}|View in Cost Explorer>")
-    return "\n".join(lines)
+
+        pct = (cost / week_total * 100) if week_total > 0 else 0
+        nok = cost * USD_TO_NOK
+        row = [
+            {"type": "raw_text", "text": svc},
+            {"type": "raw_text", "text": f"${cost:.2f} (~{nok:.0f} NOK)"},
+            {"type": "raw_text", "text": f"{pct:.1f}%"},
+        ]
+        if has_prev:
+            prev_cost = prev_week.get(svc, 0)
+            delta = cost - prev_cost
+            if abs(delta) < 0.01:
+                row.append({"type": "raw_text", "text": "-"})
+            elif delta > 0:
+                row.append({"type": "raw_text", "text": f"+${delta:.2f}"})
+            else:
+                row.append({"type": "raw_text", "text": f"-${abs(delta):.2f}"})
+        rows.append(row)
+
+    col_settings = [
+        {"is_wrapped": True},
+        {"align": "right"},
+        {"align": "right"},
+    ]
+    if has_prev:
+        col_settings.append({"align": "right"})
+
+    return {
+        "type": "table",
+        "column_settings": col_settings,
+        "rows": rows,
+    }
 
 
 def fmt_change(current, previous):
@@ -361,44 +404,47 @@ def build_blocks(this_week, prev_week, mtd, prev_mtd, project_costs,
     projected = (mtd_total / mtd_days * total_days_in_month) if mtd_days > 0 else 0
     curr_month_name = mtd_start_d.strftime("%B")
 
-    # Per-project tag breakdown
+    # Per-project tag breakdown as table
     if project_costs:
-        sorted_projects = sorted(project_costs.items(), key=lambda x: x[1], reverse=True)
-        project_lines = []
-        for proj_name, cost in sorted_projects:
-            if cost >= 0.01:
-                pct = (cost / tw_total * 100) if tw_total > 0 else 0
-                nok = cost * USD_TO_NOK
-                project_lines.append(f"  \u2022 {proj_name} \u2014 *${cost:.2f}* (~{nok:.0f} NOK) `{pct:.1f}%`")
-        if project_lines:
+        filtered = {k: v for k, v in project_costs.items() if v >= 0.01}
+        if filtered:
             blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn",
-                         "text": ":label: *By Project Tag*\n" + "\n".join(project_lines[:10])}
+                "text": {"type": "mrkdwn", "text": ":label: *By Project Tag*"}
             })
+            blocks.append(build_service_table(filtered, tw_total))
 
-    # Categorised service breakdown
+    # Categorised service breakdown as tables
     ai, infra, other = categorise(this_week)
+    prev_ai, prev_infra, prev_other = categorise(prev_week)
+
+    ce_url = cost_explorer_url(tw_start, tw_end)
 
     if ai:
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn",
-                     "text": f":brain: *AI Models*\n{fmt_service_lines(ai, tw_start, tw_end, tw_total)}"}
+            "text": {"type": "mrkdwn", "text": f":brain: *AI Models*"}
         })
+        blocks.append(build_service_table(ai, tw_total, prev_ai))
     if infra:
         blocks.append({
             "type": "section",
-            "text": {"type": "mrkdwn",
-                     "text": f":cloud: *Infrastructure*\n{fmt_service_lines(infra, tw_start, tw_end, tw_total)}"}
+            "text": {"type": "mrkdwn", "text": f":cloud: *Infrastructure*"}
         })
+        blocks.append(build_service_table(infra, tw_total, prev_infra))
     if other:
         other_total = sum(other.values())
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn",
-                     "text": f":envelope: *Other (< ${OTHER_THRESHOLD:.2f})* — ${other_total:.2f} total\n{fmt_service_lines(other, tw_start, tw_end, tw_total)}"}
+                     "text": f":envelope: *Other (< ${OTHER_THRESHOLD:.2f})* \u2014 ${other_total:.2f} total"}
         })
+        blocks.append(build_service_table(other, tw_total))
+
+    blocks.append({
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": f"<{ce_url}|View in Cost Explorer>"}]
+    })
 
     blocks.append({"type": "divider"})
 
