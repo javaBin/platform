@@ -21,9 +21,6 @@ on:
       has_eb:
         description: ".elasticbeanstalk/ directory exists"
         value: ${{ jobs.detect.outputs.has_eb }}
-      has_cdk:
-        description: "cdk.json exists"
-        value: ${{ jobs.detect.outputs.has_cdk }}
       app_name:
         description: "App name from app.yaml (empty if no app.yaml)"
         value: ${{ jobs.detect.outputs.app_name }}
@@ -39,7 +36,6 @@ jobs:
       has_maven: ${{ steps.check.outputs.has_maven }}
       has_pnpm: ${{ steps.check.outputs.has_pnpm }}
       has_eb: ${{ steps.check.outputs.has_eb }}
-      has_cdk: ${{ steps.check.outputs.has_cdk }}
       app_name: ${{ steps.check.outputs.app_name }}
     steps:
       - uses: actions/checkout@v6
@@ -53,7 +49,6 @@ jobs:
           echo "has_maven=$(test -f pom.xml && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "has_pnpm=$(test -f pnpm-lock.yaml && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "has_eb=$(test -d .elasticbeanstalk && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "has_cdk=$(test -f cdk.json && echo true || echo false)" >> "$GITHUB_OUTPUT"
           if [ -f app.yaml ]; then
             echo "app_name=$(grep -m1 '^name:' app.yaml | awk '{print $2}' | tr -d '\"'"'")" >> "$GITHUB_OUTPUT"
           else

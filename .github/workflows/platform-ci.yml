@@ -10,13 +10,16 @@ on:
       - '.github/workflows/**'
   pull_request:
   schedule:
-    # Drift detection — Monday 06:00 UTC
+    # Drift detection — Monday 06:00 UTC (runs drift job only)
     - cron: '0 6 * * 1'
+  workflow_dispatch:
+    # Manual trigger — useful for syncing new repos immediately
 
 permissions:
   id-token: write
   contents: read
   pull-requests: write
+  organization: read  # Required for sync-registered-repos.py to list GitHub teams
 
 concurrency:
   group: platform-ci-${{ github.ref }}
@@ -70,6 +73,12 @@ jobs:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra-plan
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: javabin-platform-plan-${{ github.run_id }}
+
+      - name: Sync registered repos from GitHub teams
+        if: steps.changes.outputs.has_infra_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/sync-registered-repos.py "${{ env.TF_ROOT }}/registered-apps.auto.tfvars"
 
       - name: Terraform Init
         if: steps.changes.outputs.has_infra_changes == 'true'

@@ -77,6 +77,13 @@ jobs:
           path: .platform
           sparse-checkout: scripts
 
+      - name: Ensure Terraform boilerplate
+        env:
+          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          AWS_REGION: ${{ inputs.aws_region || 'eu-central-1' }}
+          GH_TOKEN: ${{ github.token }}
+        run: sh .platform/scripts/ensure-tf-boilerplate.sh "${{ inputs.tf_root }}"
+
       - name: Terraform Init
         working-directory: ${{ inputs.tf_root }}
         run: terraform init -input=false
