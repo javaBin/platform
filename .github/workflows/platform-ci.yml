@@ -129,8 +129,8 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: sh scripts/post-plan-comment.sh "${{ env.TF_ROOT }}/plan-output.txt" "${{ steps.plan.outputs.has_changes }}"
 
-      - name: Post HIGH risk to Slack
-        if: steps.review.outputs.risk_level == 'HIGH' && github.ref == 'refs/heads/main'
+      - name: Post blocked risk to Slack
+        if: (steps.review.outputs.risk_level == 'HIGH' || steps.review.outputs.risk_level == 'FAILED') && github.ref == 'refs/heads/main'
         run: sh scripts/notify-high-risk.sh /javabin/slack/platform-override-alerts-webhook "https://github.com/javaBin/platform/actions/workflows/approve-override.yml"
 
   # --------------------------------------------------------------------------
