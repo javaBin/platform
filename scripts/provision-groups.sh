@@ -20,7 +20,15 @@ fi
 COUNT=$(yq '.groups | length' "$GROUPS_FILE")
 echo "Provisioning ${COUNT} group(s) from ${GROUPS_FILE}..."
 
+# Build CI context from GitHub Actions environment
+CI_CONTEXT="{}"
+if [ -n "$GITHUB_ACTOR" ]; then
+  CI_CONTEXT=$(printf '{"actor":"%s","repo":"%s","sha":"%s","run_id":"%s"}' \
+    "${GITHUB_ACTOR}" "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" "${GITHUB_RUN_ID}")
+fi
+
 PAYLOAD=$(yq -o json '{"action": "sync_groups", "groups": .groups}' "$GROUPS_FILE")
+PAYLOAD=$(echo "$PAYLOAD" | yq -o json ". + {\"ci_context\": ${CI_CONTEXT}}")
 
 aws lambda invoke \
   --function-name javabin-team-provisioner \

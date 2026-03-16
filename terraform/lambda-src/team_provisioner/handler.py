@@ -64,6 +64,25 @@ PASSWORD_SET_URL_PARAM = os.environ.get(
     "PASSWORD_SET_URL_PARAM", "/javabin/platform/password-set-function-url"
 )
 
+# javaBin horizontal white logo PNG — loaded from the Lambda zip at cold start.
+# CID-embedded in welcome emails to avoid "trust this email" prompts in Outlook.
+# Source file: terraform/lambda-src/team_provisioner/javabin-logo-white.png
+_JAVABIN_LOGO_PNG = None
+
+
+def _load_logo():
+    global _JAVABIN_LOGO_PNG
+    if _JAVABIN_LOGO_PNG is not None:
+        return _JAVABIN_LOGO_PNG
+    try:
+        logo_path = os.path.join(os.path.dirname(__file__), "assets", "javabin-logo-white.b64")
+        with open(logo_path) as f:
+            _JAVABIN_LOGO_PNG = base64.b64decode(f.read())
+    except Exception as e:
+        logger.warning("Failed to load logo from zip: %s", e)
+        _JAVABIN_LOGO_PNG = b""
+    return _JAVABIN_LOGO_PNG
+
 sso_client = boto3.client("sso-admin")
 
 # Cache credentials across invocations within the same Lambda container
@@ -208,10 +227,13 @@ def _send_welcome_email(access_token, javabin_email, personal_email, firstname, 
     Uses domain-wide delegation to send as the admin email. If password_set_url
     is provided, the email includes a "Set your password" button. Otherwise falls
     back to forgot-password instructions.
+
+    The logo is CID-embedded as an inline attachment to avoid "trust this email"
+    prompts in Outlook and other clients that block external images.
     """
     admin_email = _get_ssm_param(GOOGLE_ADMIN_EMAIL_PARAM)
 
-    subject = "Velkommen som JavaBin-Helt!"
+    subject = "Velkommen til JavaBin"
 
     if password_set_url:
         password_section = f"""\
@@ -219,7 +241,7 @@ def _send_welcome_email(access_token, javabin_email, personal_email, firstname, 
               Klikk p\u00e5 knappen under for \u00e5 sette passordet ditt. Lenken er gyldig i 48 timer.
             </p>
             <table cellpadding="0" cellspacing="0" style="margin:24px 0;">
-              <tr><td align="center" style="background-color:#1a1a2e;border-radius:6px;">
+              <tr><td align="center" style="background-color:#f05350;border-radius:6px;">
                 <a href="{password_set_url}" style="display:inline-block;padding:14px 32px;color:#ffffff;font-size:16px;font-weight:600;text-decoration:none;">
                   Sett passord
                 </a>
@@ -243,21 +265,21 @@ def _send_welcome_email(access_token, javabin_email, personal_email, firstname, 
       <table width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:8px;overflow:hidden;">
         <!-- Header -->
         <tr>
-          <td style="background-color:#1a1a2e;padding:30px 40px;text-align:center;">
-            <img src="https://java.no/_next/static/media/javaBin-logo-horizontal-WHITE.434dba55.png" alt="javaBin" width="200" style="display:inline-block;" />
+          <td style="background-color:#f05350;padding:30px 40px;text-align:center;">
+            <img src="cid:javabin-logo" alt="javaBin" width="200" style="display:inline-block;" />
           </td>
         </tr>
         <!-- Body -->
         <tr>
           <td style="padding:40px;">
-            <h1 style="color:#1a1a2e;font-size:22px;margin:0 0 20px;">Hei {firstname}!</h1>
+            <h1 style="color:#f05350;font-size:22px;margin:0 0 20px;">Hei {firstname}!</h1>
             <p style="color:#333;font-size:16px;line-height:1.6;">
-              Velkommen som javaBin-helt! Din Google Workspace-konto er n\u00e5 opprettet.
+              Velkommen til JavaBin! Din Google Workspace-konto er n\u00e5 opprettet.
             </p>
-            <table style="background-color:#f0f4f8;border-radius:6px;padding:20px;margin:20px 0;width:100%;">
+            <table style="background-color:#fef2f2;border-radius:6px;padding:20px;margin:20px 0;width:100%;">
               <tr><td>
                 <p style="margin:0;color:#666;font-size:13px;text-transform:uppercase;letter-spacing:1px;">Brukernavn</p>
-                <p style="margin:4px 0 0;color:#1a1a2e;font-size:18px;font-weight:600;">{javabin_email}</p>
+                <p style="margin:4px 0 0;color:#f05350;font-size:18px;font-weight:600;">{javabin_email}</p>
               </td></tr>
             </table>
 {password_section}
@@ -270,7 +292,7 @@ def _send_welcome_email(access_token, javabin_email, personal_email, firstname, 
         <tr>
           <td style="background-color:#f8f9fa;padding:20px 40px;border-top:1px solid #e9ecef;">
             <p style="margin:0;color:#999;font-size:13px;text-align:center;">
-              javaBin \u2014 Norges st\u00f8rste brukergruppe for Java og JVM
+              JavaBin \u2014 Javabrukerforeningen i Norge
               <br/><a href="https://java.no" style="color:#666;text-decoration:none;">java.no</a>
               &nbsp;\u00b7&nbsp;
               <a href="https://javazone.no" style="color:#666;text-decoration:none;">javazone.no</a>
@@ -283,9 +305,26 @@ def _send_welcome_email(access_token, javabin_email, personal_email, firstname, 
 </body>
 </html>"""
 
-    # Build RFC 2822 email message
+    # Build MIME message — multipart/related with CID logo if available,
+    # otherwise fall back to plain HTML with external image URL.
+    import email.mime.multipart
     import email.mime.text
-    msg = email.mime.text.MIMEText(body_html, "html", "utf-8")
+    import email.mime.image
+
+    logo_data = _load_logo()
+    if logo_data:
+        msg = email.mime.multipart.MIMEMultipart("related")
+        msg.attach(email.mime.text.MIMEText(body_html, "html", "utf-8"))
+        logo_part = email.mime.image.MIMEImage(logo_data, _subtype="png")
+        logo_part.add_header("Content-ID", "<javabin-logo>")
+        logo_part.add_header("Content-Disposition", "inline", filename="javabin-logo.png")
+        msg.attach(logo_part)
+    else:
+        # Fallback: replace cid: reference with external URL
+        fallback_url = "https://java.no/_next/static/media/javaBin-logo-horizontal-WHITE.434dba55.png"
+        body_html = body_html.replace('src="cid:javabin-logo"', f'src="{fallback_url}"')
+        msg = email.mime.text.MIMEText(body_html, "html", "utf-8")
+
     msg["To"] = personal_email
     msg["From"] = admin_email
     msg["Subject"] = subject
@@ -1399,7 +1438,7 @@ def handle_sync_groups_and_heros(event):
         results[name] = gr
 
     try:
-        notify_slack(results)
+        notify_slack(results, ci_context=event.get("ci_context"))
     except Exception as e:
         logger.error("Slack notification failed: %s", e)
 
@@ -1523,7 +1562,7 @@ def handle_sync_groups(event):
         results[name] = gr
 
     try:
-        notify_slack(results)
+        notify_slack(results, ci_context=event.get("ci_context"))
     except Exception as e:
         logger.error("Slack notification failed: %s", e)
 
@@ -1683,7 +1722,33 @@ def _hero_sync_table(accounts, aliases):
     }
 
 
-def notify_slack(results):
+def _format_ci_source(ci_context):
+    """Build a Slack mrkdwn line attributing the sync to a CI run."""
+    if not ci_context:
+        return None
+    parts = []
+    repo = ci_context.get("repo")
+    sha = ci_context.get("sha")
+    run_id = ci_context.get("run_id")
+    actor = ci_context.get("actor")
+
+    if repo:
+        repo_url = f"https://github.com/{repo}"
+        parts.append(f"<{repo_url}|{repo}>")
+        if sha:
+            parts.append(f"<{repo_url}/commit/{sha}|{sha[:8]}>")
+        if run_id:
+            parts.append(f"<{repo_url}/actions/runs/{run_id}|run>")
+
+    if not parts:
+        return None
+    line = f":robot_face: *Triggered by:* {' / '.join(parts)}"
+    if actor:
+        line += f" ({actor})"
+    return line
+
+
+def notify_slack(results, ci_context=None):
     """Post provisioning summary to Slack.
 
     Handles two result structures:
@@ -1712,6 +1777,11 @@ def notify_slack(results):
             "text": {"type": "plain_text", "text": header_text, "emoji": True},
         }
     ]
+
+    # Show CI trigger attribution if available
+    source_line = _format_ci_source(ci_context)
+    if source_line:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": source_line}})
 
     # Hero-specific: single table for accounts + aliases
     if accounts is not None:
@@ -1820,7 +1890,8 @@ def handler(event, context):
         results[team_name] = tr
 
     try:
-        notify_slack(results)
+        ci_ctx = _extract_payload(event).get("ci_context") if isinstance(event, dict) else None
+        notify_slack(results, ci_context=ci_ctx)
     except Exception as e:
         logger.error("Slack notification failed: %s", e)
 

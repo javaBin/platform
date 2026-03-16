@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 import boto3
@@ -14,6 +15,8 @@ ssm = boto3.client("ssm")
 
 COST_WEBHOOK_PARAM = os.environ["COST_WEBHOOK_PARAM"]
 SPIKE_THRESHOLD = float(os.environ.get("SPIKE_THRESHOLD", "1.2"))  # 20% above average
+# Minimum daily spend (USD) to qualify as a spike — filters noise on tiny amounts
+MIN_SPIKE_AMOUNT = float(os.environ.get("MIN_SPIKE_AMOUNT", "1.00"))
 
 
 # ---------------------------------------------------------------------------
@@ -59,13 +62,86 @@ def get_period_avg(ce, start, end):
     return {svc: total / num_days for svc, total in totals.items()}
 
 
+def get_usage_type_breakdown(ce, day, service):
+    """Fetch usage type breakdown for a specific service on a given day."""
+    start = str(day)
+    end = str(day + timedelta(days=1))
+    response = ce.get_cost_and_usage(
+        TimePeriod={"Start": start, "End": end},
+        Granularity="DAILY",
+        Metrics=["UnblendedCost"],
+        Filter={"Dimensions": {"Key": "SERVICE", "Values": [service]}},
+        GroupBy=[{"Type": "DIMENSION", "Key": "USAGE_TYPE"}],
+    )
+    costs = {}
+    for period in response["ResultsByTime"]:
+        for group in period["Groups"]:
+            usage_type = group["Keys"][0]
+            amt = float(group["Metrics"]["UnblendedCost"]["Amount"])
+            if amt >= 0.01:
+                costs[usage_type] = amt
+    return costs
+
+
+def get_tag_breakdown(ce, day, service, tag_key="project"):
+    """Fetch tag breakdown for a specific service on a given day."""
+    start = str(day)
+    end = str(day + timedelta(days=1))
+    response = ce.get_cost_and_usage(
+        TimePeriod={"Start": start, "End": end},
+        Granularity="DAILY",
+        Metrics=["UnblendedCost"],
+        Filter={"Dimensions": {"Key": "SERVICE", "Values": [service]}},
+        GroupBy=[{"Type": "TAG", "Key": tag_key}],
+    )
+    costs = {}
+    for period in response["ResultsByTime"]:
+        for group in period["Groups"]:
+            tag_val = group["Keys"][0]
+            if "$" in tag_val:
+                tag_val = tag_val.split("$", 1)[1] or "(untagged)"
+            amt = float(group["Metrics"]["UnblendedCost"]["Amount"])
+            if amt >= 0.01:
+                costs[tag_val] = amt
+    return costs
+
+
+# ---------------------------------------------------------------------------
+# Cost Explorer URL builder
+# ---------------------------------------------------------------------------
+def cost_explorer_url(start, end, service=None):
+    """Build a Cost Explorer URL, optionally filtered to a specific service."""
+    params = {
+        "groupBy": "UsageType" if service else "Service",
+        "hasBlended": "false",
+        "hasAmortized": "false",
+        "excludeDiscounts": "true",
+        "timeRangeOption": "Custom",
+        "startDate": str(start),
+        "endDate": str(end),
+        "chartStyle": "Stack",
+    }
+    if service:
+        params["filter"] = json.dumps(
+            [{"dimension": "Service", "values": [service]}]
+        )
+    base = "https://us-east-1.console.aws.amazon.com/cost-management/home#/custom"
+    return f"{base}?{urllib.parse.urlencode(params)}"
+
+
 # ---------------------------------------------------------------------------
 # Spike detection
 # ---------------------------------------------------------------------------
 def detect_spikes(yesterday_costs, avg_costs):
-    """Return list of (service, yesterday, avg, pct_change) for spikes."""
+    """Return list of (service, yesterday, avg, pct_change) for spikes.
+
+    Filters out services where yesterday's spend is below MIN_SPIKE_AMOUNT
+    to avoid alerting on insignificant absolute values with high percentage changes.
+    """
     spikes = []
     for svc, cost in yesterday_costs.items():
+        if cost < MIN_SPIKE_AMOUNT:
+            continue
         avg = avg_costs.get(svc, 0)
         if avg < 0.01:
             spikes.append((svc, cost, 0, None))
@@ -89,7 +165,19 @@ def fmt_change(pct, yesterday, avg):
     return line
 
 
-def build_alert_blocks(spikes, yesterday_date):
+def fmt_usage_types(usage_types, max_items=3):
+    """Format top usage types as a compact mrkdwn string."""
+    sorted_types = sorted(usage_types.items(), key=lambda x: x[1], reverse=True)
+    lines = []
+    for usage_type, cost in sorted_types[:max_items]:
+        lines.append(f"  \u2022 {usage_type}: ${cost:.2f}")
+    if len(sorted_types) > max_items:
+        rest = sum(c for _, c in sorted_types[max_items:])
+        lines.append(f"  \u2022 +{len(sorted_types) - max_items} more: ${rest:.2f}")
+    return "\n".join(lines)
+
+
+def build_alert_blocks(spikes, spike_details, yesterday_date):
     date_str = yesterday_date.strftime("%b %d, %Y")
 
     blocks = [
@@ -105,24 +193,61 @@ def build_alert_blocks(spikes, yesterday_date):
 
     for svc, yesterday, avg, pct in spikes:
         nok = yesterday * USD_TO_NOK
+        delta = yesterday - avg
+        delta_nok = delta * USD_TO_NOK
+
         fields = [
             {"type": "mrkdwn", "text": f"*Service*\n{svc}"},
             {"type": "mrkdwn", "text": f"*Yesterday*\n${yesterday:.2f} (~{nok:.0f} NOK)"},
         ]
         if avg > 0:
             avg_nok = avg * USD_TO_NOK
-            fields.append({"type": "mrkdwn", "text": f"*7-day avg*\n${avg:.2f} (~{avg_nok:.0f} NOK)"})
-        fields.append({"type": "mrkdwn", "text": f"*Change*\n{fmt_change(pct, yesterday, avg)}"})
+            fields.append(
+                {"type": "mrkdwn",
+                 "text": f"*7-day avg*\n${avg:.2f} (~{avg_nok:.0f} NOK)"}
+            )
+        fields.append(
+            {"type": "mrkdwn",
+             "text": f"*Change*\n{fmt_change(pct, yesterday, avg)}\n+${delta:.2f} (~{delta_nok:.0f} NOK)"}
+        )
 
         blocks.append({"type": "section", "fields": fields})
+
+        # Usage type and tag detail for this service
+        detail = spike_details.get(svc, {})
+        detail_parts = []
+
+        usage_types = detail.get("usage_types")
+        if usage_types:
+            detail_parts.append(f"*Top usage types:*\n{fmt_usage_types(usage_types)}")
+
+        tags = detail.get("tags")
+        if tags:
+            tag_lines = ", ".join(
+                f"{t}: ${c:.2f}" for t, c in
+                sorted(tags.items(), key=lambda x: x[1], reverse=True)[:5]
+            )
+            detail_parts.append(f"*By project:* {tag_lines}")
+
+        ce_url = detail.get("url")
+        if ce_url:
+            detail_parts.append(f"<{ce_url}|View in Cost Explorer>")
+
+        if detail_parts:
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": "\n".join(detail_parts)}]
+            })
 
     blocks.append({"type": "divider"})
 
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    overall_url = cost_explorer_url(yesterday_date, yesterday_date)
     blocks.append({
         "type": "context",
         "elements": [{"type": "mrkdwn",
-                       "text": f"Source: AWS Cost Explorer | Generated {ts} | NOK rate: ~{USD_TO_NOK}"}]
+                       "text": f"<{overall_url}|View all in Cost Explorer> | Generated {ts} | "
+                               f"Min spike threshold: ${MIN_SPIKE_AMOUNT:.2f} | NOK rate: ~{USD_TO_NOK}"}]
     })
 
     return blocks
@@ -146,7 +271,21 @@ def handler(event, context):
         logger.info("No spikes detected. Silent success.")
         return {"statusCode": 200, "body": "No spikes"}
 
-    blocks = build_alert_blocks(spikes, yesterday)
+    # Fetch usage type and tag breakdowns for each spiking service
+    spike_details = {}
+    for svc, _, _, _ in spikes[:5]:  # Cap detail queries to avoid API throttling
+        detail = {"url": cost_explorer_url(yesterday, yesterday, service=svc)}
+        try:
+            detail["usage_types"] = get_usage_type_breakdown(ce, yesterday, svc)
+        except Exception as e:
+            logger.warning("Usage type query failed for %s: %s", svc, e)
+        try:
+            detail["tags"] = get_tag_breakdown(ce, yesterday, svc)
+        except Exception as e:
+            logger.warning("Tag query failed for %s: %s", svc, e)
+        spike_details[svc] = detail
+
+    blocks = build_alert_blocks(spikes, spike_details, yesterday)
     fallback = f"Daily cost spike: {len(spikes)} service(s) above 7-day average"
 
     webhook_url = get_webhook_url(ssm, COST_WEBHOOK_PARAM)

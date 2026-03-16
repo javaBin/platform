@@ -30,7 +30,16 @@ if [ "$COUNT" -eq 0 ]; then
 fi
 
 echo "Invoking javabin-team-provisioner with ${COUNT} team(s)..."
+
+# Build CI context from GitHub Actions environment (empty object if not in CI)
+CI_CONTEXT="{}"
+if [ -n "$GITHUB_ACTOR" ]; then
+  CI_CONTEXT=$(printf '{"actor":"%s","repo":"%s","sha":"%s","run_id":"%s"}' \
+    "${GITHUB_ACTOR}" "${GITHUB_REPOSITORY}" "${GITHUB_SHA}" "${GITHUB_RUN_ID}")
+fi
+
 PAYLOAD=$(echo "$TEAMS" | yq -o json '{"teams": .}')
+PAYLOAD=$(echo "$PAYLOAD" | yq -o json ". + {\"ci_context\": ${CI_CONTEXT}}")
 
 aws lambda invoke \
   --function-name javabin-team-provisioner \

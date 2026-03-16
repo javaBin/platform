@@ -128,6 +128,12 @@ data "archive_file" "team_provisioner" {
     content  = file("${local.lambda_src_path}/shared/constants.py")
     filename = "shared/constants.py"
   }
+  # Logo PNG stored as base64 text in the zip (source.content requires string).
+  # Python decodes at cold start. The source PNG lives in the repo for auditability.
+  source {
+    content  = filebase64("${local.lambda_src_path}/team_provisioner/javabin-logo-white.png")
+    filename = "assets/javabin-logo-white.b64"
+  }
 }
 
 data "archive_file" "password_set" {
@@ -635,7 +641,7 @@ resource "aws_lambda_function" "daily_cost_check" {
   role             = aws_iam_role.daily_cost_check.arn
   handler          = "handler.handler"
   runtime          = "python3.12"
-  timeout          = 30
+  timeout          = 60
   memory_size      = 128
   filename         = data.archive_file.daily_cost_check.output_path
   source_code_hash = data.archive_file.daily_cost_check.output_base64sha256
@@ -755,12 +761,67 @@ resource "aws_lambda_permission" "password_set_public_invoke" {
   principal     = "*"
 }
 
-# Store function URL in SSM so team-provisioner can read it at runtime
-# (avoids circular dependency between team-provisioner and password-set)
+# Store custom domain URL in SSM so team-provisioner uses the friendly URL
+# in welcome emails instead of the raw Lambda Function URL.
 resource "aws_ssm_parameter" "password_set_function_url" {
   name  = "/javabin/platform/password-set-function-url"
   type  = "String"
-  value = aws_lambda_function_url.password_set.function_url
+  value = "https://password.${var.domain}"
+}
+
+################################################################################
+# Password-set — ALB routing via password.javazone.no
+################################################################################
+
+resource "aws_lb_target_group" "password_set" {
+  name        = "${var.project}-password-set"
+  target_type = "lambda"
+
+  health_check {
+    enabled = false
+  }
+}
+
+resource "aws_lb_target_group_attachment" "password_set" {
+  target_group_arn = aws_lb_target_group.password_set.arn
+  target_id        = aws_lambda_function.password_set.arn
+  depends_on       = [aws_lambda_permission.password_set_alb]
+}
+
+resource "aws_lambda_permission" "password_set_alb" {
+  statement_id  = "AllowALBInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.password_set.function_name
+  principal     = "elasticloadbalancing.amazonaws.com"
+  source_arn    = aws_lb_target_group.password_set.arn
+}
+
+resource "aws_lb_listener_rule" "password_set" {
+  listener_arn = var.https_listener_arn
+  priority     = 10
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.password_set.arn
+  }
+
+  condition {
+    host_header {
+      values = ["password.${var.domain}"]
+    }
+  }
+}
+
+resource "aws_route53_record" "password_set" {
+  zone_id = var.route53_zone_id
+  name    = "password.${var.domain}"
+  type    = "A"
+
+  alias {
+    name                   = var.alb_dns_name
+    zone_id                = var.alb_zone_id
+    evaluate_target_health = true
+  }
 }
 
 ################################################################################
