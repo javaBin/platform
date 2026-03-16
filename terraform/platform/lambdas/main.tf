@@ -776,10 +776,6 @@ resource "aws_ssm_parameter" "password_set_function_url" {
 resource "aws_lb_target_group" "password_set" {
   name        = "${var.project}-password-set"
   target_type = "lambda"
-
-  health_check {
-    enabled = false
-  }
 }
 
 resource "aws_lb_target_group_attachment" "password_set" {
