@@ -721,14 +721,15 @@ resource "aws_lambda_function" "team_provisioner" {
 }
 
 resource "aws_lambda_function" "password_set" {
-  function_name    = "${var.project}-password-set"
-  role             = aws_iam_role.password_set.arn
-  handler          = "handler.handler"
-  runtime          = "python3.12"
-  timeout          = 30
-  memory_size      = 128
-  filename         = data.archive_file.password_set.output_path
-  source_code_hash = data.archive_file.password_set.output_base64sha256
+  function_name                  = "${var.project}-password-set"
+  role                           = aws_iam_role.password_set.arn
+  handler                        = "handler.handler"
+  runtime                        = "python3.12"
+  timeout                        = 30
+  memory_size                    = 128
+  reserved_concurrent_executions = 5 # Rate limiting — prevents brute force on password-set endpoint
+  filename                       = data.archive_file.password_set.output_path
+  source_code_hash               = data.archive_file.password_set.output_base64sha256
 
   environment {
     variables = {
@@ -1051,10 +1052,10 @@ resource "aws_iam_role_policy" "apply_gate" {
         Resource = "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*"
       },
       {
-        Sid      = "AssumeAppRoles"
+        Sid      = "AssumeTeamRoles"
         Effect   = "Allow"
         Action   = "sts:AssumeRole"
-        Resource = "arn:aws:iam::${var.aws_account_id}:role/${var.project}-ci-app-*"
+        Resource = "arn:aws:iam::${var.aws_account_id}:role/${var.project}-ci-team-*"
       },
     ]
   })
@@ -1082,6 +1083,86 @@ resource "aws_lambda_function" "apply_gate" {
       PROJECT             = var.project
       ACCOUNT_ID          = var.aws_account_id
       CREDENTIAL_DURATION = "900"
+    }
+  }
+}
+
+################################################################################
+# CI Broker — validates repo→team via GitHub API, returns STS credentials
+################################################################################
+
+data "archive_file" "ci_broker" {
+  type             = "zip"
+  output_path      = "${path.module}/builds/ci_broker.zip"
+  output_file_mode = "0644"
+  source_dir       = "${local.lambda_src_path}/ci_broker"
+}
+
+resource "aws_iam_role" "ci_broker" {
+  name                 = "${var.project}-ci-broker"
+  permissions_boundary = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "ci_broker" {
+  name = "${var.project}-ci-broker"
+  role = aws_iam_role.ci_broker.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadGitHubAppCredentials"
+        Effect = "Allow"
+        Action = "ssm:GetParameter"
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform/github-app-id",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform/github-app-key",
+        ]
+      },
+      {
+        Sid    = "AssumeTeamAndDeployRoles"
+        Effect = "Allow"
+        Action = "sts:AssumeRole"
+        Resource = [
+          "arn:aws:iam::${var.aws_account_id}:role/${var.project}-ci-team-*",
+          "arn:aws:iam::${var.aws_account_id}:role/${var.project}-ci-deploy-*",
+        ]
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ci_broker_logs" {
+  role       = aws_iam_role.ci_broker.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_function" "ci_broker" {
+  function_name    = "${var.project}-ci-broker"
+  role             = aws_iam_role.ci_broker.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 128
+  filename         = data.archive_file.ci_broker.output_path
+  source_code_hash = data.archive_file.ci_broker.output_base64sha256
+
+  environment {
+    variables = {
+      AWS_ACCOUNT_ID       = var.aws_account_id
+      PROJECT              = var.project
+      GITHUB_ORG           = "javaBin"
+      GITHUB_APP_ID_PARAM  = "/${var.project}/platform/github-app-id"
+      GITHUB_APP_KEY_PARAM = "/${var.project}/platform/github-app-key"
     }
   }
 }

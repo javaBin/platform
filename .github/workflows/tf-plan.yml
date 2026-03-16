@@ -55,26 +55,17 @@ jobs:
           terraform_version: "1.7"
           terraform_wrapper: false
 
-      - name: Resolve team from GitHub
-        id: team
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TEAM=$(gh api "/repos/${{ github.repository }}/teams" \
-            --jq '[.[] | select(.slug != "platform-owners")] | .[0].slug // empty' 2>/dev/null || true)
-          if [ -z "$TEAM" ]; then
-            echo "ERROR: repo does not belong to any GitHub team"
-            echo "Add it at https://github.com/orgs/javaBin/teams"
-            exit 1
-          fi
-          echo "Resolved team: $TEAM"
-          echo "team=$TEAM" >> "$GITHUB_OUTPUT"
-
-      - name: Configure AWS credentials via OIDC
+      - name: Assume broker role via OIDC
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-team-${{ steps.team.outputs.team }}
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-broker
           aws-region: ${{ inputs.aws_region }}
+
+      - name: Get team credentials from broker
+        id: broker
+        env:
+          PROJECT: javabin
+        run: sh .platform/scripts/invoke-ci-broker.sh plan
 
       - name: Generate GitHub App token
         id: app-token
