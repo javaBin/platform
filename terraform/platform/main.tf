@@ -29,13 +29,15 @@ module "ingress" {
 }
 
 module "iam" {
-  source              = "./iam"
-  project             = var.project
-  region              = var.region
-  aws_account_id      = var.aws_account_id
-  registered_teams    = var.registered_teams
-  github_org          = var.github_org
-  apply_gate_role_arn = module.lambdas.apply_gate_role_arn
+  source                 = "./iam"
+  project                = var.project
+  region                 = var.region
+  aws_account_id         = var.aws_account_id
+  registered_teams       = var.registered_teams
+  github_org             = var.github_org
+  apply_gate_role_arn    = module.lambdas.apply_gate_role_arn
+  ci_broker_role_arn     = module.lambdas.ci_broker_role_arn
+  ci_broker_function_arn = module.lambdas.ci_broker_function_arn
 }
 
 module "compute" {

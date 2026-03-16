@@ -26,6 +26,16 @@ variable "github_org" {
 }
 
 variable "apply_gate_role_arn" {
-  description = "ARN of the apply-gate Lambda role (for ci_app trust policy)"
+  description = "ARN of the apply-gate Lambda role (for team role trust policy)"
+  type        = string
+}
+
+variable "ci_broker_role_arn" {
+  description = "ARN of the CI broker Lambda role (for team/deploy role trust policy)"
+  type        = string
+}
+
+variable "ci_broker_function_arn" {
+  description = "ARN of the CI broker Lambda function (for OIDC broker role invoke permission)"
   type        = string
 }

@@ -256,15 +256,62 @@ resource "aws_iam_role_policy" "ci_infra_deny" {
 }
 
 ################################################################################
+# 1d. javabin-ci-app-broker — Lightweight OIDC role for invoking broker Lambda
+#
+# Trust: GitHub OIDC, any org repo, pinned to platform workflow refs.
+# Permissions: ONLY invoke the ci-broker Lambda. No AWS resource access.
+# The broker Lambda validates team membership and returns scoped credentials.
+################################################################################
+
+resource "aws_iam_role" "ci_app_broker" {
+  name                 = "${var.project}-ci-app-broker"
+  permissions_boundary = aws_iam_policy.developer_boundary.arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = data.aws_iam_openid_connect_provider.github.arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/*:*"
+          "token.actions.githubusercontent.com:job_workflow_ref" = [
+            "${var.github_org}/platform/.github/workflows/tf-plan.yml@refs/heads/main",
+            "${var.github_org}/platform/.github/workflows/docker-build.yml@refs/heads/main",
+            "${var.github_org}/platform/.github/workflows/ecs-deploy.yml@refs/heads/main",
+          ]
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "ci_app_broker" {
+  name = "invoke-ci-broker-only"
+  role = aws_iam_role.ci_app_broker.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "lambda:InvokeFunction"
+      Resource = var.ci_broker_function_arn
+    }]
+  })
+}
+
+################################################################################
 # 2. javabin-ci-team-{team} — Per-team Terraform role (plan + apply)
 #
-# Trust: GitHub OIDC with TWO conditions:
-#   - sub matches ANY repo in the org (team membership checked by workflow)
-#   - job_workflow_ref pins to the platform's tf-plan.yml on main
-#
-# Security model: only our controlled workflows can assume these roles.
-# The workflow resolves team from GitHub API and assumes the correct role.
-# App repos cannot write their own workflows to assume this role.
+# Trust: ONLY the CI broker Lambda and apply-gate Lambda can assume these roles.
+# No direct OIDC trust — the broker validates repo→team membership via GitHub
+# API before issuing credentials. This is the hard enforcement point.
 #
 # Permissions: Allow *:* with team-based tag isolation. Resources must be
 # tagged with the correct team name.
@@ -280,24 +327,12 @@ resource "aws_iam_role" "ci_team" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AllowPlanViaOIDC"
+        Sid    = "AllowViaCIBroker"
         Effect = "Allow"
         Principal = {
-          Federated = data.aws_iam_openid_connect_provider.github.arn
+          AWS = var.ci_broker_role_arn
         }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            # Any repo in the org — team membership enforced by the workflow
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/*:*"
-            "token.actions.githubusercontent.com:job_workflow_ref" = [
-              "${var.github_org}/platform/.github/workflows/tf-plan.yml@refs/heads/main",
-            ]
-          }
-        }
+        Action = "sts:AssumeRole"
       },
       {
         Sid    = "AllowApplyViaGateLambda"
@@ -426,8 +461,8 @@ resource "aws_iam_role_policy" "ci_team_deny" {
 ################################################################################
 # 3. javabin-ci-deploy-{team} — Per-team deploy role (build + push + deploy)
 #
-# Trust: GitHub OIDC pinned to docker-build and ecs-deploy workflows on main.
-# Any org repo can assume via our controlled workflows; team resolved at runtime.
+# Trust: ONLY the CI broker Lambda can assume these roles.
+# Same enforcement model as team roles — broker validates team membership.
 # Permissions: Scoped to ECR push, ECS update, CloudWatch logs, SSM read.
 ################################################################################
 
@@ -441,23 +476,12 @@ resource "aws_iam_role" "ci_deploy" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "AllowViaCIBroker"
         Effect = "Allow"
         Principal = {
-          Federated = data.aws_iam_openid_connect_provider.github.arn
+          AWS = var.ci_broker_role_arn
         }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/*:*"
-            "token.actions.githubusercontent.com:job_workflow_ref" = [
-              "${var.github_org}/platform/.github/workflows/docker-build.yml@refs/heads/main",
-              "${var.github_org}/platform/.github/workflows/ecs-deploy.yml@refs/heads/main",
-            ]
-          }
-        }
+        Action = "sts:AssumeRole"
       }
     ]
   })
