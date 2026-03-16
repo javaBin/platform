@@ -305,6 +305,24 @@ def parse_identity(detail):
                     ci_ctx["repo"] = sub_match.group(1)
                     ci_ctx["ref"] = sub_match.group(2)
 
+            # Fallback: extract run ID from our session name convention
+            # Pattern: javabin-{purpose}-{run_id} or javabin-{repo}-{purpose}-{run_id}
+            if not ci_ctx.get("GitHubRunID"):
+                run_match = re.search(r"-(\d{8,})$", session)
+                if run_match:
+                    ci_ctx["GitHubRunID"] = run_match.group(1)
+
+            # Fallback: infer repo from role name if not resolved
+            # javabin-ci-infra → javaBin/platform
+            # javabin-ci-app-{repo} → javaBin/{repo}
+            if not ci_ctx.get("repo") and not ci_ctx.get("GitHubRepo"):
+                if "ci-infra" in role_name:
+                    ci_ctx["repo"] = f"{GITHUB_ORG_URL.split('/')[-1]}/platform"
+                else:
+                    app_match = re.match(r"javabin-ci-app-(.+)", role_name)
+                    if app_match:
+                        ci_ctx["repo"] = f"{GITHUB_ORG_URL.split('/')[-1]}/{app_match.group(1)}"
+
             return f"{role_name} (CI/CD)", True, ci_ctx or None
 
         # Non-CI assumed role
@@ -375,6 +393,21 @@ def extract_resource_name(event_name, detail):
 
     if event_name == "ModifyInstanceAttribute":
         return request.get("instanceId")
+
+    # ELB: target groups, rules, listeners (nested response structures)
+    for list_key in ("targetGroups", "rules", "listeners"):
+        items = response.get(list_key, [])
+        if items and isinstance(items, list):
+            item = items[0]
+            name = item.get("targetGroupName") or item.get("listenerArn") or item.get("ruleArn")
+            if name:
+                return name.split("/")[-1] if "/" in str(name) else name
+
+    # Fallback: check request for name/arn patterns
+    for key in ("name", "targetGroupArn", "listenerArn", "ruleArn"):
+        val = request.get(key)
+        if val and isinstance(val, str):
+            return val.split("/")[-1] if "/" in val else val
 
     return None
 
