@@ -42,3 +42,13 @@ output "apply_gate_role_arn" {
   description = "ARN of the apply-gate Lambda IAM role"
   value       = aws_iam_role.apply_gate.arn
 }
+
+output "ci_broker_role_arn" {
+  description = "ARN of the CI broker Lambda IAM role"
+  value       = aws_iam_role.ci_broker.arn
+}
+
+output "ci_broker_function_arn" {
+  description = "ARN of the CI broker Lambda function"
+  value       = aws_lambda_function.ci_broker.arn
+}

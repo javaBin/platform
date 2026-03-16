@@ -352,7 +352,7 @@ BACKEND_TEMPLATE = """\
 terraform {{
   backend "s3" {{
     bucket         = "{project}-terraform-state-{account_id}"
-    key            = "apps/{service}/terraform.tfstate"
+    key            = "apps/{team}/{service}/terraform.tfstate"
     region         = "{region}"
     dynamodb_table = "{project}-terraform-app-locks"
     encrypt        = true

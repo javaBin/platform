@@ -50,21 +50,17 @@ jobs:
           sparse-checkout: scripts
           path: .platform
 
-      - name: Resolve team from GitHub
-        id: team
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TEAM=$(gh api "/repos/${{ github.repository }}/teams" \
-            --jq '[.[] | select(.slug != "platform-owners")] | .[0].slug // empty' 2>/dev/null || true)
-          if [ -z "$TEAM" ]; then echo "ERROR: repo not in a team"; exit 1; fi
-          echo "team=$TEAM" >> "$GITHUB_OUTPUT"
-
-      - name: Configure AWS credentials via OIDC
+      - name: Assume broker role via OIDC
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-deploy-${{ steps.team.outputs.team }}
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-broker
           aws-region: ${{ inputs.aws_region }}
+
+      - name: Get deploy credentials from broker
+        id: broker
+        env:
+          PROJECT: javabin
+        run: sh .platform/scripts/invoke-ci-broker.sh deploy
 
       - name: Deploy to ECS
         env:

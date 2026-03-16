@@ -664,7 +664,7 @@ def main():
         os.path.join(tf_root, "backend.tf"),
         BACKEND_TEMPLATE.format(
             project=PROJECT, account_id=account_id,
-            service=service, region=region,
+            service=service, team=app_team, region=region,
         ),
     )
     write_file(

@@ -37,7 +37,7 @@ if [ ! -f "$TF_ROOT/backend.tf" ]; then
 terraform {
   backend "s3" {
     bucket         = "${PROJECT}-terraform-state-${ACCOUNT_ID}"
-    key            = "apps/${REPO_NAME}/terraform.tfstate"
+    key            = "apps/${TEAM}/${REPO_NAME}/terraform.tfstate"
     region         = "${REGION}"
     dynamodb_table = "${PROJECT}-terraform-app-locks"
     encrypt        = true
