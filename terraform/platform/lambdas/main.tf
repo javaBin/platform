@@ -128,6 +128,12 @@ data "archive_file" "team_provisioner" {
     content  = file("${local.lambda_src_path}/shared/constants.py")
     filename = "shared/constants.py"
   }
+  # Logo PNG stored as base64 text in the zip (source.content requires string).
+  # Python decodes at cold start. The source PNG lives in the repo for auditability.
+  source {
+    content  = filebase64("${local.lambda_src_path}/team_provisioner/javabin-logo-white.png")
+    filename = "assets/javabin-logo-white.b64"
+  }
 }
 
 data "archive_file" "password_set" {

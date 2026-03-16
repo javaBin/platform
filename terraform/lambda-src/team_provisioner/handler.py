@@ -64,103 +64,24 @@ PASSWORD_SET_URL_PARAM = os.environ.get(
     "PASSWORD_SET_URL_PARAM", "/javabin/platform/password-set-function-url"
 )
 
-# javaBin horizontal white logo PNG (5KB) — CID-embedded in welcome emails to
-# avoid "trust this email" prompts in Outlook from external image loading.
-_JAVABIN_LOGO_PNG = base64.b64decode(
-    "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"
-)
+# javaBin horizontal white logo PNG — loaded from the Lambda zip at cold start.
+# CID-embedded in welcome emails to avoid "trust this email" prompts in Outlook.
+# Source file: terraform/lambda-src/team_provisioner/javabin-logo-white.png
+_JAVABIN_LOGO_PNG = None
+
+
+def _load_logo():
+    global _JAVABIN_LOGO_PNG
+    if _JAVABIN_LOGO_PNG is not None:
+        return _JAVABIN_LOGO_PNG
+    try:
+        logo_path = os.path.join(os.path.dirname(__file__), "assets", "javabin-logo-white.b64")
+        with open(logo_path) as f:
+            _JAVABIN_LOGO_PNG = base64.b64decode(f.read())
+    except Exception as e:
+        logger.warning("Failed to load logo from zip: %s", e)
+        _JAVABIN_LOGO_PNG = b""
+    return _JAVABIN_LOGO_PNG
 
 sso_client = boto3.client("sso-admin")
 
@@ -384,19 +305,25 @@ def _send_welcome_email(access_token, javabin_email, personal_email, firstname, 
 </body>
 </html>"""
 
-    # Build multipart/related MIME message with CID-embedded logo
+    # Build MIME message — multipart/related with CID logo if available,
+    # otherwise fall back to plain HTML with external image URL.
     import email.mime.multipart
     import email.mime.text
     import email.mime.image
 
-    msg = email.mime.multipart.MIMEMultipart("related")
-    msg.attach(email.mime.text.MIMEText(body_html, "html", "utf-8"))
-
-    # Embed logo as inline CID attachment
-    logo_part = email.mime.image.MIMEImage(_JAVABIN_LOGO_PNG, _subtype="png")
-    logo_part.add_header("Content-ID", "<javabin-logo>")
-    logo_part.add_header("Content-Disposition", "inline", filename="javabin-logo.png")
-    msg.attach(logo_part)
+    logo_data = _load_logo()
+    if logo_data:
+        msg = email.mime.multipart.MIMEMultipart("related")
+        msg.attach(email.mime.text.MIMEText(body_html, "html", "utf-8"))
+        logo_part = email.mime.image.MIMEImage(logo_data, _subtype="png")
+        logo_part.add_header("Content-ID", "<javabin-logo>")
+        logo_part.add_header("Content-Disposition", "inline", filename="javabin-logo.png")
+        msg.attach(logo_part)
+    else:
+        # Fallback: replace cid: reference with external URL
+        fallback_url = "https://java.no/_next/static/media/javaBin-logo-horizontal-WHITE.434dba55.png"
+        body_html = body_html.replace('src="cid:javabin-logo"', f'src="{fallback_url}"')
+        msg = email.mime.text.MIMEText(body_html, "html", "utf-8")
 
     msg["To"] = personal_email
     msg["From"] = admin_email
