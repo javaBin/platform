@@ -28,10 +28,10 @@ variable "domain" {
   default     = "javazone.no"
 }
 
-variable "registered_app_repos" {
-  description = "GitHub repo names (under javaBin/) registered for CI/CD access"
+variable "registered_teams" {
+  description = "GitHub team slugs that get CI team + deploy roles (synced from GitHub teams API)"
   type        = list(string)
-  default     = ["platform-test-app"]
+  default     = []
 }
 
 variable "github_org" {
@@ -76,7 +76,7 @@ variable "auto_tagger_identities" {
   type        = list(string)
   default = [
     "javabin-ci-infra",
-    "javabin-ci-app-",
+    "javabin-ci-team-",
     "javabin-ci-deploy-",
     "javabin-",
     "alexander.amiri"
