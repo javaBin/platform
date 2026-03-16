@@ -13,8 +13,8 @@ variable "aws_account_id" {
   type        = string
 }
 
-variable "registered_app_repos" {
-  description = "List of GitHub repo names (without org prefix) that get CI app + deploy roles"
+variable "registered_teams" {
+  description = "List of GitHub team slugs that get CI team + deploy roles"
   type        = list(string)
   default     = []
 }

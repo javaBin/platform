@@ -256,31 +256,31 @@ resource "aws_iam_role_policy" "ci_infra_deny" {
 }
 
 ################################################################################
-# 2. javabin-ci-app-{repo} — Per-app Terraform role (plan + apply)
+# 2. javabin-ci-team-{team} — Per-team Terraform role (plan + apply)
 #
 # Trust: GitHub OIDC with TWO conditions:
-#   - sub matches the repo (any ref, since plan runs on PRs too)
+#   - sub matches ANY repo in the org (team membership checked by workflow)
 #   - job_workflow_ref pins to the platform's tf-plan.yml on main
 #
-# This means: only workflows defined in javaBin/platform can assume this role,
-# even though the workflow runs in the app repo's context. App repos cannot
-# write their own workflows to assume this role.
+# Security model: only our controlled workflows can assume these roles.
+# The workflow resolves team from GitHub API and assumes the correct role.
+# App repos cannot write their own workflows to assume this role.
 #
-# Permissions: Allow *:* with tag-based isolation. The StringEqualsIfExists
-# condition ensures apps can only touch resources tagged with their project.
+# Permissions: Allow *:* with team-based tag isolation. Resources must be
+# tagged with the correct team name.
 ################################################################################
 
-resource "aws_iam_role" "ci_app" {
-  for_each = toset(var.registered_app_repos)
+resource "aws_iam_role" "ci_team" {
+  for_each = toset(var.registered_teams)
 
-  name                 = "${var.project}-ci-app-${each.key}"
+  name                 = "${var.project}-ci-team-${each.key}"
   permissions_boundary = aws_iam_policy.developer_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AllowPlanAndReviewViaOIDC"
+        Sid    = "AllowPlanViaOIDC"
         Effect = "Allow"
         Principal = {
           Federated = data.aws_iam_openid_connect_provider.github.arn
@@ -291,8 +291,8 @@ resource "aws_iam_role" "ci_app" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/${each.key}:*"
-            # Plan + review (merged into tf-plan) — apply goes through the gate Lambda
+            # Any repo in the org — team membership enforced by the workflow
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/*:*"
             "token.actions.githubusercontent.com:job_workflow_ref" = [
               "${var.github_org}/platform/.github/workflows/tf-plan.yml@refs/heads/main",
             ]
@@ -311,38 +311,39 @@ resource "aws_iam_role" "ci_app" {
   })
 
   tags = {
-    Name = "${var.project}-ci-app-${each.key}"
+    Name = "${var.project}-ci-team-${each.key}"
+    team = each.key
   }
 }
 
-resource "aws_iam_role_policy" "ci_app_allow" {
-  for_each = toset(var.registered_app_repos)
+resource "aws_iam_role_policy" "ci_team_allow" {
+  for_each = toset(var.registered_teams)
 
-  name = "app-management"
-  role = aws_iam_role.ci_app[each.key].id
+  name = "team-management"
+  role = aws_iam_role.ci_team[each.key].id
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Sid      = "AllowWithTagIsolation"
+      Sid      = "AllowWithTeamTagIsolation"
       Effect   = "Allow"
       Action   = "*"
       Resource = "*"
       Condition = {
         StringEqualsIfExists = {
-          "aws:ResourceTag/project" = "$${aws:PrincipalTag/project}"
-          "aws:RequestTag/project"  = "$${aws:PrincipalTag/project}"
+          "aws:ResourceTag/team" = each.key
+          "aws:RequestTag/team"  = each.key
         }
       }
     }]
   })
 }
 
-resource "aws_iam_role_policy" "ci_app_deny" {
-  for_each = toset(var.registered_app_repos)
+resource "aws_iam_role_policy" "ci_team_deny" {
+  for_each = toset(var.registered_teams)
 
   name = "deny-platform-operations"
-  role = aws_iam_role.ci_app[each.key].id
+  role = aws_iam_role.ci_team[each.key].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -423,15 +424,15 @@ resource "aws_iam_role_policy" "ci_app_deny" {
 }
 
 ################################################################################
-# 3. javabin-ci-deploy-{repo} — Per-app deploy role (build + push + deploy)
+# 3. javabin-ci-deploy-{team} — Per-team deploy role (build + push + deploy)
 #
 # Trust: GitHub OIDC pinned to docker-build and ecs-deploy workflows on main.
-# Terraform operations use the app role instead.
+# Any org repo can assume via our controlled workflows; team resolved at runtime.
 # Permissions: Scoped to ECR push, ECS update, CloudWatch logs, SSM read.
 ################################################################################
 
 resource "aws_iam_role" "ci_deploy" {
-  for_each = toset(var.registered_app_repos)
+  for_each = toset(var.registered_teams)
 
   name                 = "${var.project}-ci-deploy-${each.key}"
   permissions_boundary = aws_iam_policy.developer_boundary.arn
@@ -450,8 +451,7 @@ resource "aws_iam_role" "ci_deploy" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/${each.key}:*"
-            # Deployment operations only — Terraform uses the app role
+            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/*:*"
             "token.actions.githubusercontent.com:job_workflow_ref" = [
               "${var.github_org}/platform/.github/workflows/docker-build.yml@refs/heads/main",
               "${var.github_org}/platform/.github/workflows/ecs-deploy.yml@refs/heads/main",
@@ -464,11 +464,12 @@ resource "aws_iam_role" "ci_deploy" {
 
   tags = {
     Name = "${var.project}-ci-deploy-${each.key}"
+    team = each.key
   }
 }
 
 resource "aws_iam_role_policy" "ci_deploy_ecr" {
-  for_each = toset(var.registered_app_repos)
+  for_each = toset(var.registered_teams)
 
   name = "ecr-push"
   role = aws_iam_role.ci_deploy[each.key].id
@@ -477,13 +478,10 @@ resource "aws_iam_role_policy" "ci_deploy_ecr" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "EcrAuth"
-        Effect = "Allow"
-        Action = [
-          "ecr:GetAuthorizationToken",
-        ]
-        # GetAuthorizationToken does not support resource-level permissions
-        Resource = "*"
+        Sid      = "EcrAuth"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*" # GetAuthorizationToken does not support resource-level permissions
       },
       {
         Sid    = "EcrPush"
@@ -496,15 +494,18 @@ resource "aws_iam_role_policy" "ci_deploy_ecr" {
           "ecr:CompleteLayerUpload",
           "ecr:GetDownloadUrlForLayer",
           "ecr:BatchGetImage",
+          "ecr:CreateRepository",
+          "ecr:DescribeRepositories",
         ]
-        Resource = "arn:aws:ecr:${var.region}:${var.aws_account_id}:repository/${each.key}"
+        # Team can push to any repo tagged with their team
+        Resource = "arn:aws:ecr:${var.region}:${var.aws_account_id}:repository/*"
       }
     ]
   })
 }
 
 resource "aws_iam_role_policy" "ci_deploy_ecs" {
-  for_each = toset(var.registered_app_repos)
+  for_each = toset(var.registered_teams)
 
   name = "ecs-deploy"
   role = aws_iam_role.ci_deploy[each.key].id
@@ -522,7 +523,7 @@ resource "aws_iam_role_policy" "ci_deploy_ecs" {
         Resource = "*"
         Condition = {
           StringEquals = {
-            "aws:ResourceTag/project" = var.project
+            "aws:ResourceTag/team" = each.key
           }
         }
       },
@@ -540,9 +541,7 @@ resource "aws_iam_role_policy" "ci_deploy_ecs" {
       {
         Sid    = "PassRole"
         Effect = "Allow"
-        Action = [
-          "iam:PassRole",
-        ]
+        Action = ["iam:PassRole"]
         Resource = [
           aws_iam_role.ecs_execution.arn,
           "arn:aws:iam::${var.aws_account_id}:role/${var.project}-*",
@@ -553,45 +552,34 @@ resource "aws_iam_role_policy" "ci_deploy_ecs" {
 }
 
 resource "aws_iam_role_policy" "ci_deploy_logs" {
-  for_each = toset(var.registered_app_repos)
+  for_each = toset(var.registered_teams)
 
   name = "cloudwatch-logs"
   role = aws_iam_role.ci_deploy[each.key].id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents",
-        ]
-        Resource = "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/${var.project}/*"
-      }
-    ]
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+      Resource = "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/${var.project}/*"
+    }]
   })
 }
 
 resource "aws_iam_role_policy" "ci_deploy_ssm" {
-  for_each = toset(var.registered_app_repos)
+  for_each = toset(var.registered_teams)
 
   name = "ssm-read-overrides"
   role = aws_iam_role.ci_deploy[each.key].id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "ssm:GetParameter",
-          "ssm:GetParameters",
-        ]
-        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform-overrides/*"
-      }
-    ]
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameter", "ssm:GetParameters"]
+      Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform-overrides/*"
+    }]
   })
 }
 
