@@ -299,3 +299,4 @@ When working on any task:
 4. Never push without the user's confirmation
 5. Never implement hacky solutions — generalize
 6. Update task status in this file when complete
+7. **Always check PR state before pushing to a branch** — run `gh pr view` to verify the PR is still open. The user may have already merged it. Pushing to a merged branch creates orphaned commits.

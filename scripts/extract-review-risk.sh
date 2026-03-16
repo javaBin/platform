@@ -11,7 +11,8 @@ set -e
 REVIEW_SCRIPT="$1"
 PLAN_FILE="$2"
 
-python3 "$REVIEW_SCRIPT" "$PLAN_FILE" 2>&1 | tee review-output.txt || true
+python3 "$REVIEW_SCRIPT" "$PLAN_FILE" > review-output.txt 2>&1 || true
+cat review-output.txt
 
 if [ -f review-result.json ]; then
   RISK=$(jq -r '.risk // "FAILED"' review-result.json)
