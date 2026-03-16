@@ -14,6 +14,7 @@
 #
 # The plan binary is written to <working-directory>/tfplan
 # Human-readable output is written to <working-directory>/plan-output.txt
+# A filtered version (no refresh noise) is written to <working-directory>/plan-clean.txt
 
 set -uo pipefail
 
@@ -28,7 +29,11 @@ terraform plan -out=tfplan -detailed-exitcode -no-color "${EXTRA_ARGS[@]}" > pla
 PLAN_EXIT=$?
 set -e
 
-cat plan-output.txt
+# Create filtered output: strip state refresh and data source read lines
+grep -v -E '^(module\.|data\.|\s+#).*: (Refreshing state|Reading|Read complete)' plan-output.txt > plan-clean.txt || true
+
+# Print only the clean output to the CI log (not hundreds of refresh lines)
+cat plan-clean.txt
 
 if [ "$PLAN_EXIT" = "1" ]; then
   echo "Terraform plan failed"
