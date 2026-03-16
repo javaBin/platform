@@ -8,14 +8,14 @@ output "ci_infra_role_arn" {
   value       = aws_iam_role.ci_infra.arn
 }
 
-output "ci_app_role_arns" {
-  description = "Map of repo name to CI app role ARN"
-  value       = { for repo, role in aws_iam_role.ci_app : repo => role.arn }
+output "ci_team_role_arns" {
+  description = "Map of team slug to CI team role ARN"
+  value       = { for team, role in aws_iam_role.ci_team : team => role.arn }
 }
 
 output "ci_deploy_role_arns" {
-  description = "Map of repo name to CI deploy role ARN"
-  value       = { for repo, role in aws_iam_role.ci_deploy : repo => role.arn }
+  description = "Map of team slug to CI deploy role ARN"
+  value       = { for team, role in aws_iam_role.ci_deploy : team => role.arn }
 }
 
 output "ci_override_approver_role_arn" {
