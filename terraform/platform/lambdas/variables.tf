@@ -60,3 +60,28 @@ variable "alert_dedup_table_arn" {
   type        = string
 }
 
+variable "https_listener_arn" {
+  description = "ARN of the ALB HTTPS listener for adding routing rules"
+  type        = string
+}
+
+variable "alb_dns_name" {
+  description = "DNS name of the ALB for Route53 alias records"
+  type        = string
+}
+
+variable "alb_zone_id" {
+  description = "Hosted zone ID of the ALB for Route53 alias records"
+  type        = string
+}
+
+variable "route53_zone_id" {
+  description = "Route53 hosted zone ID for javazone.no"
+  type        = string
+}
+
+variable "domain" {
+  description = "Domain name (e.g. javazone.no)"
+  type        = string
+}
+

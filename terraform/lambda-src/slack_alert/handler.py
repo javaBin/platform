@@ -186,6 +186,23 @@ Set should_alert=false for routine changes (e.g. adding rules scoped to private 
     return _llm_structured(prompt)
 
 
+def _is_service_linked_role(detail):
+    """Check if the event was performed by an AWS service-linked role.
+
+    Service-linked roles (AWSServiceRoleFor*) are managed by AWS services
+    and perform automated internal operations (e.g. ECS ENI provisioning,
+    RDS networking). These are not human or CI actions and should be
+    silently suppressed.
+    """
+    identity = detail.get("userIdentity", {})
+    if identity.get("type") != "AssumedRole":
+        return False
+    arn = identity.get("arn", "")
+    parts = arn.split("/")
+    role_name = parts[1] if len(parts) > 1 else ""
+    return role_name.startswith("AWSServiceRoleFor")
+
+
 def is_duplicate(action, resource):
     key = f"{action}:{resource}"
     now = time.time()
@@ -1177,6 +1194,11 @@ def format_structured_alert(subject, parsed):
     if "detail-type" in parsed:
         detail = parsed.get("detail", {})
         event_name = detail.get("eventName", "")
+
+        # Suppress automated actions by AWS service-linked roles
+        if _is_service_linked_role(detail):
+            logger.info("Suppressed service-linked role event: %s", event_name)
+            return None
 
         if event_name.startswith(("Delete", "Terminate", "Stop")):
             return format_resource_deletion(parsed)

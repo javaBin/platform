@@ -151,18 +151,18 @@ _PASSWORD_FORM_HTML = """\
        background:#f5f5f5;min-height:100vh;display:flex;align-items:center;justify-content:center}
   .card{background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);
         max-width:440px;width:100%;overflow:hidden}
-  .hdr{background:#1a1a2e;padding:24px 32px;text-align:center}
+  .hdr{background:#f05350;padding:24px 32px;text-align:center}
   .hdr img{height:40px}
   .bd{padding:32px}
-  h1{color:#1a1a2e;font-size:20px;margin-bottom:8px}
+  h1{color:#f05350;font-size:20px;margin-bottom:8px}
   .email{color:#666;font-size:14px;margin-bottom:24px}
   label{display:block;font-size:14px;font-weight:600;color:#333;margin-bottom:6px}
   input[type=password]{width:100%;padding:10px 12px;border:1px solid #d1d5db;border-radius:6px;
                        font-size:15px;margin-bottom:16px}
-  input[type=password]:focus{outline:none;border-color:#1a1a2e;box-shadow:0 0 0 2px rgba(26,26,46,.15)}
-  .btn{width:100%;padding:12px;background:#1a1a2e;color:#fff;border:none;border-radius:6px;
+  input[type=password]:focus{outline:none;border-color:#f05350;box-shadow:0 0 0 2px rgba(240,83,80,.2)}
+  .btn{width:100%;padding:12px;background:#f05350;color:#fff;border:none;border-radius:6px;
        font-size:15px;font-weight:600;cursor:pointer}
-  .btn:hover{background:#2d2d4e}
+  .btn:hover{background:#d94442}
   .btn:disabled{opacity:.5;cursor:not-allowed}
   .rules{font-size:13px;color:#888;margin-bottom:20px}
   .rules span{display:block;margin:2px 0}
@@ -198,7 +198,7 @@ _PASSWORD_FORM_HTML = """\
       <button class="btn" type="submit" id="sub" disabled>Sett passord</button>
     </form>
   </div>
-  <div class="ft">javaBin &mdash; <a href="https://java.no">java.no</a> &middot; <a href="https://javazone.no">javazone.no</a></div>
+  <div class="ft">JavaBin &mdash; Javabrukerforeningen i Norge &middot; <a href="https://java.no">java.no</a> &middot; <a href="https://javazone.no">javazone.no</a></div>
 </div>
 <script>
 const p1=document.getElementById('pw1'),p2=document.getElementById('pw2'),
@@ -236,14 +236,14 @@ _PASSWORD_SUCCESS_HTML = """\
        background:#f5f5f5;min-height:100vh;display:flex;align-items:center;justify-content:center}
   .card{background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);
         max-width:440px;width:100%;overflow:hidden;text-align:center}
-  .hdr{background:#1a1a2e;padding:24px 32px}
+  .hdr{background:#f05350;padding:24px 32px}
   .hdr img{height:40px}
   .bd{padding:40px 32px}
   h1{color:#22c55e;font-size:22px;margin-bottom:12px}
   p{color:#333;font-size:15px;line-height:1.6;margin-bottom:24px}
-  .btn{display:inline-block;padding:12px 32px;background:#1a1a2e;color:#fff;border-radius:6px;
+  .btn{display:inline-block;padding:12px 32px;background:#f05350;color:#fff;border-radius:6px;
        font-size:15px;font-weight:600;text-decoration:none}
-  .btn:hover{background:#2d2d4e}
+  .btn:hover{background:#d94442}
   .ft{background:#f8f9fa;padding:16px 32px;border-top:1px solid #e9ecef;
       font-size:12px;color:#999}
   .ft a{color:#666;text-decoration:none}
@@ -259,7 +259,7 @@ _PASSWORD_SUCCESS_HTML = """\
     <p>Passordet ditt er oppdatert. Du kan n&aring; logge inn med din javaBin-konto.</p>
     <a class="btn" href="https://accounts.google.com">Logg inn</a>
   </div>
-  <div class="ft">javaBin &mdash; <a href="https://java.no">java.no</a> &middot; <a href="https://javazone.no">javazone.no</a></div>
+  <div class="ft">JavaBin &mdash; Javabrukerforeningen i Norge &middot; <a href="https://java.no">java.no</a> &middot; <a href="https://javazone.no">javazone.no</a></div>
 </div>
 </body>
 </html>"""
@@ -277,7 +277,7 @@ _PASSWORD_ERROR_HTML = """\
        background:#f5f5f5;min-height:100vh;display:flex;align-items:center;justify-content:center}
   .card{background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);
         max-width:440px;width:100%;overflow:hidden;text-align:center}
-  .hdr{background:#1a1a2e;padding:24px 32px}
+  .hdr{background:#f05350;padding:24px 32px}
   .hdr img{height:40px}
   .bd{padding:40px 32px}
   h1{color:#ef4444;font-size:22px;margin-bottom:12px}
@@ -296,7 +296,7 @@ _PASSWORD_ERROR_HTML = """\
     <h1>&#x2717; {{TITLE}}</h1>
     <p>{{MESSAGE}}</p>
   </div>
-  <div class="ft">javaBin &mdash; <a href="https://java.no">java.no</a> &middot; <a href="https://javazone.no">javazone.no</a></div>
+  <div class="ft">JavaBin &mdash; Javabrukerforeningen i Norge &middot; <a href="https://java.no">java.no</a> &middot; <a href="https://javazone.no">javazone.no</a></div>
 </div>
 </body>
 </html>"""
@@ -408,13 +408,33 @@ def _html_error(status_code, title, message):
 
 
 # ---------------------------------------------------------------------------
-# Lambda entry point (Function URL)
+# Lambda entry point (Function URL + ALB)
 # ---------------------------------------------------------------------------
+def _is_alb_event(event):
+    """Detect ALB invocation by checking for elb in requestContext."""
+    return "elb" in event.get("requestContext", {})
+
+
+def _alb_response(response):
+    """Wrap a Function URL-style response for ALB format."""
+    response.setdefault("isBase64Encoded", False)
+    status = response.get("statusCode", 200)
+    response["statusDescription"] = f"{status} OK" if status < 400 else f"{status} Error"
+    return response
+
+
 def handler(event, context):
-    """Route by HTTP method + path."""
-    http = event.get("requestContext", {}).get("http", {})
-    method = http.get("method", "GET")
-    path = event.get("rawPath", "/")
+    """Route by HTTP method + path. Supports both Function URL and ALB events."""
+    is_alb = _is_alb_event(event)
+
+    if is_alb:
+        method = event.get("httpMethod", "GET")
+        path = event.get("path", "/")
+    else:
+        http = event.get("requestContext", {}).get("http", {})
+        method = http.get("method", "GET")
+        path = event.get("rawPath", "/")
+
     query_params = event.get("queryStringParameters") or {}
 
     # Decode body
@@ -424,10 +444,11 @@ def handler(event, context):
 
     # GET /set-password → password form
     if method == "GET" and path == "/set-password":
-        return _handle_get_password_form(query_params)
-
+        result = _handle_get_password_form(query_params)
     # POST /set-password → set password
-    if method == "POST" and path == "/set-password":
-        return _handle_post_password(body)
+    elif method == "POST" and path == "/set-password":
+        result = _handle_post_password(body)
+    else:
+        result = _json_response(404, {"error": "not found"})
 
-    return _json_response(404, {"error": "not found"})
+    return _alb_response(result) if is_alb else result

@@ -13,6 +13,7 @@ Requires: aws CLI, PyYAML (available on GitHub Actions ubuntu-latest runners)
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -107,10 +108,21 @@ def main():
     for g in resolved_groups:
         print(f"  {g['name']}: {len(g['members'])} member(s)")
 
+    # Pass CI context so the Lambda can attribute the sync in Slack
+    ci_context = {
+        k: v for k, v in {
+            "actor": os.environ.get("GITHUB_ACTOR"),
+            "repo": os.environ.get("GITHUB_REPOSITORY"),
+            "sha": os.environ.get("GITHUB_SHA"),
+            "run_id": os.environ.get("GITHUB_RUN_ID"),
+        }.items() if v
+    }
+
     payload = {
         "action": "sync_groups_and_heros",
         "groups": resolved_groups,
         "heros": hero_details,
+        **({"ci_context": ci_context} if ci_context else {}),
     }
 
     print(f"\nInvoking javabin-team-provisioner with {len(hero_details)} hero(es)...")

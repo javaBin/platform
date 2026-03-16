@@ -56,6 +56,7 @@ module "lambdas" {
   project                        = var.project
   region                         = var.region
   aws_account_id                 = var.aws_account_id
+  domain                         = var.domain
   alerts_topic_arn               = module.monitoring.alerts_topic_arn
   security_topic_arn             = module.monitoring.security_topic_arn
   compliance_reporter_identities = var.auto_tagger_identities
@@ -65,6 +66,10 @@ module "lambdas" {
   sso_instance_arn               = var.sso_instance_arn
   alert_dedup_table_name         = module.monitoring.alert_dedup_table_name
   alert_dedup_table_arn          = module.monitoring.alert_dedup_table_arn
+  https_listener_arn             = module.ingress.https_listener_arn
+  alb_dns_name                   = module.ingress.alb_dns_name
+  alb_zone_id                    = module.ingress.alb_zone_id
+  route53_zone_id                = module.ingress.route53_zone_id
 }
 
 module "identity" {
