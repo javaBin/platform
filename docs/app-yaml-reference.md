@@ -116,16 +116,30 @@ resources:
 
 #### databases
 
-DynamoDB tables.
+DynamoDB tables (default) or RDS PostgreSQL instances.
 
 ```yaml
 resources:
   databases:
     - name: sessions
-      hash_key: id          # required
-      range_key: timestamp  # optional
+      hash_key: id          # required (DynamoDB)
+      range_key: timestamp  # optional (DynamoDB)
       env: SESSIONS_TABLE
+
+    - name: main
+      engine: postgres              # "dynamodb" (default) or "postgres"/"postgresql"
+      instance_class: db.t3.micro   # RDS only, default: db.t3.micro
+      allocated_storage: 20         # GB, RDS only, default: 20
+      engine_version: "16"          # PostgreSQL version, RDS only, default: "16"
+      backup_retention_period: 7    # days, RDS only, default: 7
+      multi_az: false               # RDS only, default: false
+      deletion_protection: true     # RDS only, default: true
+      env: DATABASE_URL
 ```
+
+DynamoDB and PostgreSQL entries can coexist in the same `databases` list. Entries without `engine` (or with `engine: dynamodb`) use the DynamoDB module. Entries with `engine: postgres` or `engine: postgresql` use the RDS module.
+
+RDS instances use `manage_master_user_password = true`, which stores the auto-generated master password in Secrets Manager. The ECS task role automatically receives IAM policies for `rds-db:connect` and `secretsmanager:GetSecretValue` on the password secret.
 
 #### secrets
 
@@ -354,6 +368,7 @@ Generated files have a `# GENERATED FROM app.yaml` marker. The script only overw
 | S3 bucket | `javabin-{bucket_name}-{account_id}` |
 | DynamoDB table | `javabin-{table_name}` |
 | SQS queue | `javabin-{queue_name}` |
+| RDS instance | `{db_name}` (identifier) |
 | Secrets Manager | `javabin/{secret_name}` |
 | IAM task role | `javabin-{name}` |
 | CloudWatch logs | `/ecs/javabin/{name}` |

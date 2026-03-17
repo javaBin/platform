@@ -39,6 +39,9 @@ jobs:
       image_uri: ${{ steps.push.outputs.image_uri }}
       image_tag: ${{ steps.tags.outputs.primary_tag }}
     steps:
+      - name: Set session name
+        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | head -c 64)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v6
 
       - name: Generate GitHub App token
@@ -62,6 +65,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-broker
           aws-region: ${{ inputs.aws_region }}
+          role-session-name: ${{ env.SESSION_NAME }}
 
       - name: Get deploy credentials from broker
         id: broker

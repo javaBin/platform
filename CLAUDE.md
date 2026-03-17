@@ -116,7 +116,7 @@ terraform/platform/
   iam/             GitHub OIDC, CI roles, permission boundary
   compute/         ECS cluster, ECR base config
   monitoring/      SNS, EventBridge, Config, GuardDuty, Security Hub
-  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set
+  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, resource-tagger, budget-enforcer, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set, ci-broker
   identity/        Cognito user pools (internal + external). Identity Center is in terraform/org/
 ```
 
@@ -186,6 +186,9 @@ terraform/state/
 | `team-provisioner` | Syncs Google Groups, GitHub teams, AWS Budgets from registry team YAML |
 | `securityhub-summary` | Weekly Security Hub findings summary (Monday 08:00 UTC) |
 | `password-set` | Self-service password-set for new hero accounts (Function URL) |
+| `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget |
+| `resource-tagger` | EventBridge-triggered, auto-tags created-by + commit on new resources |
+| `ci-broker` | Validates team membership, vends short-lived team role credentials |
 
 ### Scripts
 | Script | What |
@@ -228,6 +231,8 @@ Scheduled:
 EventBridge (Create/Run) ──► compliance-reporter (report to Slack, no auto-fix)
   Hourly             ──► override-cleanup (delete stale SSM override tokens)
 Registry merge ──► team-provisioner (Google/GitHub/Budget/Cognito/Identity Center sync + hero provisioning)
+AWS Budgets (200%) ──► budget-enforcer Lambda ──► ECS scale-to-zero + #javabin-cost-alerts
+EventBridge (Create/Run) ──► resource-tagger Lambda ──► Tag created-by + commit
 ```
 
 ## SSM Parameters
@@ -274,7 +279,7 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 | 2c | IAM / OIDC | **Deployed** — 6 CI roles (infra, infra-plan, per-app, deploy, override-approver, registry) |
 | 2d | Compute | **Deployed** — ECS cluster + ECR repos |
 | 2e | Monitoring | **Deployed** — GuardDuty, Security Hub, Config, SNS |
-| 2f | Lambda Functions | **Deployed** — 8 functions (Google/GitHub/Budget/Cognito/Identity Center sync live) |
+| 2f | Lambda Functions | **Deployed** — 11 functions (budget-enforcer, resource-tagger, ci-broker added; Google/GitHub/Budget/Cognito/Identity Center sync live) |
 | 2g | Platform CI | **Done** — plan → LLM review → apply pipeline working |
 | 3a | Reusable Terraform Modules | **Code done** — 12 modules in repo |
 | 3b | GitHub Actions Workflows | **Code done** — 14 reusable workflows |

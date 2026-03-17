@@ -44,6 +44,9 @@ jobs:
       plan_sha256: ${{ steps.upload.outputs.plan_sha256 }}
       risk_level: ${{ steps.review.outputs.risk_level }}
     steps:
+      - name: Set session name
+        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | head -c 64)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
@@ -71,7 +74,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra-plan
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: javabin-platform-plan-${{ github.run_id }}
+          role-session-name: ${{ env.SESSION_NAME }}
 
       - name: Sync registered teams from GitHub org
         if: steps.changes.outputs.has_infra_changes == 'true' && github.ref == 'refs/heads/main'
@@ -146,6 +149,9 @@ jobs:
       needs.plan.outputs.has_changes == 'true'
     environment: production
     steps:
+      - name: Set session name
+        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | head -c 64)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v6
 
       - uses: hashicorp/setup-terraform@v4
@@ -157,7 +163,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: javabin-apply-${{ github.run_id }}
+          role-session-name: ${{ env.SESSION_NAME }}
 
       - name: Check risk level
         env:
@@ -194,6 +200,9 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule'
     steps:
+      - name: Set session name
+        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | head -c 64)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v6
 
       - uses: hashicorp/setup-terraform@v4
@@ -205,7 +214,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
           aws-region: ${{ env.AWS_REGION }}
-          role-session-name: javabin-drift-${{ github.run_id }}
+          role-session-name: ${{ env.SESSION_NAME }}
 
       - name: Terraform Init
         working-directory: ${{ env.TF_ROOT }}

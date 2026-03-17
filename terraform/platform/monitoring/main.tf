@@ -158,6 +158,11 @@ resource "aws_cloudwatch_event_rule" "resource_creation" {
   name        = "${var.project}-resource-creation"
   description = "Detect creation of significant AWS resources"
 
+  # Intentionally scoped to major compute/storage services — NOT a wildcard.
+  # A {"prefix": "aws."} match would fire ~10,000 events/hour (CreateLogStream,
+  # CreateNetworkInterface, etc.) overwhelming SNS and making alerts unusable.
+  # The resource-tagger Lambda uses a wildcard because it has generic fallback;
+  # these security alerts need a curated list for signal-to-noise.
   event_pattern = jsonencode({
     source = [
       "aws.s3", "aws.ec2", "aws.rds", "aws.ecs",
@@ -188,6 +193,7 @@ resource "aws_cloudwatch_event_rule" "resource_modification" {
   name        = "${var.project}-resource-modification"
   description = "Detect modifications and deletions of significant AWS resources"
 
+  # Same rationale as resource_creation — curated list for alert signal quality.
   event_pattern = jsonencode({
     source = [
       "aws.s3", "aws.ec2", "aws.rds", "aws.ecs",
@@ -489,4 +495,14 @@ resource "aws_dynamodb_table" "alert_dedup" {
   tags = {
     Name = "${var.project}-alert-dedup"
   }
+}
+
+################################################################################
+# Cost Allocation Tags
+################################################################################
+
+resource "aws_ce_cost_allocation_tag" "tags" {
+  for_each = toset(["team", "service", "repo", "environment", "managed-by", "created-by", "commit"])
+  tag_key  = each.key
+  status   = "Active"
 }

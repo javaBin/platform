@@ -115,7 +115,7 @@ REGISTRY = [
     },
 
     # ------------------------------------------------------------------
-    # service-role: ECS task IAM role + policies
+    # service-role: task IAM role + policies (ECS, Lambda, or EC2)
     # ------------------------------------------------------------------
     {
         "id": "task_role",
@@ -128,6 +128,7 @@ REGISTRY = [
             "region": "env:AWS_REGION",
             "aws_account_id": "env:AWS_ACCOUNT_ID",
             "permissions_boundary_arn": "ref:platform.developer_boundary_arn",
+            "trusted_services": "list:yaml:compute.trusted_service|default:ecs-tasks.amazonaws.com",
             "additional_policy_jsons": "collect:access_policy_json",
         },
         "rename": "task",
@@ -262,6 +263,7 @@ REGISTRY = [
         "cardinality": "collection",
         "yaml_list": "resources.databases",
         "instance_key": "name",
+        "engine_filter": "dynamodb",
         "vars": {
             "name": "item:name",
             "project": "yaml:name",
@@ -288,6 +290,39 @@ REGISTRY = [
                 "block_name": "attribute",
                 "condition": "not_null",
             },
+        },
+    },
+    {
+        "id": "rds",
+        "module_path": f"{MODULE_ROOT}/service-rds",
+        "output_file": "databases.tf",
+        "cardinality": "collection",
+        "yaml_list": "resources.databases",
+        "instance_key": "name",
+        "engine_filter": "postgres",
+        "vars": {
+            "name": "item:name",
+            "engine_version": "item:engine_version|default:16",
+            "instance_class": "item:instance_class|default:db.t3.micro",
+            "allocated_storage": "item:allocated_storage|default:20",
+            "subnet_ids": "ref:platform.private_subnet_ids",
+            "vpc_id": "ref:platform.vpc_id",
+            "allowed_security_group_ids": "list:ref:platform.ecs_tasks_security_group_id",
+            "backup_retention_period": "item:backup_retention_period|default:7",
+            "multi_az": "item:multi_az|default:false",
+            "deletion_protection": "item:deletion_protection|default:true",
+        },
+        "rename": "rds",
+        "output_map": {
+            "endpoint": "aws_db_instance.{instance}.endpoint",
+            "port": "aws_db_instance.{instance}.port",
+            "db_name": "aws_db_instance.{instance}.db_name",
+            "access_policy_json": "data.aws_iam_policy_document.{instance}_access.json",
+            "security_group_id": "aws_security_group.{instance}.id",
+        },
+        "exports": {
+            "access_policy_json": True,
+            "env_var": {"output": "endpoint", "yaml_field": "env", "target": "environment"},
         },
     },
     {
@@ -378,11 +413,11 @@ provider "aws" {{
 
   default_tags {{
     tags = {{
-      project     = "{project}"
-      managed-by  = "terraform"
-      service     = "{service}"
       team        = "{team}"
+      service     = "{service}"
+      repo        = "{repo}"
       environment = "production"
+      managed-by  = "terraform"
     }}
   }}
 }}

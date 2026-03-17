@@ -23,6 +23,12 @@ variable "permissions_boundary_arn" {
   type        = string
 }
 
+variable "trusted_services" {
+  description = "AWS service principals allowed to assume this role (e.g. ecs-tasks, ec2, lambda)"
+  type        = list(string)
+  default     = ["ecs-tasks.amazonaws.com"]
+}
+
 variable "additional_policy_jsons" {
   description = "Map of policy name => IAM policy JSON to attach (e.g. from service-bucket or service-database access_policy_json outputs)"
   type        = map(string)

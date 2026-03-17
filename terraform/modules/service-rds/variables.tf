@@ -1,0 +1,61 @@
+variable "name" {
+  description = "Database instance identifier"
+  type        = string
+}
+
+variable "engine_version" {
+  description = "PostgreSQL engine version"
+  type        = string
+  default     = "16"
+}
+
+variable "instance_class" {
+  description = "RDS instance class"
+  type        = string
+  default     = "db.t3.micro"
+}
+
+variable "allocated_storage" {
+  description = "Storage in GB"
+  type        = number
+  default     = 20
+}
+
+variable "subnet_ids" {
+  description = "Private subnet IDs for DB subnet group"
+  type        = list(string)
+}
+
+variable "vpc_id" {
+  description = "VPC ID for security group"
+  type        = string
+}
+
+variable "allowed_security_group_ids" {
+  description = "Security group IDs allowed to connect (e.g., ECS tasks SG)"
+  type        = list(string)
+}
+
+variable "backup_retention_period" {
+  description = "Backup retention in days"
+  type        = number
+  default     = 7
+}
+
+variable "multi_az" {
+  description = "Enable Multi-AZ deployment"
+  type        = bool
+  default     = false
+}
+
+variable "deletion_protection" {
+  description = "Enable deletion protection"
+  type        = bool
+  default     = true
+}
+
+variable "tags" {
+  description = "Additional tags"
+  type        = map(string)
+  default     = {}
+}
