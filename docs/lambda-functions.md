@@ -70,10 +70,40 @@ Queries Security Hub for active findings at HIGH and CRITICAL severity, aggregat
 
 ## team-provisioner
 
-**Trigger:** (Future) Registry repo merge events
-**Purpose:** Syncs team definitions across Google Workspace, GitHub, Cognito, and IAM.
+**Trigger:** Registry repo merge events (via `provision-app.yml` workflow dispatch)
+**Purpose:** Syncs team definitions from registry YAML across Google Groups, GitHub teams, AWS Budgets (80% warning + 200% enforcement thresholds), Cognito groups, and Identity Center groups. Also handles hero account provisioning.
 
-**Status:** Stub only — logs event and returns success. Blocked on Google Admin access.
+| SSM Parameter | Purpose |
+|---------------|---------|
+| `/javabin/platform/google-admin-sa` | GCP service account JSON key (domain-wide delegation) |
+| `/javabin/platform/google-admin-email` | Admin email for Google Admin SDK impersonation |
+| `/javabin/platform/github-app-id` | GitHub App ID for team management |
+| `/javabin/platform/github-app-key` | GitHub App private key |
+| `/javabin/platform/github-app-client-secret` | GitHub App client secret |
+
+## budget-enforcer
+
+**Trigger:** SNS notification from AWS Budgets (200% threshold)
+**Purpose:** Scales a team's ECS services to `desired_count=0` when spending exceeds 200% of their monthly budget. Does NOT destroy resources — services can be scaled back up after resolution.
+
+**Flow:** Parse budget name (`javabin-team-{team}`) → list ECS services tagged with team → scale to zero → post Slack alert.
+
+| SSM Parameter | Channel |
+|---------------|---------|
+| `/javabin/slack/platform-cost-alerts-webhook` | #javabin-cost-alerts |
+
+**Environment vars:** `ECS_CLUSTER` (default: `javabin-platform`)
+
+## resource-tagger
+
+**Trigger:** EventBridge rule matching all AWS service creation events (`{"prefix": "aws."}` source, `Create*`/`Run*` event names)
+**Purpose:** Auto-tags newly created AWS resources with `created-by` (actor) and `commit` (SHA) parsed from the CloudTrail session name. Tags are set via AWS Resource Groups Tagging API, outside Terraform management — no drift or plan noise.
+
+**Session name format:** `{actor}-{sha8}-{run_id}` (enriched in CI workflows)
+
+Idempotent: skips resources that already have a `created-by` tag (preserves original creator).
+
+**Environment vars:** `AWS_ACCOUNT_ID`
 
 ## Shared Module: pricing
 
