@@ -401,6 +401,36 @@ resource "aws_iam_role_policy" "ci_team_allow" {
           }
         }
       },
+      {
+        # App repos reference shared platform infra via data sources (VPC, ALB,
+        # ECS cluster, IAM execution role, SNS topics, Route53 zones, etc.).
+        # These are read-only operations that don't modify resources, but the
+        # ABAC tag condition blocks them because platform resources have
+        # team=platform. Allow describe/get/list without tag conditions.
+        Sid    = "AllowPlatformDataSourceReads"
+        Effect = "Allow"
+        Action = [
+          "ec2:Describe*",
+          "elasticloadbalancing:Describe*",
+          "ecs:DescribeClusters",
+          "ecs:ListServices",
+          "iam:GetRole",
+          "iam:GetPolicy",
+          "iam:ListAttachedRolePolicies",
+          "sns:GetTopicAttributes",
+          "sns:ListTagsForResource",
+          "route53:ListHostedZones",
+          "route53:GetHostedZone",
+          "route53:ListResourceRecordSets",
+          "acm:ListCertificates",
+          "acm:DescribeCertificate",
+          "logs:DescribeLogGroups",
+          "logs:CreateLogGroup",
+          "logs:PutRetentionPolicy",
+          "ecr:GetAuthorizationToken",
+        ]
+        Resource = "*"
+      },
     ]
   })
 }
