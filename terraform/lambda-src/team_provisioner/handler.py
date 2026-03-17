@@ -568,23 +568,26 @@ def sync_github_team(team):
         else:
             logger.info("Created GitHub team %s", team_slug)
 
-    # Current team members (paginated — GitHub returns max 100 per page)
-    current_members = set()
-    page = 1
-    while True:
-        members_resp = _github_api(
-            "GET",
-            f"/orgs/{GITHUB_ORG}/teams/{team_slug}/members?per_page=100&page={page}",
-            token,
-        )
-        if not isinstance(members_resp, list) or not members_resp:
-            break
-        current_members.update(m["login"].lower() for m in members_resp)
-        if len(members_resp) < 100:
-            break
-        page += 1
+    # Current team members with roles (paginated — GitHub returns max 100 per page)
+    # We need roles to avoid unnecessary PUT calls that can change membership state.
+    current_members = {}  # login -> role
+    for role_filter in ("maintainer", "member"):
+        page = 1
+        while True:
+            members_resp = _github_api(
+                "GET",
+                f"/orgs/{GITHUB_ORG}/teams/{team_slug}/members?role={role_filter}&per_page=100&page={page}",
+                token,
+            )
+            if not isinstance(members_resp, list) or not members_resp:
+                break
+            for m in members_resp:
+                current_members[m["login"].lower()] = role_filter
+            if len(members_resp) < 100:
+                break
+            page += 1
 
-    # Desired members
+    # Desired members — only call PUT if role needs changing
     desired_users = set()
     for member in team.get("members", []):
         m = _normalize_member(member)
@@ -601,6 +604,10 @@ def sync_github_team(team):
         if github_role not in ("maintainer", "member"):
             logger.warning("Invalid role '%s' for %s — defaulting to member", github_role, github_user)
             github_role = "member"
+        current_role = current_members.get(github_user)
+        if current_role == github_role:
+            logger.info("Skipping %s in team %s — already %s", github_user, team_slug, github_role)
+            continue
         _github_api(
             "PUT",
             f"/orgs/{GITHUB_ORG}/teams/{team_slug}/memberships/{github_user}",
@@ -610,7 +617,7 @@ def sync_github_team(team):
         logger.info("Set %s as %s in team %s", github_user, github_role, team_slug)
 
     # Remove members no longer in the team definition
-    for login in current_members - desired_users:
+    for login in set(current_members.keys()) - desired_users:
         _github_api(
             "DELETE",
             f"/orgs/{GITHUB_ORG}/teams/{team_slug}/memberships/{login}",
