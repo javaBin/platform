@@ -29,7 +29,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from registry import (
     REGISTRY, PROJECT, DOMAIN,
-    BACKEND_TEMPLATE, PROVIDERS_TEMPLATE, OUTPUTS_TEMPLATE,
+    BACKEND_TEMPLATE, PROVIDERS_TEMPLATE, OUTPUTS_TEMPLATE, GITIGNORE_TEMPLATE,
 )
 
 GENERATED_MARKER = "# GENERATED FROM app.yaml — do not edit, changes will be overwritten"
@@ -678,6 +678,11 @@ def main():
         os.path.join(tf_root, "outputs.tf"),
         OUTPUTS_TEMPLATE.format(host=app_host),
     )
+    # Ensure .gitignore exists so tfstate/working files never get committed
+    gitignore_path = os.path.join(tf_root, ".gitignore")
+    if not os.path.exists(gitignore_path):
+        with open(gitignore_path, "w") as f:
+            f.write(GITIGNORE_TEMPLATE)
 
     # -- Write expanded module files --
     for filename, content in file_contents.items():

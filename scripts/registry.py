@@ -388,6 +388,17 @@ provider "aws" {{
 }}
 """
 
+GITIGNORE_TEMPLATE = """\
+# Terraform working files — never commit these
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfplan
+override.tf
+override.tf.json
+"""
+
 OUTPUTS_TEMPLATE = """\
 # GENERATED FROM app.yaml — do not edit, changes will be overwritten
 output "service_url" {{

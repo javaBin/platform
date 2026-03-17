@@ -67,3 +67,18 @@ provider "aws" {
 EOF
   echo "Generated providers.tf (project=${REPO_NAME}, team=${TEAM})"
 fi
+
+# --- Generate .gitignore if missing ---
+if [ ! -f "$TF_ROOT/.gitignore" ]; then
+  cat > "$TF_ROOT/.gitignore" <<'EOF'
+# Terraform working files — never commit these
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfplan
+override.tf
+override.tf.json
+EOF
+  echo "Generated .gitignore"
+fi
