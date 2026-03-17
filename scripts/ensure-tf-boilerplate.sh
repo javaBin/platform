@@ -26,7 +26,7 @@ PROJECT="javabin"
 TEAM=""
 if command -v gh >/dev/null 2>&1; then
   TEAM=$(gh api "/repos/${GITHUB_REPOSITORY}/teams" \
-    --jq '[.[] | select(.slug != "platform-owners")] | .[0].slug // ""' 2>/dev/null || true)
+    --jq '[.[] | select(.slug != "platform")] | .[0].slug // ""' 2>/dev/null || true)
 fi
 [ -z "$TEAM" ] && TEAM="unknown"
 

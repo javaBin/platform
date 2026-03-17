@@ -2,8 +2,20 @@
 # ALB Target Group
 ################################################################################
 
+locals {
+  # ALB target group names are limited to 32 characters.
+  # Use full name if it fits, otherwise truncate and append a 6-char hash suffix
+  # to avoid collisions. Other resources don't have this limit.
+  full_name = "${var.team}-${var.name}"
+  tg_name = (
+    length(local.full_name) <= 32
+    ? local.full_name
+    : "${substr(local.full_name, 0, 25)}-${substr(sha256(local.full_name), 0, 6)}"
+  )
+}
+
 resource "aws_lb_target_group" "this" {
-  name                          = "${var.team}-${var.name}"
+  name                          = local.tg_name
   port                          = var.port
   protocol                      = "HTTP"
   vpc_id                        = var.vpc_id

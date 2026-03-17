@@ -65,11 +65,13 @@ Used for: ECS service name, ECR repo name, IAM role names, CloudWatch log groups
 
 Team that owns this service. Must match a file in `javaBin/registry/teams/`.
 
+Team names must be **lowercase letters only** (a-z), no hyphens, digits, or symbols. Max 12 characters. This constraint ensures resource names fit within AWS limits (e.g. ALB target groups: 32 chars).
+
 ```yaml
 team: core
 ```
 
-Used for: resource tagging, budget allocation, access control.
+Used for: resource name prefix (`{team}-{service}`), ABAC tagging, budget allocation, access control.
 
 ### compute
 
@@ -361,17 +363,20 @@ Generated files have a `# GENERATED FROM app.yaml` marker. The script only overw
 
 ## Naming Conventions
 
+All app resources are prefixed with the team name for ABAC enforcement.
+
 | Resource | Name Pattern |
 |----------|-------------|
-| ECS service | `{name}` |
-| ECR repo | `{name}` |
-| S3 bucket | `javabin-{bucket_name}-{account_id}` |
-| DynamoDB table | `javabin-{table_name}` |
-| SQS queue | `javabin-{queue_name}` |
-| RDS instance | `{db_name}` (identifier) |
-| SSM (secrets) | `/javabin/apps/{service}/{secret_name}` |
-| IAM task role | `javabin-{name}` |
-| CloudWatch logs | `/ecs/javabin/{name}` |
+| ECS service | `{team}-{name}` |
+| ECR repo | `{team}-{name}` |
+| ALB target group | `{team}-{name}` (max 32 chars, truncated+hashed if over) |
+| S3 bucket | `{team}-{name}-{account_id}` |
+| DynamoDB table | `{team}-{name}` |
+| SQS queue | `{team}-{name}` |
+| RDS instance | `{team}-{name}` |
+| SSM (secrets) | `/javabin/apps/{team}/{service}/{secret_name}` |
+| IAM task role | `{team}-{name}` |
+| CloudWatch logs | `/ecs/{team}/{name}` |
 | DNS record | `{routing.host}` |
 | SSM (Cognito) | `/javabin/platform-apps/{name}/cognito-*` |
 
