@@ -82,6 +82,7 @@ resource "aws_ssoadmin_permission_set_inline_policy" "developer" {
   inline_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # Tag-scoped reads (resources that support aws:ResourceTag)
       {
         Sid    = "ReadOwnTeamResources"
         Effect = "Allow"
@@ -103,20 +104,40 @@ resource "aws_ssoadmin_permission_set_inline_policy" "developer" {
           "sqs:ListQueues",
           "ssm:DescribeParameters",
           "ssm:GetParametersByPath",
-          "logs:GetLogEvents",
-          "logs:FilterLogEvents",
-          "logs:DescribeLogGroups",
-          "logs:DescribeLogStreams",
-          "cloudwatch:GetMetricData",
           "cloudwatch:DescribeAlarms",
-          "cloudwatch:ListMetrics",
         ]
         Resource = "*"
         Condition = {
-          StringEqualsIfExists = {
+          StringEquals = {
             "aws:ResourceTag/team" = "$${aws:PrincipalTag/team}"
           }
         }
+      },
+      # ARN-scoped reads (resources that don't support tag-based IAM conditions)
+      {
+        Sid    = "ReadOwnTeamLogs"
+        Effect = "Allow"
+        Action = [
+          "logs:GetLogEvents",
+          "logs:FilterLogEvents",
+          "logs:DescribeLogStreams",
+        ]
+        Resource = "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/$${aws:PrincipalTag/team}/*"
+      },
+      {
+        Sid      = "DescribeLogGroups"
+        Effect   = "Allow"
+        Action   = ["logs:DescribeLogGroups"]
+        Resource = "*"
+      },
+      {
+        Sid    = "ReadMetrics"
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:GetMetricData",
+          "cloudwatch:ListMetrics",
+        ]
+        Resource = "*"
       },
       {
         Sid    = "ReadPlatformSharedResources"
@@ -149,7 +170,7 @@ resource "aws_ssoadmin_permission_set_inline_policy" "developer" {
           "ssm:GetParameters",
           "ssm:GetParametersByPath",
         ]
-        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform-apps/*"
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/$${aws:PrincipalTag/team}/*"
       },
     ]
   })

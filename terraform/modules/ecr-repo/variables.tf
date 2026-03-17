@@ -3,6 +3,11 @@ variable "name" {
   type        = string
 }
 
+variable "team" {
+  description = "Team name, used as resource name prefix for team-scoped isolation"
+  type        = string
+}
+
 variable "scan_on_push" {
   description = "Enable image scanning on push"
   type        = bool

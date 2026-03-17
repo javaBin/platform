@@ -3,7 +3,7 @@
 ################################################################################
 
 resource "aws_ecr_repository" "this" {
-  name                 = var.name
+  name                 = "${var.team}-${var.name}"
   image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {
@@ -15,7 +15,7 @@ resource "aws_ecr_repository" "this" {
   }
 
   tags = {
-    Name = var.name
+    Name = "${var.team}-${var.name}"
   }
 }
 

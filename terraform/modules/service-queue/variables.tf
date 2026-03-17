@@ -1,10 +1,10 @@
 variable "name" {
-  description = "Queue purpose (e.g. 'tasks', 'events'). Queue name: {project}-{name}"
+  description = "Queue purpose (e.g. 'tasks', 'events'). Queue name: {team}-{name}"
   type        = string
 }
 
-variable "project" {
-  description = "Project name prefix"
+variable "team" {
+  description = "Team name, used as resource name prefix for team-scoped isolation"
   type        = string
 }
 

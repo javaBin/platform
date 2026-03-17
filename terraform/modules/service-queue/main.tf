@@ -3,17 +3,17 @@
 ################################################################################
 
 resource "aws_sqs_queue" "dlq" {
-  name                      = "${var.project}-${var.name}-dlq"
+  name                      = "${var.team}-${var.name}-dlq"
   message_retention_seconds = var.dlq_retention_seconds
 
   tags = {
-    Name    = "${var.project}-${var.name}-dlq"
+    Name    = "${var.team}-${var.name}-dlq"
     service = var.service
   }
 }
 
 resource "aws_sqs_queue" "this" {
-  name                       = "${var.project}-${var.name}"
+  name                       = "${var.team}-${var.name}"
   visibility_timeout_seconds = var.visibility_timeout_seconds
   message_retention_seconds  = var.retention_seconds
 
@@ -23,7 +23,7 @@ resource "aws_sqs_queue" "this" {
   })
 
   tags = {
-    Name    = "${var.project}-${var.name}"
+    Name    = "${var.team}-${var.name}"
     service = var.service
   }
 }

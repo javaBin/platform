@@ -3,10 +3,10 @@
 ################################################################################
 
 resource "aws_s3_bucket" "this" {
-  bucket = "${var.project}-${var.name}-${var.aws_account_id}"
+  bucket = "${var.team}-${var.name}-${var.aws_account_id}"
 
   tags = {
-    Name    = "${var.project}-${var.name}"
+    Name    = "${var.team}-${var.name}"
     service = var.service
   }
 }
