@@ -14,7 +14,7 @@ set -e
 REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
 
 TEAM=$(gh api "/repos/${REPO}/teams" \
-  --jq '[.[] | select(.slug != "platform-owners")] | .[0].slug // empty' 2>/dev/null || true)
+  --jq '[.[] | select(.slug != "platform")] | .[0].slug // empty' 2>/dev/null || true)
 
 if [ -z "$TEAM" ]; then
   echo "ERROR: repo ${REPO} does not belong to any GitHub team."

@@ -65,6 +65,23 @@ PASSWORD_SET_URL_PARAM = os.environ.get(
 )
 BUDGET_ENFORCEMENT_TOPIC_ARN = os.environ.get("BUDGET_ENFORCEMENT_TOPIC_ARN", "")
 
+# Team name constraints: lowercase letters only (a-z), max 12 characters.
+# This keeps resource names within AWS limits (ALB TG: 32 chars for {team}-{service}).
+import re
+_TEAM_NAME_RE = re.compile(r"^[a-z]{1,12}$")
+
+
+def _validate_team_name(name):
+    """Return True if the team name meets naming constraints."""
+    if not _TEAM_NAME_RE.match(name):
+        logger.warning(
+            "Invalid team name '%s' — must be 1-12 lowercase letters (a-z), no hyphens/digits/symbols",
+            name,
+        )
+        return False
+    return True
+
+
 # javaBin horizontal white logo PNG — loaded from the Lambda zip at cold start.
 # CID-embedded in welcome emails to avoid "trust this email" prompts in Outlook.
 # Source file: terraform/lambda-src/team_provisioner/javabin-logo-white.png
@@ -1890,6 +1907,13 @@ def handler(event, context):
                 "Team entry missing 'name' — skipping: %s",
                 json.dumps(team)[:200],
             )
+            continue
+
+        if not _validate_team_name(team_name):
+            results[team_name] = {
+                "error": "invalid team name — must be 1-12 lowercase letters only (a-z), "
+                         "no hyphens, digits, or special characters"
+            }
             continue
 
         if not team.get("description"):

@@ -24,7 +24,7 @@ GITHUB_ORG = os.environ.get("GITHUB_ORG", "javaBin")
 GITHUB_API = "https://api.github.com"
 
 # Platform-internal teams that don't get app CI roles
-EXCLUDED_TEAMS = {"platform-owners"}
+EXCLUDED_TEAMS = {"platform"}
 
 
 def github_get(path, token):

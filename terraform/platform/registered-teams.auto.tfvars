@@ -2,5 +2,5 @@
 # Source of truth: GitHub teams in javaBin org
 
 registered_teams = [
-  "platform-test-team",
+  "testteam",
 ]

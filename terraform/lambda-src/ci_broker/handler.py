@@ -42,7 +42,7 @@ ROLE_MAP = {
     "deploy": f"{PROJECT}-ci-deploy-",
 }
 
-EXCLUDED_TEAMS = {"platform-owners"}
+EXCLUDED_TEAMS = {"platform"}
 
 
 def _get_ssm(param_name):
