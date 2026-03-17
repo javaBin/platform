@@ -535,7 +535,8 @@ def _github_api(method, path, token, body=None):
 def sync_github_team(team):
     """Create or update a GitHub team and sync its membership.
 
-    All members are added as maintainers (no role distinction).
+    Members get the role from their YAML entry (default: "member").
+    Only members with role: maintainer can manage the team on GitHub.
     """
     team_name = team["name"]
     token = _get_github_installation_token()
@@ -596,13 +597,17 @@ def sync_github_team(team):
             )
             continue
         desired_users.add(github_user)
+        github_role = m.get("role", "member")
+        if github_role not in ("maintainer", "member"):
+            logger.warning("Invalid role '%s' for %s — defaulting to member", github_role, github_user)
+            github_role = "member"
         _github_api(
             "PUT",
             f"/orgs/{GITHUB_ORG}/teams/{team_slug}/memberships/{github_user}",
             token,
-            {"role": "maintainer"},
+            {"role": github_role},
         )
-        logger.info("Set %s as maintainer in team %s", github_user, team_slug)
+        logger.info("Set %s as %s in team %s", github_user, github_role, team_slug)
 
     # Remove members no longer in the team definition
     for login in current_members - desired_users:
