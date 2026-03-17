@@ -21,7 +21,7 @@ module "app" {
 | [ecs-service](ecs-service/) | ECS Fargate service + task def + logs | `service_name` |
 | [service-bucket](service-bucket/) | S3 bucket with standard security config | `bucket_name`, `access_policy_json` |
 | [service-database](service-database/) | DynamoDB table | `table_name`, `access_policy_json` |
-| [service-secret](service-secret/) | Secrets Manager secret | `secret_arn`, `access_policy_json` |
+| [service-secret](service-secret/) | SSM Parameter Store SecureString | `parameter_arn`, `access_policy_json` |
 | [service-queue](service-queue/) | SQS queue + DLQ | `queue_url`, `access_policy_json` |
 | [service-alarm](service-alarm/) | CloudWatch alarms for ECS | `cpu_alarm_arn` |
 | [app-stack](app-stack/) | Golden path — reads `app.yaml`, creates everything | All of the above |
@@ -33,4 +33,4 @@ Most apps should use `app-stack` only. It reads `app.yaml` from the repo root an
 
 ## Policy Composition
 
-Resource modules (`service-bucket`, `service-database`, `service-secret`, `service-queue`) export `access_policy_json`. Pass these to `service-role` via `additional_policy_jsons` to compose least-privilege IAM. `app-stack` does this automatically.
+Resource modules (`service-bucket`, `service-database`, `service-secret`, `service-queue`) export `access_policy_json`. Pass these to `service-role` via `additional_policy_jsons` to compose least-privilege IAM. The expand-modules pipeline does this automatically.

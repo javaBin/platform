@@ -3,6 +3,11 @@ variable "name" {
   type        = string
 }
 
+variable "project" {
+  description = "Project name prefix (for SSM parameter path)"
+  type        = string
+}
+
 variable "engine_version" {
   description = "PostgreSQL engine version"
   type        = string
