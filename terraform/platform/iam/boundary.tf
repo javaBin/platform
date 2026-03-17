@@ -1,12 +1,12 @@
 ################################################################################
 # Permission Boundary: javabin-developer-boundary
 #
-# This is the cornerstone of the IAM security model. Any role carrying this
-# boundary can only create roles that also carry it (self-replicating).
+# MIGRATION NOTE: This resource is being moved to terraform/org/boundary.tf
+# because the boundary's self-protection (DenyBoundaryTampering) prevents
+# the CI pipeline from modifying it. See docs/org-runbook.md for migration steps.
 #
-# The boundary defines the maximum possible permissions for any non-platform
-# role. Hard denies here cannot be overridden by any policy attached to
-# roles that carry this boundary.
+# Once the state migration is complete, this file will be replaced with a
+# data source reference. Until then, keep this resource to avoid CI destroying it.
 ################################################################################
 
 resource "aws_iam_policy" "developer_boundary" {
@@ -103,12 +103,6 @@ resource "aws_iam_policy" "developer_boundary" {
 
       ########################################################################
       # Deny disabling/deleting protective services
-      # All roles (infra + app) can create/read/manage these services,
-      # but no role can disable or delete them. This lets the infra CI role
-      # manage GuardDuty/Config/SecurityHub while preventing any role from
-      # turning them off. App roles are further restricted by tag-based
-      # isolation on their Allow policy (they can't create these resources
-      # because they lack the platform tags).
       ########################################################################
       {
         Sid    = "DenyProtectiveServicesTampering"
@@ -159,11 +153,6 @@ resource "aws_iam_policy" "developer_boundary" {
 
       ########################################################################
       # Protect platform security groups
-      #
-      # Teams CAN create security groups (needed for RDS, custom services).
-      # Teams CANNOT modify or delete platform-owned security groups.
-      # Platform SGs are named javabin-* (e.g., javabin-alb-sg, javabin-ecs-tasks-sg).
-      # App SGs use app-name prefix (e.g., moresleep-rds-sg).
       ########################################################################
       {
         Sid    = "DenyPlatformSecurityGroups"
