@@ -3,7 +3,7 @@
 ################################################################################
 
 resource "aws_cloudwatch_metric_alarm" "cpu_high" {
-  alarm_name          = "${var.project}-${var.name}-cpu-high"
+  alarm_name          = "${var.team}-${var.name}-cpu-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 3
   metric_name         = "CPUUtilization"
@@ -21,13 +21,13 @@ resource "aws_cloudwatch_metric_alarm" "cpu_high" {
   }
 
   tags = {
-    Name    = "${var.project}-${var.name}-cpu-high"
+    Name    = "${var.team}-${var.name}-cpu-high"
     service = var.service
   }
 }
 
 resource "aws_cloudwatch_metric_alarm" "memory_high" {
-  alarm_name          = "${var.project}-${var.name}-memory-high"
+  alarm_name          = "${var.team}-${var.name}-memory-high"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 3
   metric_name         = "MemoryUtilization"
@@ -45,14 +45,14 @@ resource "aws_cloudwatch_metric_alarm" "memory_high" {
   }
 
   tags = {
-    Name    = "${var.project}-${var.name}-memory-high"
+    Name    = "${var.team}-${var.name}-memory-high"
     service = var.service
   }
 }
 
 resource "aws_cloudwatch_metric_alarm" "unhealthy_targets" {
   count               = var.enable_alb_alarms ? 1 : 0
-  alarm_name          = "${var.project}-${var.name}-unhealthy-targets"
+  alarm_name          = "${var.team}-${var.name}-unhealthy-targets"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
   metric_name         = "UnHealthyHostCount"
@@ -70,14 +70,14 @@ resource "aws_cloudwatch_metric_alarm" "unhealthy_targets" {
   }
 
   tags = {
-    Name    = "${var.project}-${var.name}-unhealthy-targets"
+    Name    = "${var.team}-${var.name}-unhealthy-targets"
     service = var.service
   }
 }
 
 resource "aws_cloudwatch_metric_alarm" "target_5xx" {
   count               = var.enable_alb_alarms ? 1 : 0
-  alarm_name          = "${var.project}-${var.name}-5xx"
+  alarm_name          = "${var.team}-${var.name}-5xx"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 2
   metric_name         = "HTTPCode_Target_5XX_Count"
@@ -96,7 +96,7 @@ resource "aws_cloudwatch_metric_alarm" "target_5xx" {
   }
 
   tags = {
-    Name    = "${var.project}-${var.name}-5xx"
+    Name    = "${var.team}-${var.name}-5xx"
     service = var.service
   }
 }

@@ -238,6 +238,48 @@ resource "aws_iam_policy" "developer_boundary" {
           "dynamodb:UpdateTable"
         ]
         Resource = "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/${var.project}-terraform-*"
+      },
+
+      ########################################################################
+      # Enforce team-prefixed naming on resource creation
+      #
+      # Teams can only create resources with names matching their team prefix.
+      # Uses ${aws:PrincipalTag/team} policy variable in Resource ARNs.
+      # The AllowAll above permits all actions; this deny blocks creates
+      # that don't match the team naming convention.
+      #
+      # Not enforced for: security groups (ARN uses ID, not name),
+      # EC2 networking (already denied above), CloudWatch metrics (not resources).
+      ########################################################################
+      {
+        Sid    = "DenyNonTeamPrefixedCreation"
+        Effect = "Deny"
+        Action = [
+          "s3:CreateBucket",
+          "dynamodb:CreateTable",
+          "sqs:CreateQueue",
+          "sns:CreateTopic",
+          "rds:CreateDBInstance",
+          "rds:CreateDBSubnetGroup",
+          "ecs:CreateService",
+          "ecs:RegisterTaskDefinition",
+          "ecr:CreateRepository",
+          "logs:CreateLogGroup",
+          "ssm:PutParameter",
+        ]
+        NotResource = [
+          "arn:aws:s3:::$${aws:PrincipalTag/team}-*",
+          "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/$${aws:PrincipalTag/team}-*",
+          "arn:aws:sqs:${var.region}:${var.aws_account_id}:$${aws:PrincipalTag/team}-*",
+          "arn:aws:sns:${var.region}:${var.aws_account_id}:$${aws:PrincipalTag/team}-*",
+          "arn:aws:rds:${var.region}:${var.aws_account_id}:db:$${aws:PrincipalTag/team}-*",
+          "arn:aws:rds:${var.region}:${var.aws_account_id}:subgrp:$${aws:PrincipalTag/team}-*",
+          "arn:aws:ecs:${var.region}:${var.aws_account_id}:service/*/$${aws:PrincipalTag/team}-*",
+          "arn:aws:ecs:${var.region}:${var.aws_account_id}:task-definition/$${aws:PrincipalTag/team}-*:*",
+          "arn:aws:ecr:${var.region}:${var.aws_account_id}:repository/$${aws:PrincipalTag/team}-*",
+          "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/$${aws:PrincipalTag/team}/*",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/$${aws:PrincipalTag/team}/*",
+        ]
       }
     ]
   })

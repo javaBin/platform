@@ -74,6 +74,7 @@ REGISTRY = [
         "cardinality": "singleton",
         "vars": {
             "name": "yaml:name",
+            "team": "yaml:team",
         },
         "rename": "ecr",
         "output_map": {
@@ -93,7 +94,7 @@ REGISTRY = [
         "cardinality": "singleton",
         "vars": {
             "name": "yaml:name",
-            "project": f"const:{PROJECT}",
+            "team": "yaml:team",
             "vpc_id": "ref:platform.vpc_id",
             "port": "yaml:compute.port|default:8000",
             "health_check_path": "yaml:compute.health_check|default:/health",
@@ -124,7 +125,7 @@ REGISTRY = [
         "cardinality": "singleton",
         "vars": {
             "name": "yaml:name",
-            "project": f"const:{PROJECT}",
+            "team": "yaml:team",
             "region": "env:AWS_REGION",
             "aws_account_id": "env:AWS_ACCOUNT_ID",
             "permissions_boundary_arn": "ref:platform.developer_boundary_arn",
@@ -156,6 +157,7 @@ REGISTRY = [
         "cardinality": "singleton",
         "vars": {
             "name": "yaml:name",
+            "team": "yaml:team",
             "cluster_id": "ref:platform.ecs_cluster_id",
             "image": "expr:${ref:ecr.repository_url}:latest",
             "cpu": "yaml:compute.cpu|default:512",
@@ -191,7 +193,7 @@ REGISTRY = [
         "condition": "yaml:alarms.enabled|default:true",
         "vars": {
             "name": "yaml:name",
-            "project": f"const:{PROJECT}",
+            "team": "yaml:team",
             "service": "yaml:name",
             "cluster_name": "ref:platform.ecs_cluster_name",
             "sns_topic_arns": "list:data.aws_sns_topic.alerts.arn",
@@ -232,7 +234,7 @@ REGISTRY = [
         "instance_key": "name",
         "vars": {
             "name": "item:name",
-            "project": "yaml:name",
+            "team": "yaml:team",
             "aws_account_id": "env:AWS_ACCOUNT_ID",
             "service": "yaml:name",
             "versioning": "item:versioning|default:true",
@@ -266,7 +268,7 @@ REGISTRY = [
         "engine_filter": "dynamodb",
         "vars": {
             "name": "item:name",
-            "project": "yaml:name",
+            "team": "yaml:team",
             "service": "yaml:name",
             "hash_key": "item:hash_key|default:id",
             "hash_key_type": "item:hash_key_type|default:S",
@@ -302,7 +304,8 @@ REGISTRY = [
         "engine_filter": "postgres",
         "vars": {
             "name": "item:name",
-            "project": "yaml:name",
+            "team": "yaml:team",
+            "project": f"const:{PROJECT}",
             "engine_version": "item:engine_version|default:16",
             "instance_class": "item:instance_class|default:db.t3.micro",
             "allocated_storage": "item:allocated_storage|default:20",
@@ -335,7 +338,8 @@ REGISTRY = [
         "instance_key": "name",
         "vars": {
             "name": "item:name",
-            "project": "yaml:name",
+            "team": "yaml:team",
+            "project": f"const:{PROJECT}",
             "service": "yaml:name",
             "description": "item:description|default:",
         },
@@ -358,7 +362,7 @@ REGISTRY = [
         "instance_key": "name",
         "vars": {
             "name": "item:name",
-            "project": "yaml:name",
+            "team": "yaml:team",
             "service": "yaml:name",
             "visibility_timeout_seconds": "item:visibility_timeout|default:30",
             "retention_seconds": "item:retention_seconds|default:345600",

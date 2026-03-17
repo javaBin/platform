@@ -3,6 +3,11 @@ variable "name" {
   type        = string
 }
 
+variable "team" {
+  description = "Team name, used as resource name prefix for team-scoped isolation"
+  type        = string
+}
+
 variable "project" {
   description = "Project name prefix (for SSM parameter path)"
   type        = string

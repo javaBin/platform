@@ -1,10 +1,10 @@
 variable "name" {
-  description = "Table purpose (e.g. 'sessions', 'cache'). Table name: {project}-{name}"
+  description = "Table purpose (e.g. 'sessions', 'cache'). Table name: {team}-{name}"
   type        = string
 }
 
-variable "project" {
-  description = "Project name prefix"
+variable "team" {
+  description = "Team name, used as resource name prefix for team-scoped isolation"
   type        = string
 }
 

@@ -3,7 +3,7 @@
 ################################################################################
 
 resource "aws_lb_target_group" "this" {
-  name                          = "${var.project}-${var.name}"
+  name                          = "${var.team}-${var.name}"
   port                          = var.port
   protocol                      = "HTTP"
   vpc_id                        = var.vpc_id
@@ -22,7 +22,7 @@ resource "aws_lb_target_group" "this" {
   }
 
   tags = {
-    Name = "${var.project}-${var.name}"
+    Name = "${var.team}-${var.name}"
   }
 }
 

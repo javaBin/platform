@@ -3,6 +3,11 @@ variable "name" {
   type        = string
 }
 
+variable "team" {
+  description = "Team name, used as resource name prefix for team-scoped isolation"
+  type        = string
+}
+
 variable "cluster_id" {
   description = "ECS cluster ID"
   type        = string

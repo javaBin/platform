@@ -3,7 +3,7 @@
 ################################################################################
 
 resource "aws_cloudwatch_log_group" "this" {
-  name              = "/ecs/${var.name}"
+  name              = "/ecs/${var.team}/${var.name}"
   retention_in_days = 30
 }
 
@@ -12,7 +12,7 @@ resource "aws_cloudwatch_log_group" "this" {
 ################################################################################
 
 resource "aws_ecs_task_definition" "this" {
-  family                   = var.name
+  family                   = "${var.team}-${var.name}"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = var.cpu
@@ -79,7 +79,7 @@ resource "aws_ecs_task_definition" "this" {
 ################################################################################
 
 resource "aws_ecs_service" "this" {
-  name            = var.name
+  name            = "${var.team}-${var.name}"
   cluster         = var.cluster_id
   task_definition = aws_ecs_task_definition.this.arn
   desired_count   = var.desired_count

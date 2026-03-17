@@ -3,21 +3,21 @@
 ################################################################################
 
 resource "aws_db_subnet_group" "this" {
-  name       = "${var.name}-db-subnet"
+  name       = "${var.team}-${var.name}-db-subnet"
   subnet_ids = var.subnet_ids
 
   tags = merge(var.tags, {
-    Name = "${var.name}-db-subnet"
+    Name = "${var.team}-${var.name}-db-subnet"
   })
 }
 
 resource "aws_security_group" "this" {
-  name        = "${var.name}-rds-sg"
+  name        = "${var.team}-${var.name}-rds-sg"
   description = "Allow PostgreSQL access from ECS tasks"
   vpc_id      = var.vpc_id
 
   tags = merge(var.tags, {
-    Name = "${var.name}-rds-sg"
+    Name = "${var.team}-${var.name}-rds-sg"
   })
 }
 
@@ -42,13 +42,13 @@ resource "random_password" "master" {
 }
 
 resource "aws_ssm_parameter" "master_password" {
-  name        = "/${var.project}/apps/${var.name}/db-master-password"
-  description = "RDS master password for ${var.name}"
+  name        = "/${var.project}/apps/${var.team}/${var.name}/db-master-password"
+  description = "RDS master password for ${var.team}-${var.name}"
   type        = "SecureString"
   value       = random_password.master.result
 
   tags = merge(var.tags, {
-    Name = "${var.name}-db-master-password"
+    Name = "${var.team}-${var.name}-db-master-password"
   })
 
   lifecycle {
@@ -61,7 +61,7 @@ resource "aws_ssm_parameter" "master_password" {
 ################################################################################
 
 resource "aws_db_instance" "this" {
-  identifier     = var.name
+  identifier     = "${var.team}-${var.name}"
   engine         = "postgres"
   engine_version = var.engine_version
   instance_class = var.instance_class
@@ -81,10 +81,10 @@ resource "aws_db_instance" "this" {
   deletion_protection     = var.deletion_protection
 
   skip_final_snapshot       = false
-  final_snapshot_identifier = "${var.name}-final"
+  final_snapshot_identifier = "${var.team}-${var.name}-final"
 
   tags = merge(var.tags, {
-    Name = var.name
+    Name = "${var.team}-${var.name}"
   })
 
   lifecycle {
