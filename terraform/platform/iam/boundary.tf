@@ -158,6 +158,33 @@ resource "aws_iam_policy" "developer_boundary" {
       },
 
       ########################################################################
+      # Protect platform security groups
+      #
+      # Teams CAN create security groups (needed for RDS, custom services).
+      # Teams CANNOT modify or delete platform-owned security groups.
+      # Platform SGs are named javabin-* (e.g., javabin-alb-sg, javabin-ecs-tasks-sg).
+      # App SGs use app-name prefix (e.g., moresleep-rds-sg).
+      ########################################################################
+      {
+        Sid    = "DenyPlatformSecurityGroups"
+        Effect = "Deny"
+        Action = [
+          "ec2:DeleteSecurityGroup",
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupIngress",
+          "ec2:AuthorizeSecurityGroupEgress",
+          "ec2:RevokeSecurityGroupEgress",
+          "ec2:ModifySecurityGroupRules",
+        ]
+        Resource = "arn:aws:ec2:${var.region}:${var.aws_account_id}:security-group/*"
+        Condition = {
+          StringLike = {
+            "ec2:ResourceTag/Name" = "${var.project}-*"
+          }
+        }
+      },
+
+      ########################################################################
       # Deny platform ECS cluster, ALB, ACM certs
       ########################################################################
       {
