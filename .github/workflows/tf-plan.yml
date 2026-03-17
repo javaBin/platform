@@ -58,19 +58,6 @@ jobs:
           terraform_version: "1.7"
           terraform_wrapper: false
 
-      - name: Assume broker role via OIDC
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-broker
-          aws-region: ${{ inputs.aws_region }}
-          role-session-name: ${{ env.SESSION_NAME }}
-
-      - name: Get team credentials from broker
-        id: broker
-        env:
-          PROJECT: javabin
-        run: sh .platform/scripts/invoke-ci-broker.sh plan
-
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@v2
@@ -86,6 +73,19 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           path: .platform
           sparse-checkout: scripts
+
+      - name: Assume broker role via OIDC
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-broker
+          aws-region: ${{ inputs.aws_region }}
+          role-session-name: ${{ env.SESSION_NAME }}
+
+      - name: Get team credentials from broker
+        id: broker
+        env:
+          PROJECT: javabin
+        run: sh .platform/scripts/invoke-ci-broker.sh plan
 
       - name: Ensure Terraform boilerplate
         env:
