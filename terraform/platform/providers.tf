@@ -11,10 +11,11 @@ terraform {
 
 locals {
   required_tags = {
-    project     = var.project
     team        = "javabin"
-    managed-by  = "terraform"
+    service     = "platform"
+    repo        = "javaBin/platform"
     environment = var.environment
+    managed-by  = "terraform"
   }
 }
 

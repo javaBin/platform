@@ -63,6 +63,7 @@ SIGNING_KEY_PARAM = os.environ.get(
 PASSWORD_SET_URL_PARAM = os.environ.get(
     "PASSWORD_SET_URL_PARAM", "/javabin/platform/password-set-function-url"
 )
+BUDGET_ENFORCEMENT_TOPIC_ARN = os.environ.get("BUDGET_ENFORCEMENT_TOPIC_ARN", "")
 
 # javaBin horizontal white logo PNG — loaded from the Lambda zip at cold start.
 # CID-embedded in welcome emails to avoid "trust this email" prompts in Outlook.
@@ -647,21 +648,37 @@ def sync_budget(team):
         )
         logger.info("Updated budget %s: $%.2f/mo", budget_name, budget_usd)
     except budgets_client.exceptions.NotFoundException:
-        notification = {
-            "Notification": {
-                "NotificationType": "ACTUAL",
-                "ComparisonOperator": "GREATER_THAN",
-                "Threshold": 80.0,
-                "ThresholdType": "PERCENTAGE",
+        notifications = [
+            {
+                "Notification": {
+                    "NotificationType": "ACTUAL",
+                    "ComparisonOperator": "GREATER_THAN",
+                    "Threshold": 80.0,
+                    "ThresholdType": "PERCENTAGE",
+                },
+                "Subscribers": [
+                    {"SubscriptionType": "SNS", "Address": ALERTS_TOPIC_ARN}
+                ],
             },
-            "Subscribers": [
-                {"SubscriptionType": "SNS", "Address": ALERTS_TOPIC_ARN}
-            ],
-        }
+        ]
+        # 200% enforcement notification — triggers budget-enforcer Lambda to
+        # scale ECS services to zero for the team.
+        if BUDGET_ENFORCEMENT_TOPIC_ARN:
+            notifications.append({
+                "Notification": {
+                    "NotificationType": "ACTUAL",
+                    "ComparisonOperator": "GREATER_THAN",
+                    "Threshold": 200.0,
+                    "ThresholdType": "PERCENTAGE",
+                },
+                "Subscribers": [
+                    {"SubscriptionType": "SNS", "Address": BUDGET_ENFORCEMENT_TOPIC_ARN}
+                ],
+            })
         budgets_client.create_budget(
             AccountId=ACCOUNT_ID,
             Budget=budget_spec,
-            NotificationsWithSubscribers=[notification],
+            NotificationsWithSubscribers=notifications,
         )
         logger.info("Created budget %s: $%.2f/mo", budget_name, budget_usd)
 

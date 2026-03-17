@@ -58,9 +58,11 @@ provider "aws" {
 
   default_tags {
     tags = {
-      project    = "${REPO_NAME}"
-      team       = "${TEAM}"
-      managed-by = "terraform"
+      team        = "${TEAM}"
+      service     = "${REPO_NAME}"
+      repo        = "${GITHUB_REPOSITORY}"
+      environment = "production"
+      managed-by  = "terraform"
     }
   }
 }

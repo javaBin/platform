@@ -97,5 +97,8 @@ resource "aws_ecs_service" "this" {
     container_port   = var.port
   }
 
+  enable_ecs_managed_tags = true
+  propagate_tags          = "SERVICE"
+
   depends_on = [aws_ecs_task_definition.this]
 }

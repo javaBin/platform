@@ -229,6 +229,14 @@ def build_alert_blocks(spikes, spike_details, yesterday_date):
             )
             detail_parts.append(f"*By project:* {tag_lines}")
 
+        team_tags = detail.get("team_tags")
+        if team_tags:
+            team_lines = ", ".join(
+                f"{t}: ${c:.2f}" for t, c in
+                sorted(team_tags.items(), key=lambda x: x[1], reverse=True)[:5]
+            )
+            detail_parts.append(f"*By team:* {team_lines}")
+
         ce_url = detail.get("url")
         if ce_url:
             detail_parts.append(f"<{ce_url}|View in Cost Explorer>")
@@ -283,6 +291,10 @@ def handler(event, context):
             detail["tags"] = get_tag_breakdown(ce, yesterday, svc)
         except Exception as e:
             logger.warning("Tag query failed for %s: %s", svc, e)
+        try:
+            detail["team_tags"] = get_tag_breakdown(ce, yesterday, svc, tag_key="team")
+        except Exception as e:
+            logger.warning("Team tag query failed for %s: %s", svc, e)
         spike_details[svc] = detail
 
     blocks = build_alert_blocks(spikes, spike_details, yesterday)

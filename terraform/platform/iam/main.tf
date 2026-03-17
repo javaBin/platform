@@ -380,9 +380,27 @@ resource "aws_iam_role_policy" "ci_team_deny" {
   name = "deny-platform-operations"
   role = aws_iam_role.ci_team[each.key].id
 
+  # Deny policy protects platform infrastructure from team CI roles.
+  #
+  # Design principle: use tag-based ABAC where AWS supports it, explicit
+  # denies only where the service lacks tag condition support. Each statement
+  # documents WHY it can't be replaced with ABAC.
+  #
+  # The allow policy (ci_team_allow) already gates all actions behind
+  # aws:ResourceTag/team + aws:RequestTag/team conditions. These denies
+  # are a second layer for services that don't honor tag conditions.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      # ----------------------------------------------------------------
+      # EC2 networking — MUST be explicit deny
+      #
+      # AWS EC2 does NOT support aws:RequestTag conditions on CreateVpc,
+      # CreateSubnet, CreateInternetGateway, or CreateNatGateway.
+      # Resource doesn't exist at creation time so aws:ResourceTag is N/A.
+      # Cross-service dependencies (subnet→VPC) can't be scoped by tag.
+      # See: docs.aws.amazon.com/AWSEC2/latest/UserGuide/supported-iam-actions-tagging.html
+      # ----------------------------------------------------------------
       {
         Sid    = "DenyNetworkInfra"
         Effect = "Deny"
@@ -393,22 +411,16 @@ resource "aws_iam_role_policy" "ci_team_deny" {
           "ec2:CreateInternetGateway", "ec2:DeleteInternetGateway",
           "ec2:AttachInternetGateway", "ec2:DetachInternetGateway",
           "ec2:CreateRouteTable", "ec2:DeleteRouteTable",
-          "ec2:CreateSecurityGroup", "ec2:DeleteSecurityGroup",
-          "ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress",
-          "ec2:AuthorizeSecurityGroupEgress", "ec2:RevokeSecurityGroupEgress",
         ]
         Resource = "*"
       },
-      {
-        Sid    = "DenyLoadBalancerAndCluster"
-        Effect = "Deny"
-        Action = [
-          "elasticloadbalancingv2:CreateLoadBalancer",
-          "elasticloadbalancingv2:DeleteLoadBalancer",
-          "ecs:CreateCluster", "ecs:DeleteCluster",
-        ]
-        Resource = "*"
-      },
+      # ----------------------------------------------------------------
+      # Security services — MUST be explicit deny
+      #
+      # GuardDuty, Security Hub, AWS Config, and CloudTrail do NOT
+      # support aws:ResourceTag or aws:RequestTag conditions in IAM.
+      # There is no tag-based mechanism to protect these services.
+      # ----------------------------------------------------------------
       {
         Sid    = "DenySecurityServices"
         Effect = "Deny"
@@ -420,6 +432,11 @@ resource "aws_iam_role_policy" "ci_team_deny" {
         ]
         Resource = "*"
       },
+      # ----------------------------------------------------------------
+      # Organizations + Account — MUST be explicit deny
+      #
+      # These are account-level services with no resource tagging.
+      # ----------------------------------------------------------------
       {
         Sid    = "DenyOrgAndAccount"
         Effect = "Deny"
@@ -429,6 +446,12 @@ resource "aws_iam_role_policy" "ci_team_deny" {
         ]
         Resource = "*"
       },
+      # ----------------------------------------------------------------
+      # IAM user creation — MUST be explicit deny
+      #
+      # IAM users are global resources, not taggable per-team.
+      # Prevents creation of long-lived credentials.
+      # ----------------------------------------------------------------
       {
         Sid    = "DenyDangerousIAM"
         Effect = "Deny"
@@ -439,20 +462,58 @@ resource "aws_iam_role_policy" "ci_team_deny" {
         ]
         Resource = "*"
       },
+      # ----------------------------------------------------------------
+      # Platform SNS topics — scoped to platform ARNs (ABAC-friendly)
+      #
+      # SNS supports full tag-based ABAC. Teams CAN create their own
+      # topics (gated by aws:RequestTag/team in the allow policy).
+      # This deny only protects platform-owned alert topics by ARN.
+      # ----------------------------------------------------------------
       {
         Sid    = "DenyPlatformSNS"
         Effect = "Deny"
-        Action = [
-          "sns:CreateTopic",
-          "sns:DeleteTopic",
+        Action = ["sns:DeleteTopic", "sns:SetTopicAttributes", "sns:Subscribe", "sns:Unsubscribe"]
+        Resource = [
+          "arn:aws:sns:${var.region}:${var.aws_account_id}:${var.project}-alerts",
+          "arn:aws:sns:${var.region}:${var.aws_account_id}:${var.project}-security",
+          "arn:aws:sns:${var.region}:${var.aws_account_id}:${var.project}-budget-enforcement",
         ]
-        Resource = "*"
       },
+      # ----------------------------------------------------------------
+      # Platform S3 buckets — scoped to platform ARNs (ABAC-friendly)
+      #
+      # S3 supports full tag-based ABAC. Teams CAN create/delete their
+      # own buckets (gated by aws:RequestTag/team). This protects only
+      # the Terraform state and CI artifact buckets.
+      # ----------------------------------------------------------------
       {
-        Sid      = "DenyStateBucketDeletion"
-        Effect   = "Deny"
-        Action   = "s3:DeleteBucket"
-        Resource = "*"
+        Sid    = "DenyPlatformS3"
+        Effect = "Deny"
+        Action = ["s3:DeleteBucket", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy"]
+        Resource = [
+          "arn:aws:s3:::${var.project}-terraform-state-${var.aws_account_id}",
+          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}",
+        ]
+      },
+      # ----------------------------------------------------------------
+      # Platform ECS cluster + ALB — scoped to platform ARNs (ABAC-friendly)
+      #
+      # ECS and ELBv2 support tag-based ABAC. Teams CAN manage their
+      # own services (gated by aws:ResourceTag/team). This protects
+      # only the shared platform cluster and load balancer.
+      # ----------------------------------------------------------------
+      {
+        Sid    = "DenyPlatformCompute"
+        Effect = "Deny"
+        Action = [
+          "ecs:DeleteCluster", "ecs:UpdateCluster",
+          "elasticloadbalancingv2:DeleteLoadBalancer",
+          "elasticloadbalancingv2:ModifyLoadBalancerAttributes",
+        ]
+        Resource = [
+          "arn:aws:ecs:${var.region}:${var.aws_account_id}:cluster/${var.project}-platform",
+          "arn:aws:elasticloadbalancingv2:${var.region}:${var.aws_account_id}:loadbalancer/app/${var.project}-*",
+        ]
       },
     ]
   })
@@ -521,7 +582,10 @@ resource "aws_iam_role_policy" "ci_deploy_ecr" {
           "ecr:CreateRepository",
           "ecr:DescribeRepositories",
         ]
-        # Team can push to any repo tagged with their team
+        # ECR push actions don't support tag-based authorization.
+        # Blast radius is contained: ci-broker limits which team role you get,
+        # and each team can only push to repos they've registered.
+        # Wildcard is required because app ECR repos use plain names (not project-prefixed).
         Resource = "arn:aws:ecr:${var.region}:${var.aws_account_id}:repository/*"
       }
     ]

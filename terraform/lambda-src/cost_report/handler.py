@@ -378,7 +378,7 @@ Explain the likely root causes. Consider: new resources, data transfer, infrastr
 # ---------------------------------------------------------------------------
 # Block Kit builder
 # ---------------------------------------------------------------------------
-def build_blocks(this_week, prev_week, mtd, prev_mtd, project_costs,
+def build_blocks(this_week, prev_week, mtd, prev_mtd, project_costs, team_costs,
                  tw_start, tw_end, pw_start, pw_end,
                  mtd_start_d, mtd_end_d, today):
     blocks = []
@@ -413,6 +413,16 @@ def build_blocks(this_week, prev_week, mtd, prev_mtd, project_costs,
                 "text": {"type": "mrkdwn", "text": ":label: *By Project Tag*"}
             })
             blocks.append(build_service_table(filtered, tw_total))
+
+    # Per-team tag breakdown as table
+    if team_costs:
+        filtered_teams = {k: v for k, v in team_costs.items() if v >= 0.01}
+        if filtered_teams:
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": ":busts_in_silhouette: *By Team Tag*"}
+            })
+            blocks.append(build_service_table(filtered_teams, tw_total))
 
     # Categorised service breakdown as tables
     ai, infra, other = categorise(this_week)
@@ -534,15 +544,16 @@ def handler(event, context):
     pm_day = min((mtd_end_d - mtd_start_d).days, days_in_month(pm_start) - 1)
     pm_end = pm_start + timedelta(days=pm_day)
 
-    # Fetch cost data (5 API calls: 4 by-service + 1 by-tag)
+    # Fetch cost data (6 API calls: 4 by-service + 2 by-tag)
     this_week = get_costs_by_service(ce, tw_start, tw_end)
     prev_week = get_costs_by_service(ce, pw_start, pw_end)
     mtd = get_costs_by_service(ce, mtd_start_d, mtd_end_d)
     prev_mtd = get_costs_by_service(ce, pm_start, pm_end)
     project_costs = get_costs_by_tag(ce, tw_start, tw_end, "project")
+    team_costs = get_costs_by_tag(ce, tw_start, tw_end, "team")
 
     blocks = build_blocks(
-        this_week, prev_week, mtd, prev_mtd, project_costs,
+        this_week, prev_week, mtd, prev_mtd, project_costs, team_costs,
         tw_start, tw_end, pw_start, pw_end,
         mtd_start_d, mtd_end_d, today,
     )

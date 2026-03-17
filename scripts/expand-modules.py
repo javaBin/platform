@@ -34,6 +34,25 @@ from registry import (
 
 GENERATED_MARKER = "# GENERATED FROM app.yaml — do not edit, changes will be overwritten"
 
+# Engine aliases — these all resolve to "postgres" for registry matching
+_POSTGRES_ENGINES = {"postgres", "postgresql"}
+
+
+def _item_matches_engine_filter(entry, item):
+    """Check if a YAML list item matches the entry's engine_filter.
+
+    If the entry has no engine_filter, the item always matches.
+    Items without an explicit 'engine' field default to 'dynamodb'
+    for backward compatibility with existing DynamoDB entries.
+    """
+    engine_filter = entry.get("engine_filter")
+    if engine_filter is None:
+        return True
+    item_engine = (item.get("engine") or "dynamodb").lower()
+    if item_engine in _POSTGRES_ENGINES:
+        item_engine = "postgres"
+    return item_engine == engine_filter
+
 
 # ---------------------------------------------------------------------------
 # YAML helpers
@@ -592,8 +611,11 @@ def main():
         instance_key = entry.get("instance_key", "name")
         for item in items:
             inst_name = item.get(instance_key, "")
-            if inst_name:
-                collection_instances.append((entry["id"], inst_name, entry))
+            if not inst_name:
+                continue
+            if not _item_matches_engine_filter(entry, item):
+                continue
+            collection_instances.append((entry["id"], inst_name, entry))
 
     # -- Pre-compute collect expressions --
     access_policies = collect_access_policies(collection_instances)
@@ -649,6 +671,8 @@ def main():
                 inst_name = item.get(instance_key, "")
                 if not inst_name:
                     continue
+                if not _item_matches_engine_filter(entry, item):
+                    continue
                 hcl = _expand_collection_item(
                     entry, source, yaml_data, env_vars, ref_resolver, item, inst_name,
                     mod_vars,
@@ -670,8 +694,9 @@ def main():
     write_file(
         os.path.join(tf_root, "providers.tf"),
         PROVIDERS_TEMPLATE.format(
-            region=region, project=PROJECT,
+            region=region,
             service=service, team=app_team,
+            repo=os.environ.get("GITHUB_REPOSITORY", f"javaBin/{service}"),
         ),
     )
     write_file(
