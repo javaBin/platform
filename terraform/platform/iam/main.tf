@@ -14,9 +14,9 @@ data "aws_iam_openid_connect_provider" "github" {
 ################################################################################
 # Permission Boundary Reference
 #
-# The javabin-developer-boundary policy is defined in boundary.tf (written by
-# Agent A). We reference it here so all CI roles can attach it. The resource
-# aws_iam_policy.developer_boundary must exist in the same module.
+# The boundary policy lives in terraform/org/boundary.tf (human-applied)
+# because the boundary's self-protection prevents CI from modifying it.
+# We read it via data source in boundary.tf.
 ################################################################################
 
 ################################################################################
@@ -34,7 +34,7 @@ data "aws_iam_openid_connect_provider" "github" {
 
 resource "aws_iam_role" "ci_infra_plan" {
   name                 = "${var.project}-ci-infra-plan"
-  permissions_boundary = aws_iam_policy.developer_boundary.arn
+  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -146,7 +146,7 @@ resource "aws_iam_role_policy" "ci_infra_plan_extras" {
 
 resource "aws_iam_role" "ci_infra" {
   name                 = "${var.project}-ci-infra"
-  permissions_boundary = aws_iam_policy.developer_boundary.arn
+  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -265,7 +265,7 @@ resource "aws_iam_role_policy" "ci_infra_deny" {
 
 resource "aws_iam_role" "ci_app_broker" {
   name                 = "${var.project}-ci-app-broker"
-  permissions_boundary = aws_iam_policy.developer_boundary.arn
+  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -321,7 +321,7 @@ resource "aws_iam_role" "ci_team" {
   for_each = toset(var.registered_teams)
 
   name                 = "${var.project}-ci-team-${each.key}"
-  permissions_boundary = aws_iam_policy.developer_boundary.arn
+  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -531,7 +531,7 @@ resource "aws_iam_role" "ci_deploy" {
   for_each = toset(var.registered_teams)
 
   name                 = "${var.project}-ci-deploy-${each.key}"
-  permissions_boundary = aws_iam_policy.developer_boundary.arn
+  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -682,7 +682,7 @@ resource "aws_iam_role_policy" "ci_deploy_ssm" {
 
 resource "aws_iam_role" "ci_override_approver" {
   name                 = "${var.project}-ci-override-approver"
-  permissions_boundary = aws_iam_policy.developer_boundary.arn
+  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -737,7 +737,7 @@ resource "aws_iam_role_policy" "ci_override_approver" {
 
 resource "aws_iam_role" "ci_registry" {
   name                 = "${var.project}-ci-registry"
-  permissions_boundary = aws_iam_policy.developer_boundary.arn
+  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -801,7 +801,7 @@ resource "aws_iam_role_policy" "ci_registry" {
 
 resource "aws_iam_role" "ci_apply_gate" {
   name                 = "${var.project}-ci-apply-gate"
-  permissions_boundary = aws_iam_policy.developer_boundary.arn
+  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
