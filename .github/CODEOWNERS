@@ -1,4 +1,4 @@
-*                              @javaBin/platform-owners
-terraform/org/                 @javaBin/platform-owners
-terraform/platform/iam/        @javaBin/platform-owners
-terraform/platform/monitoring/ @javaBin/platform-owners
+*                              @javaBin/platform
+terraform/org/                 @javaBin/platform
+terraform/platform/iam/        @javaBin/platform
+terraform/platform/monitoring/ @javaBin/platform
