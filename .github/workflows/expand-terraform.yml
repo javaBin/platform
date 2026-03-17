@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.head_ref || github.ref }}
 
       - name: Generate GitHub App token
         id: app-token
@@ -65,4 +65,6 @@ jobs:
         run: python3 .platform/scripts/expand-modules.py
 
       - name: Commit and push generated files
-        run: sh .platform/scripts/commit-generated-tf.sh "${{ inputs.tf_root }}" "${{ github.ref_name }}"
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: sh .platform/scripts/commit-generated-tf.sh "${{ inputs.tf_root }}" "$BRANCH"
