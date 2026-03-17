@@ -501,8 +501,13 @@ resource "aws_dynamodb_table" "alert_dedup" {
 # Cost Allocation Tags
 ################################################################################
 
+# Cost allocation tags must exist on at least one billed resource before
+# activation. Tags are added in phases:
+#   Phase 1 (now): team, service, environment, managed-by — already on resources
+#   Phase 2 (after first apply with new tags): repo
+#   Phase 3 (after resource-tagger runs): created-by, commit
 resource "aws_ce_cost_allocation_tag" "tags" {
-  for_each = toset(["team", "service", "repo", "environment", "managed-by", "created-by", "commit"])
+  for_each = toset(["team", "service", "environment", "managed-by"])
   tag_key  = each.key
   status   = "Active"
 }
