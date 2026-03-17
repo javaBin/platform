@@ -65,6 +65,7 @@ resource "aws_lb" "main" {
 
   tags = {
     Name = "${var.project}-platform-alb"
+    team = "shared"
   }
 }
 
@@ -87,6 +88,10 @@ resource "aws_lb_listener" "https" {
       message_body = "Not Found"
       status_code  = "404"
     }
+  }
+
+  tags = {
+    team = "shared"
   }
 }
 

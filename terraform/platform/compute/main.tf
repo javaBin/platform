@@ -12,6 +12,7 @@ resource "aws_ecs_cluster" "main" {
 
   tags = {
     Name = "${var.project}-platform"
+    team = "shared"
   }
 }
 
