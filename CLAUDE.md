@@ -149,7 +149,7 @@ terraform/state/
 | `terraform/modules/ecs-service/` | ECS Fargate service |
 | `terraform/modules/service-bucket/` | S3 bucket with IAM policy output |
 | `terraform/modules/service-database/` | DynamoDB table with IAM policy output |
-| `terraform/modules/service-secret/` | Secrets Manager secret with IAM policy output |
+| `terraform/modules/service-secret/` | SSM Parameter Store SecureString with IAM policy output |
 | `terraform/modules/service-queue/` | SQS queue + DLQ with IAM policy output |
 | `terraform/modules/service-alarm/` | CloudWatch alarms for ECS service |
 | ~~`terraform/modules/app-stack/`~~ | Removed — replaced by `scripts/expand-modules.py` + `scripts/registry.py` |

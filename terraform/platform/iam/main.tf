@@ -894,11 +894,12 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "SSMAppSecrets"
         Effect = "Allow"
         Action = [
-          "secretsmanager:GetSecretValue",
+          "ssm:GetParameters",
         ]
-        Resource = "arn:aws:secretsmanager:${var.region}:${var.aws_account_id}:secret:${var.project}/*"
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*"
       }
     ]
   })

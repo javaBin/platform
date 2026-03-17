@@ -69,7 +69,7 @@ App repos source these via `git::` URLs:
 | `service-role` | ECS task IAM role with composable policies |
 | `service-bucket` | S3 bucket with IAM policy output |
 | `service-database` | DynamoDB table with IAM policy output |
-| `service-secret` | Secrets Manager secret with IAM policy output |
+| `service-secret` | SSM Parameter Store SecureString with IAM policy output |
 | `service-queue` | SQS queue + DLQ with IAM policy output |
 | `service-alarm` | CloudWatch alarms for ECS service |
 | `platform-data` | Read-only data sources for shared infra |

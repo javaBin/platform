@@ -139,17 +139,17 @@ resources:
 
 DynamoDB and PostgreSQL entries can coexist in the same `databases` list. Entries without `engine` (or with `engine: dynamodb`) use the DynamoDB module. Entries with `engine: postgres` or `engine: postgresql` use the RDS module.
 
-RDS instances use `manage_master_user_password = true`, which stores the auto-generated master password in Secrets Manager. The ECS task role automatically receives IAM policies for `rds-db:connect` and `secretsmanager:GetSecretValue` on the password secret.
+RDS instances generate a master password at creation time, stored in SSM Parameter Store at `/{project}/apps/{name}/db-master-password`. The ECS task role automatically receives IAM policies for `rds-db:connect` and `ssm:GetParameter` on the password parameter.
 
 #### secrets
 
-Secrets Manager secrets. Value is set manually after creation.
+SSM Parameter Store SecureString parameters. Value is set manually after creation.
 
 ```yaml
 resources:
   secrets:
     - name: api-key
-      env: API_KEY          # injected via ECS secrets (ARN reference)
+      env: API_KEY          # injected via ECS secrets (SSM parameter ARN reference)
 ```
 
 #### queues
@@ -369,7 +369,7 @@ Generated files have a `# GENERATED FROM app.yaml` marker. The script only overw
 | DynamoDB table | `javabin-{table_name}` |
 | SQS queue | `javabin-{queue_name}` |
 | RDS instance | `{db_name}` (identifier) |
-| Secrets Manager | `javabin/{secret_name}` |
+| SSM (secrets) | `/javabin/apps/{service}/{secret_name}` |
 | IAM task role | `javabin-{name}` |
 | CloudWatch logs | `/ecs/javabin/{name}` |
 | DNS record | `{routing.host}` |

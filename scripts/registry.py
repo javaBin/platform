@@ -302,6 +302,7 @@ REGISTRY = [
         "engine_filter": "postgres",
         "vars": {
             "name": "item:name",
+            "project": "yaml:name",
             "engine_version": "item:engine_version|default:16",
             "instance_class": "item:instance_class|default:db.t3.micro",
             "allocated_storage": "item:allocated_storage|default:20",
@@ -340,12 +341,12 @@ REGISTRY = [
         },
         "rename": "secret",
         "output_map": {
-            "secret_arn": "aws_secretsmanager_secret.{instance}.arn",
+            "parameter_arn": "aws_ssm_parameter.{instance}.arn",
             "access_policy_json": "data.aws_iam_policy_document.{instance}_access.json",
         },
         "exports": {
             "access_policy_json": True,
-            "env_var": {"output": "secret_arn", "yaml_field": "env", "target": "secrets"},
+            "env_var": {"output": "parameter_arn", "yaml_field": "env", "target": "secrets"},
         },
     },
     {
