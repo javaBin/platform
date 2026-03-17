@@ -3,7 +3,7 @@
 ################################################################################
 
 resource "aws_dynamodb_table" "this" {
-  name         = "${var.project}-${var.name}"
+  name         = "${var.team}-${var.name}"
   billing_mode = var.billing_mode
   hash_key     = var.hash_key
 
@@ -36,7 +36,7 @@ resource "aws_dynamodb_table" "this" {
   }
 
   tags = {
-    Name    = "${var.project}-${var.name}"
+    Name    = "${var.team}-${var.name}"
     service = var.service
   }
 }

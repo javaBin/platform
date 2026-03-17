@@ -1,5 +1,10 @@
 variable "name" {
-  description = "Secret purpose (e.g. 'slack-token'). Parameter name: /{project}/apps/{service}/{name}"
+  description = "Secret purpose (e.g. 'slack-token'). Parameter name: /{project}/apps/{team}/{service}/{name}"
+  type        = string
+}
+
+variable "team" {
+  description = "Team name, used as resource name prefix for team-scoped isolation"
   type        = string
 }
 

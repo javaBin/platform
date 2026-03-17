@@ -3,7 +3,7 @@
 ################################################################################
 
 resource "aws_iam_role" "this" {
-  name                 = "${var.project}-${var.name}"
+  name                 = "${var.team}-${var.name}"
   permissions_boundary = var.permissions_boundary_arn
 
   assume_role_policy = jsonencode({
@@ -18,7 +18,7 @@ resource "aws_iam_role" "this" {
   })
 
   tags = {
-    Name = "${var.project}-${var.name}"
+    Name = "${var.team}-${var.name}"
   }
 }
 
@@ -38,7 +38,7 @@ resource "aws_iam_role_policy" "logs" {
         "logs:CreateLogStream",
         "logs:PutLogEvents"
       ]
-      Resource = "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/${var.name}:*"
+      Resource = "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/${var.team}/${var.name}:*"
     }]
   })
 }

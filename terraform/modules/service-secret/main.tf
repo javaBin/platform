@@ -3,13 +3,13 @@
 ################################################################################
 
 resource "aws_ssm_parameter" "this" {
-  name        = "/${var.project}/apps/${var.service}/${var.name}"
+  name        = "/${var.project}/apps/${var.team}/${var.service}/${var.name}"
   description = var.description
   type        = "SecureString"
   value       = "PLACEHOLDER"
 
   tags = {
-    Name    = "${var.project}-${var.name}"
+    Name    = "${var.team}-${var.name}"
     service = var.service
   }
 

@@ -1,10 +1,10 @@
 variable "name" {
-  description = "Service name (e.g. 'moresleep'). Target group name: {project}-{name}"
+  description = "Service name (e.g. 'moresleep'). Target group name: {team}-{name}"
   type        = string
 }
 
-variable "project" {
-  description = "Platform project name (e.g. 'javabin')"
+variable "team" {
+  description = "Team name, used as resource name prefix for team-scoped isolation"
   type        = string
 }
 
