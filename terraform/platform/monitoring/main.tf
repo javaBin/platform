@@ -7,6 +7,7 @@ resource "aws_sns_topic" "alerts" {
 
   tags = {
     Name = "${var.project}-alerts"
+    team = "shared"
   }
 }
 
@@ -15,6 +16,7 @@ resource "aws_sns_topic" "security" {
 
   tags = {
     Name = "${var.project}-security"
+    team = "shared"
   }
 }
 

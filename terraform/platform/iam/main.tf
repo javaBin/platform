@@ -357,22 +357,81 @@ resource "aws_iam_role_policy" "ci_team_allow" {
   name = "team-management"
   role = aws_iam_role.ci_team[each.key].id
 
+  # IAM model: AllowAll + DenyCrossTeam + DenyMutateShared
+  #
+  # 1. AllowAll: unrestricted allow (the deny policies are the real gates)
+  # 2. DenyCrossTeamAccess: blocks ANY action on resources tagged with
+  #    another team's name. Uses Null condition so creates (no tags yet)
+  #    pass through. Accepts "shared" for platform infra teams interact with.
+  # 3. DenyMutateSharedInfra: protects shared resources from deletion/
+  #    modification while allowing teams to create children (listener rules,
+  #    ECS services, DNS records). Works because children inherit the TEAM's
+  #    tag from default_tags, not the parent's "shared" tag.
+  # 4. Backend access: explicit S3 path + DynamoDB key scoping per team.
+  #
+  # The ci_team_deny policy adds a third layer protecting VPC, security
+  # services, IAM users, and platform-specific ARNs.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "AllowWithTeamTagIsolation"
+        Sid      = "AllowAll"
         Effect   = "Allow"
         Action   = "*"
         Resource = "*"
+      },
+      {
+        # Block access to resources owned by other teams or by platform.
+        # Only fires when aws:ResourceTag/team EXISTS and doesn't match.
+        # Creates pass through (new resources have no tags yet).
+        # "shared" is accepted — platform infra that all teams use.
+        Sid    = "DenyCrossTeamAccess"
+        Effect = "Deny"
+        Action = "*"
+        NotResource = [
+          # State backend excluded — scoped separately by S3 key prefix
+          # and DynamoDB LeadingKeys (teams can't access each other's state).
+          "arn:aws:s3:::${var.project}-terraform-state-${var.aws_account_id}",
+          "arn:aws:s3:::${var.project}-terraform-state-${var.aws_account_id}/*",
+          "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/${var.project}-terraform-app-locks",
+          # Plan artifacts — teams upload/download their own plans.
+          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}",
+          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*",
+        ]
         Condition = {
-          StringEqualsIfExists = {
-            "aws:ResourceTag/team" = each.key
-            "aws:RequestTag/team"  = each.key
+          StringNotEquals = {
+            "aws:ResourceTag/team" = [each.key, "shared"]
+          }
+          "Null" = {
+            "aws:ResourceTag/team" = "false"
           }
         }
       },
       {
+        # Protect shared infrastructure from destructive operations.
+        # Teams can CREATE children (listener rules, ECS services, DNS records)
+        # because those target the child resource which gets team=teamX.
+        # But they cannot delete/modify the parent (ALB, cluster, zone).
+        Sid    = "DenyMutateSharedInfra"
+        Effect = "Deny"
+        Action = [
+          "ec2:Delete*", "ec2:Modify*",
+          "elasticloadbalancing:Delete*", "elasticloadbalancing:Modify*",
+          "ecs:DeleteCluster", "ecs:UpdateCluster", "ecs:UpdateClusterSettings",
+          "iam:DeleteRole", "iam:UpdateRole", "iam:DeleteRolePolicy",
+          "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy",
+          "route53:DeleteHostedZone",
+          "sns:DeleteTopic", "sns:SetTopicAttributes",
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/team" = "shared"
+          }
+        }
+      },
+      {
+        # Terraform state: S3 scoped to team's key prefix.
         Sid    = "AllowTerraformBackend"
         Effect = "Allow"
         Action = [
@@ -387,6 +446,7 @@ resource "aws_iam_role_policy" "ci_team_allow" {
         ]
       },
       {
+        # Terraform locking: DynamoDB scoped to team's state paths.
         Sid    = "AllowTerraformLocking"
         Effect = "Allow"
         Action = [
@@ -401,36 +461,6 @@ resource "aws_iam_role_policy" "ci_team_allow" {
           }
         }
       },
-      {
-        # App repos reference shared platform infra via data sources (VPC, ALB,
-        # ECS cluster, IAM execution role, SNS topics, Route53 zones, etc.).
-        # These are read-only operations that don't modify resources, but the
-        # ABAC tag condition blocks them because platform resources have
-        # team=platform. Allow describe/get/list without tag conditions.
-        Sid    = "AllowPlatformDataSourceReads"
-        Effect = "Allow"
-        Action = [
-          "ec2:Describe*",
-          "elasticloadbalancing:Describe*",
-          "ecs:DescribeClusters",
-          "ecs:ListServices",
-          "iam:GetRole",
-          "iam:GetPolicy",
-          "iam:ListAttachedRolePolicies",
-          "sns:GetTopicAttributes",
-          "sns:ListTagsForResource",
-          "route53:ListHostedZones",
-          "route53:GetHostedZone",
-          "route53:ListResourceRecordSets",
-          "acm:ListCertificates",
-          "acm:DescribeCertificate",
-          "logs:DescribeLogGroups",
-          "logs:CreateLogGroup",
-          "logs:PutRetentionPolicy",
-          "ecr:GetAuthorizationToken",
-        ]
-        Resource = "*"
-      },
     ]
   })
 }
@@ -441,15 +471,12 @@ resource "aws_iam_role_policy" "ci_team_deny" {
   name = "deny-platform-operations"
   role = aws_iam_role.ci_team[each.key].id
 
-  # Deny policy protects platform infrastructure from team CI roles.
+  # Deny policy protects infrastructure that can't be scoped by tags.
   #
-  # Design principle: use tag-based ABAC where AWS supports it, explicit
-  # denies only where the service lacks tag condition support. Each statement
-  # documents WHY it can't be replaced with ABAC.
-  #
-  # The allow policy (ci_team_allow) already gates all actions behind
-  # aws:ResourceTag/team + aws:RequestTag/team conditions. These denies
-  # are a second layer for services that don't honor tag conditions.
+  # The allow policy uses AllowAll + DenyCrossTeamAccess (tag-based).
+  # This deny policy adds explicit blocks for services where tags don't
+  # work: networking, security services, IAM users, and specific
+  # platform ARNs that need protection beyond tag-based isolation.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -533,7 +560,7 @@ resource "aws_iam_role_policy" "ci_team_deny" {
       {
         Sid    = "DenyPlatformSNS"
         Effect = "Deny"
-        Action = ["sns:DeleteTopic", "sns:SetTopicAttributes", "sns:Subscribe", "sns:Unsubscribe"]
+        Action = ["sns:DeleteTopic", "sns:SetTopicAttributes"]
         Resource = [
           "arn:aws:sns:${var.region}:${var.aws_account_id}:${var.project}-alerts",
           "arn:aws:sns:${var.region}:${var.aws_account_id}:${var.project}-security",
@@ -939,6 +966,7 @@ resource "aws_iam_role" "ecs_execution" {
 
   tags = {
     Name = "${var.project}-ecs-execution"
+    team = "shared"
   }
 }
 

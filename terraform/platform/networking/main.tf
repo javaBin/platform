@@ -17,6 +17,7 @@ resource "aws_vpc" "main" {
 
   tags = {
     Name = "${var.project}-vpc"
+    team = "shared"
   }
 }
 
@@ -33,6 +34,7 @@ resource "aws_subnet" "public_a" {
   tags = {
     Name = "${var.project}-public-a"
     tier = "public"
+    team = "shared"
   }
 }
 
@@ -45,6 +47,7 @@ resource "aws_subnet" "public_b" {
   tags = {
     Name = "${var.project}-public-b"
     tier = "public"
+    team = "shared"
   }
 }
 
@@ -56,6 +59,7 @@ resource "aws_subnet" "private_a" {
   tags = {
     Name = "${var.project}-private-a"
     tier = "private"
+    team = "shared"
   }
 }
 
@@ -67,6 +71,7 @@ resource "aws_subnet" "private_b" {
   tags = {
     Name = "${var.project}-private-b"
     tier = "private"
+    team = "shared"
   }
 }
 
@@ -202,6 +207,7 @@ resource "aws_security_group" "ecs_tasks" {
 
   tags = {
     Name = "${var.project}-ecs-tasks-sg"
+    team = "shared"
   }
 }
 
