@@ -54,7 +54,9 @@ Migration happens later per-app at developer's pace — apps move from old ALB/E
 - **Clean, generalized implementations**: Always patternize. If something will be used more than once, make it a module, script, or reusable component from the start. No hacky workarounds.
 - **IAM least-privilege**: Scope `Resource` to specific ARNs/regions. If `*` is required by AWS, add a comment explaining why.
 - **Secrets via SSM**: Webhook URLs and secrets in SSM Parameter Store under `/javabin/`. Lambdas read at runtime via `ssm:GetParameter`. Never in env vars, TF variables, or code.
-- **Tags via provider**: All resources get `default_tags` from `providers.tf`. Don't manually add tags that are already in defaults.
+- **Tags via provider**: All resources get `default_tags` from `providers.tf`. Don't manually add tags that are already in defaults. 5 static tags (team, service, repo, environment, managed-by) are set at deploy time; 2 dynamic tags (created-by, commit) are added by the resource-tagger Lambda via EventBridge.
+- **Team-prefixed naming**: App resources use `{team}-{service}` naming. The permission boundary enforces this — apps can only create resources whose names start with their team prefix.
+- **Permission boundary is human-applied**: The boundary lives in `terraform/org/boundary.tf` and is applied manually (not via CI) because its self-protection prevents CI from modifying it.
 - **Pattern matching, not lists**: When categorizing AWS services, use keyword matching. Don't hardcode service name lists.
 - **No `.zip` files in git**: Lambda zips are build artifacts from `archive_file`. They're in `.gitignore`.
 - **Terraform-first**: Everything lives in Terraform from the first resource. No "set up manually, migrate later." Only exception: bootstrap script for state bucket.
@@ -125,6 +127,7 @@ terraform/platform/
 terraform/org/
   main.tf              AWS Organizations, SCPs
   identity-center.tf   IAM Identity Center, permission sets, ABAC (team attribute from SAML)
+  boundary.tf          Permission boundary policy (human-applied, self-protecting)
   cloudtrail.tf        CloudTrail trail + S3 bucket
   providers.tf         Provider config
   variables.tf         Variables
@@ -207,14 +210,19 @@ terraform/state/
 
 | Type | Pattern |
 |------|---------|
-| Resources | `javabin-{purpose}` |
-| IAM roles | `javabin-ci-{purpose}` (CI — 6 roles including `ci-infra` / `ci-infra-plan` split), `javabin-{service}` (runtime) |
+| Platform resources | `javabin-{purpose}` |
+| App resources | `{team}-{service}` or `{team}-{service}-{suffix}` |
+| IAM CI roles | `javabin-ci-{purpose}` |
+| App IAM roles | `{team}-{service}` |
 | Lambdas | `javabin-{function}` |
-| S3 buckets | `javabin-{purpose}-{account_id}` |
-| SSM params | `/javabin/{namespace}/{name}` |
+| S3 buckets (platform) | `javabin-{purpose}-{account_id}` |
+| S3 buckets (app) | `{team}-{purpose}-{account_id}` |
+| SSM params (platform) | `/javabin/{namespace}/{name}` |
+| SSM params (app) | `/javabin/apps/{team}/{service}/{name}` |
 | ECS cluster | `javabin-platform` |
-| ECR repos | `{service-name}` |
-| SNS topics | `javabin-{alerts,security}` |
+| ECR repos | `{team}-{service}` |
+| SNS topics | `javabin-{alerts,security,budget-enforcement}` |
+| Log groups | `/ecs/{team}/{service}` |
 
 ## Alert Routing
 
@@ -276,7 +284,7 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 | 1 | Identity (Google + Identity Center + Cognito) | **Deployed** — GCP SA with domain-wide delegation, Identity Center with ABAC + 3 permission sets in `terraform/org/`. Google Workspace SAML IdP for SSO (auto-provisions users, groups synced via CI/team-provisioner). Cognito pool TF exists but not yet applied (needs Google OAuth client). |
 | 2a | Networking | **Deployed** — VPC, subnets, NAT |
 | 2b | Ingress | **Deployed** — ALB + ACM cert |
-| 2c | IAM / OIDC | **Deployed** — 6 CI roles (infra, infra-plan, per-app, deploy, override-approver, registry) |
+| 2c | IAM / OIDC | **Deployed** — 6 CI roles (infra, infra-plan, per-app, deploy, override-approver, registry), team-prefixed naming + permission boundary |
 | 2d | Compute | **Deployed** — ECS cluster + ECR repos |
 | 2e | Monitoring | **Deployed** — GuardDuty, Security Hub, Config, SNS |
 | 2f | Lambda Functions | **Deployed** — 11 functions (budget-enforcer, resource-tagger, ci-broker added; Google/GitHub/Budget/Cognito/Identity Center sync live) |
@@ -287,6 +295,7 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 | 3d | Registry Repo | **Working** — repo exists, dispatch uses GitHub App token, team provisioner invoked |
 | 3e | javabin CLI | **Code done** — 4 commands (register, init, status, whoami) in javaBin/javabin-cli |
 | 3f | CI Images + Supporting Repos | Not started |
+| 3g | Tags, Naming, ABAC | **Done** — 5 static + 2 dynamic tags, team-prefixed naming enforced by permission boundary, resource-tagger Lambda for created-by/commit |
 | 4 | App Onboarding | **Partially working** — platform-test-app full pipeline passes (plan → review → apply → docker-build), ECS deploy fails on service stabilization |
 
 ### Known Issues
@@ -294,6 +303,8 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 - **Cognito pools not yet applied**: TF exists but needs Google OAuth client credentials
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
 - **`registered_app_repos` manually managed**: Being replaced with team-scoped IAM roles (repo→team resolved via GitHub API at runtime)
+- **Cost allocation tags pending activation**: `repo`, `created-by`, `commit` tags need activation in Billing console (requires billing data to appear first)
+- **Platform-test-app naming migration**: Existing resources have old `javabin-` prefix names, needs state migration to `{team}-{service}` naming
 
 ## Agent Guidelines
 
