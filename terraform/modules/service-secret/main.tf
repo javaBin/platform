@@ -1,14 +1,20 @@
 ################################################################################
-# Secrets Manager Secret
+# SSM Parameter (SecureString) — app secret
 ################################################################################
 
-resource "aws_secretsmanager_secret" "this" {
-  name        = "${var.project}/${var.name}"
+resource "aws_ssm_parameter" "this" {
+  name        = "/${var.project}/apps/${var.service}/${var.name}"
   description = var.description
+  type        = "SecureString"
+  value       = "PLACEHOLDER"
 
   tags = {
     Name    = "${var.project}-${var.name}"
     service = var.service
+  }
+
+  lifecycle {
+    ignore_changes = [value]
   }
 }
 
@@ -18,13 +24,14 @@ resource "aws_secretsmanager_secret" "this" {
 
 data "aws_iam_policy_document" "access" {
   statement {
-    sid    = "SecretRead"
+    sid    = "SSMSecretRead"
     effect = "Allow"
     actions = [
-      "secretsmanager:GetSecretValue",
+      "ssm:GetParameter",
+      "ssm:GetParameters",
     ]
     resources = [
-      aws_secretsmanager_secret.this.arn,
+      aws_ssm_parameter.this.arn,
     ]
   }
 }

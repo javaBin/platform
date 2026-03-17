@@ -1,5 +1,5 @@
 variable "name" {
-  description = "Secret purpose (e.g. 'slack-token'). Secret name: {project}/{name}"
+  description = "Secret purpose (e.g. 'slack-token'). Parameter name: /{project}/apps/{service}/{name}"
   type        = string
 }
 

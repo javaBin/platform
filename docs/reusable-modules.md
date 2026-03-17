@@ -83,10 +83,10 @@ DynamoDB table with configurable keys, billing mode, TTL, PITR, encryption.
 
 ## service-secret
 
-Secrets Manager secret. Value is set manually after creation.
+SSM Parameter Store SecureString. Value is set manually after creation.
 
-**Naming:** `{project}/{name}`
-**Outputs:** `secret_arn`, `secret_name`, `access_policy_json`
+**Naming:** `/{project}/apps/{service}/{name}`
+**Outputs:** `parameter_arn`, `parameter_name`, `access_policy_json`
 
 ## service-queue
 
@@ -114,11 +114,11 @@ RDS PostgreSQL instance in private subnets.
 | `multi_az` | false |
 | `deletion_protection` | true |
 
-**Password:** Managed by AWS via `manage_master_user_password = true` (Secrets Manager).
+**Password:** Generated once via `random_password`, stored in SSM at `/{project}/apps/{name}/db-master-password`.
 
-**Outputs:** `endpoint`, `port`, `db_name`, `access_policy_json`, `security_group_id`
+**Outputs:** `endpoint`, `port`, `db_name`, `password_parameter_arn`, `access_policy_json`, `security_group_id`
 
-**Auto-wiring:** `access_policy_json` grants `rds-db:connect` + `secretsmanager:GetSecretValue`. Auto-attached to task role via `collect:access_policy_json`.
+**Auto-wiring:** `access_policy_json` grants `rds-db:connect` + `ssm:GetParameter` on the password parameter. Auto-attached to task role via `collect:access_policy_json`.
 
 **app.yaml:**
 ```yaml

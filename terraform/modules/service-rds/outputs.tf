@@ -13,6 +13,11 @@ output "db_name" {
   value       = aws_db_instance.this.db_name
 }
 
+output "password_parameter_arn" {
+  description = "SSM parameter ARN for the master password"
+  value       = aws_ssm_parameter.master_password.arn
+}
+
 output "access_policy_json" {
   description = "IAM policy JSON granting access to this database"
   value       = data.aws_iam_policy_document.access.json

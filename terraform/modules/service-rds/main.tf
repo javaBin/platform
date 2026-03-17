@@ -31,6 +31,35 @@ resource "aws_security_group_rule" "this" {
   security_group_id        = aws_security_group.this.id
 }
 
+################################################################################
+# Master password — generated once, stored in SSM
+################################################################################
+
+resource "random_password" "master" {
+  length           = 32
+  special          = true
+  override_special = "!#$%&*()-_=+[]{}<>:?"
+}
+
+resource "aws_ssm_parameter" "master_password" {
+  name        = "/${var.project}/apps/${var.name}/db-master-password"
+  description = "RDS master password for ${var.name}"
+  type        = "SecureString"
+  value       = random_password.master.result
+
+  tags = merge(var.tags, {
+    Name = "${var.name}-db-master-password"
+  })
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+################################################################################
+# RDS Instance
+################################################################################
+
 resource "aws_db_instance" "this" {
   identifier     = var.name
   engine         = "postgres"
@@ -42,8 +71,7 @@ resource "aws_db_instance" "this" {
 
   db_name  = replace(var.name, "-", "_")
   username = "postgres"
-
-  manage_master_user_password = true
+  password = random_password.master.result
 
   db_subnet_group_name   = aws_db_subnet_group.this.name
   vpc_security_group_ids = [aws_security_group.this.id]
@@ -58,6 +86,10 @@ resource "aws_db_instance" "this" {
   tags = merge(var.tags, {
     Name = var.name
   })
+
+  lifecycle {
+    ignore_changes = [password]
+  }
 }
 
 ################################################################################
@@ -78,14 +110,13 @@ data "aws_iam_policy_document" "access" {
   }
 
   statement {
-    sid    = "SecretsManagerRead"
+    sid    = "SSMReadDBPassword"
     effect = "Allow"
     actions = [
-      "secretsmanager:GetSecretValue",
-      "secretsmanager:DescribeSecret",
+      "ssm:GetParameter",
     ]
     resources = [
-      aws_db_instance.this.master_user_secret[0].secret_arn,
+      aws_ssm_parameter.master_password.arn,
     ]
   }
 }
