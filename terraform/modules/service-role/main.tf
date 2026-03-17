@@ -11,7 +11,7 @@ resource "aws_iam_role" "this" {
     Statement = [{
       Effect = "Allow"
       Principal = {
-        Service = "ecs-tasks.amazonaws.com"
+        Service = var.trusted_services
       }
       Action = "sts:AssumeRole"
     }]

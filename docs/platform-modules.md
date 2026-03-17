@@ -79,10 +79,11 @@ SNS topics, EventBridge rules, Config, GuardDuty, Security Hub.
 | GuardDuty | Threat detection |
 | Security Hub | Findings aggregation |
 | `javabin-alert-dedup` DynamoDB | Deduplication table used by slack-alert Lambda |
+| Cost allocation tags | `aws_ce_cost_allocation_tag` resources activating 7 tags: team, service, repo, environment, managed-by, created-by, commit |
 
 ## lambdas
 
-8 Lambda functions — see [lambda-functions.md](lambda-functions.md) for details.
+11 Lambda functions — see [lambda-functions.md](lambda-functions.md) for details.
 
 ## identity
 

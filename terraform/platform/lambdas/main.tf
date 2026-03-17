@@ -1,6 +1,7 @@
 ################################################################################
 # Lambda Functions — slack-alert, cost-report, daily-cost-check,
-#                    compliance-reporter, override-cleanup, team-provisioner
+#                    compliance-reporter, resource-tagger, override-cleanup,
+#                    team-provisioner
 ################################################################################
 
 locals {
@@ -100,6 +101,13 @@ data "archive_file" "compliance_reporter" {
   source_dir       = "${local.lambda_src_path}/compliance_reporter"
 }
 
+data "archive_file" "resource_tagger" {
+  type             = "zip"
+  output_path      = "${path.module}/builds/resource_tagger.zip"
+  output_file_mode = "0644"
+  source_dir       = "${local.lambda_src_path}/resource_tagger"
+}
+
 data "archive_file" "override_cleanup" {
   type             = "zip"
   output_path      = "${path.module}/builds/override_cleanup.zip"
@@ -144,6 +152,29 @@ data "archive_file" "password_set" {
   source {
     content  = file("${local.lambda_src_path}/password_set/handler.py")
     filename = "handler.py"
+  }
+}
+
+data "archive_file" "budget_enforcer" {
+  type             = "zip"
+  output_path      = "${path.module}/builds/budget_enforcer.zip"
+  output_file_mode = "0644"
+
+  source {
+    content  = file("${local.lambda_src_path}/budget_enforcer/handler.py")
+    filename = "handler.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/__init__.py")
+    filename = "shared/__init__.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/slack.py")
+    filename = "shared/slack.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/constants.py")
+    filename = "shared/constants.py"
   }
 }
 
@@ -379,6 +410,46 @@ resource "aws_iam_role_policy" "compliance_reporter" {
 
 resource "aws_iam_role_policy_attachment" "compliance_reporter_logs" {
   role       = aws_iam_role.compliance_reporter.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# --- resource-tagger role ---
+resource "aws_iam_role" "resource_tagger" {
+  name = "${var.project}-resource-tagger"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "resource_tagger" {
+  name = "${var.project}-resource-tagger"
+  role = aws_iam_role.resource_tagger.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "TagResources"
+        Effect = "Allow"
+        Action = [
+          "tag:TagResources",
+          "tag:GetResources",
+        ]
+        # Resource Groups Tagging API requires resource "*"
+        Resource = "*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "resource_tagger_logs" {
+  role       = aws_iam_role.resource_tagger.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
@@ -672,6 +743,23 @@ resource "aws_lambda_function" "compliance_reporter" {
   }
 }
 
+resource "aws_lambda_function" "resource_tagger" {
+  function_name    = "${var.project}-resource-tagger"
+  role             = aws_iam_role.resource_tagger.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 128
+  filename         = data.archive_file.resource_tagger.output_path
+  source_code_hash = data.archive_file.resource_tagger.output_base64sha256
+
+  environment {
+    variables = {
+      AWS_ACCOUNT_ID = var.aws_account_id
+    }
+  }
+}
+
 resource "aws_lambda_function" "override_cleanup" {
   function_name    = "${var.project}-override-cleanup"
   role             = aws_iam_role.override_cleanup.arn
@@ -702,20 +790,21 @@ resource "aws_lambda_function" "team_provisioner" {
 
   environment {
     variables = {
-      INFRA_WEBHOOK_PARAM      = "/javabin/slack/platform-resource-alerts-webhook"
-      GOOGLE_SA_PARAM          = "/javabin/platform/google-admin-sa"
-      GOOGLE_ADMIN_EMAIL_PARAM = "/javabin/platform/google-admin-email"
-      GITHUB_APP_ID_PARAM      = "/javabin/platform/github-app-id"
-      GITHUB_APP_KEY_PARAM     = "/javabin/platform/github-app-key"
-      ACCOUNT_ID               = var.aws_account_id
-      GITHUB_ORG               = "javaBin"
-      ALERTS_TOPIC_ARN         = var.alerts_topic_arn
-      COGNITO_INTERNAL_POOL_ID = var.internal_user_pool_id
-      IDENTITY_STORE_ID        = var.identity_store_id
-      SSO_INSTANCE_ARN         = var.sso_instance_arn
-      PROJECT                  = var.project
-      SIGNING_KEY_PARAM        = "/javabin/platform/password-token-signing-key"
-      PASSWORD_SET_URL_PARAM   = "/javabin/platform/password-set-function-url"
+      INFRA_WEBHOOK_PARAM          = "/javabin/slack/platform-resource-alerts-webhook"
+      GOOGLE_SA_PARAM              = "/javabin/platform/google-admin-sa"
+      GOOGLE_ADMIN_EMAIL_PARAM     = "/javabin/platform/google-admin-email"
+      GITHUB_APP_ID_PARAM          = "/javabin/platform/github-app-id"
+      GITHUB_APP_KEY_PARAM         = "/javabin/platform/github-app-key"
+      ACCOUNT_ID                   = var.aws_account_id
+      GITHUB_ORG                   = "javaBin"
+      ALERTS_TOPIC_ARN             = var.alerts_topic_arn
+      COGNITO_INTERNAL_POOL_ID     = var.internal_user_pool_id
+      IDENTITY_STORE_ID            = var.identity_store_id
+      SSO_INSTANCE_ARN             = var.sso_instance_arn
+      PROJECT                      = var.project
+      SIGNING_KEY_PARAM            = "/javabin/platform/password-token-signing-key"
+      PASSWORD_SET_URL_PARAM       = "/javabin/platform/password-set-function-url"
+      BUDGET_ENFORCEMENT_TOPIC_ARN = aws_sns_topic.budget_enforcement.arn
     }
   }
 }
@@ -819,6 +908,135 @@ resource "aws_route53_record" "password_set" {
     zone_id                = var.alb_zone_id
     evaluate_target_health = true
   }
+}
+
+################################################################################
+# Budget Enforcer — scales ECS services to zero on 200% budget breach
+################################################################################
+
+# Dedicated SNS topic for budget enforcement (200% threshold notifications)
+resource "aws_sns_topic" "budget_enforcement" {
+  name = "${var.project}-budget-enforcement"
+}
+
+# Allow AWS Budgets to publish to this topic
+resource "aws_sns_topic_policy" "budget_enforcement" {
+  arn = aws_sns_topic.budget_enforcement.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowBudgetsPublish"
+        Effect    = "Allow"
+        Principal = { Service = "budgets.amazonaws.com" }
+        Action    = "SNS:Publish"
+        Resource  = aws_sns_topic.budget_enforcement.arn
+        Condition = {
+          StringEquals = {
+            "aws:SourceAccount" = var.aws_account_id
+          }
+        }
+      },
+    ]
+  })
+}
+
+# --- budget-enforcer role ---
+resource "aws_iam_role" "budget_enforcer" {
+  name = "${var.project}-budget-enforcer"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "budget_enforcer" {
+  name = "${var.project}-budget-enforcer"
+  role = aws_iam_role.budget_enforcer.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "SSMRead"
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/javabin/slack/*"
+      },
+      {
+        Sid    = "ECSListAndDescribe"
+        Effect = "Allow"
+        Action = [
+          "ecs:ListServices",
+          "ecs:DescribeServices",
+          "ecs:ListTagsForResource",
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "ecs:cluster" = "arn:aws:ecs:${var.region}:${var.aws_account_id}:cluster/${var.project}-platform"
+          }
+        }
+      },
+      {
+        Sid    = "ECSListServicesUnconstrained"
+        Effect = "Allow"
+        Action = "ecs:ListServices"
+        # ListServices requires * or cluster ARN — condition key not supported for list calls
+        Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:cluster/${var.project}-platform"
+      },
+      {
+        Sid      = "ECSUpdateService"
+        Effect   = "Allow"
+        Action   = "ecs:UpdateService"
+        Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:service/${var.project}-platform/*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "budget_enforcer_logs" {
+  role       = aws_iam_role.budget_enforcer.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_function" "budget_enforcer" {
+  function_name    = "${var.project}-budget-enforcer"
+  role             = aws_iam_role.budget_enforcer.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 128
+  filename         = data.archive_file.budget_enforcer.output_path
+  source_code_hash = data.archive_file.budget_enforcer.output_base64sha256
+
+  environment {
+    variables = {
+      ECS_CLUSTER        = "${var.project}-platform"
+      COST_WEBHOOK_PARAM = "/javabin/slack/platform-cost-alerts-webhook"
+      BUDGET_NAME_PREFIX = "${var.project}-team-"
+    }
+  }
+}
+
+resource "aws_sns_topic_subscription" "budget_enforcer" {
+  topic_arn = aws_sns_topic.budget_enforcement.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.budget_enforcer.arn
+}
+
+resource "aws_lambda_permission" "budget_enforcer_sns" {
+  statement_id  = "AllowSNSBudgetEnforcement"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.budget_enforcer.function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.budget_enforcement.arn
 }
 
 ################################################################################
@@ -931,6 +1149,40 @@ resource "aws_lambda_permission" "compliance_reporter_eventbridge" {
   function_name = aws_lambda_function.compliance_reporter.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.compliance_reporter_trigger.arn
+}
+
+# --- resource-tagger: EventBridge — tag newly created resources ---
+resource "aws_cloudwatch_event_rule" "resource_tagger_trigger" {
+  name        = "${var.project}-resource-tagger-trigger"
+  description = "Tag newly created resources with creator attribution"
+
+  # Match ALL AWS services — resource_tagger has generic ARN extraction
+  # via ResourceGroupsTaggingAPI, so new services are auto-covered.
+  # Filtered to Create/Run events only, keeping volume manageable.
+  event_pattern = jsonencode({
+    source      = [{ "prefix" : "aws." }]
+    detail-type = ["AWS API Call via CloudTrail"]
+    detail = {
+      eventName = [
+        { "prefix" : "Create" },
+        { "prefix" : "Run" },
+      ]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "resource_tagger" {
+  rule      = aws_cloudwatch_event_rule.resource_tagger_trigger.name
+  target_id = "invoke-resource-tagger"
+  arn       = aws_lambda_function.resource_tagger.arn
+}
+
+resource "aws_lambda_permission" "resource_tagger_eventbridge" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.resource_tagger.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.resource_tagger_trigger.arn
 }
 
 # --- override-cleanup: hourly ---

@@ -305,12 +305,24 @@ def parse_identity(detail):
                     ci_ctx["repo"] = sub_match.group(1)
                     ci_ctx["ref"] = sub_match.group(2)
 
-            # Fallback: extract run ID from our session name convention
-            # Pattern: javabin-{purpose}-{run_id} or javabin-{repo}-{purpose}-{run_id}
-            if not ci_ctx.get("GitHubRunID"):
-                run_match = re.search(r"-(\d{8,})$", session)
-                if run_match:
-                    ci_ctx["GitHubRunID"] = run_match.group(1)
+            # Parse enriched session name: {actor}-{sha8}-{run_id}
+            # The actor may contain hyphens, sha8 is 8 hex chars, run_id is digits
+            enriched_match = re.match(
+                r"^(.+)-([0-9a-f]{8})-(\d+)$", session
+            )
+            if enriched_match:
+                if not ci_ctx.get("GitHubActor"):
+                    ci_ctx["GitHubActor"] = enriched_match.group(1)
+                if not ci_ctx.get("GitHubSHA"):
+                    ci_ctx["GitHubSHA"] = enriched_match.group(2)
+                if not ci_ctx.get("GitHubRunID"):
+                    ci_ctx["GitHubRunID"] = enriched_match.group(3)
+            else:
+                # Legacy fallback: javabin-{purpose}-{run_id}
+                if not ci_ctx.get("GitHubRunID"):
+                    run_match = re.search(r"-(\d{8,})$", session)
+                    if run_match:
+                        ci_ctx["GitHubRunID"] = run_match.group(1)
 
             # Fallback: infer repo from role name if not resolved
             # javabin-ci-infra → javaBin/platform

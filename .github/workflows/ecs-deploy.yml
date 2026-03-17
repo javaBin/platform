@@ -33,6 +33,9 @@ jobs:
     name: ECS Deploy
     runs-on: ubuntu-latest
     steps:
+      - name: Set session name
+        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | head -c 64)" >> "$GITHUB_ENV"
+
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@v2
@@ -55,6 +58,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-broker
           aws-region: ${{ inputs.aws_region }}
+          role-session-name: ${{ env.SESSION_NAME }}
 
       - name: Get deploy credentials from broker
         id: broker

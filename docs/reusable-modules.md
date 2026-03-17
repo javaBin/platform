@@ -53,6 +53,8 @@ additional_policy_jsons = {
 }
 ```
 
+**`trusted_services`** — controls which AWS service can assume the role. Default: `["ecs-tasks.amazonaws.com"]`. Can be set to `["ec2.amazonaws.com"]` or `["lambda.amazonaws.com"]` via `compute.trusted_service` in app.yaml. Enables cross-compute roles so EC2 instances and Lambda functions get the same auto-wired access policies.
+
 **Outputs:** `role_arn`, `role_name`, `role_id`
 
 ## ecs-service
@@ -60,6 +62,8 @@ additional_policy_jsons = {
 ECS Fargate task definition + service + CloudWatch log group.
 
 Supports `environment` (map) and `secrets` (map of name => ARN) for container configuration.
+
+**Tag propagation:** `enable_ecs_managed_tags = true` and `propagate_tags = "SERVICE"` ensure Fargate task-level compute costs are attributed to the team via Cost Explorer.
 
 **Outputs:** `service_name`, `task_definition_arn`, `log_group_name`
 
@@ -90,6 +94,41 @@ SQS queue + dead-letter queue with configurable retention and visibility timeout
 
 **Naming:** `{project}-{name}` (queue), `{project}-{name}-dlq` (DLQ)
 **Outputs:** `queue_url`, `queue_arn`, `dlq_url`, `dlq_arn`, `access_policy_json`
+
+## service-rds
+
+RDS PostgreSQL instance in private subnets.
+
+**Inputs:**
+
+| Input | Default |
+|-------|---------|
+| `name` | required |
+| `engine_version` | `"16"` |
+| `instance_class` | `db.t3.micro` |
+| `allocated_storage` | 20 GB |
+| `subnet_ids` | required |
+| `vpc_id` | required |
+| `allowed_security_group_ids` | required |
+| `backup_retention_period` | 7 |
+| `multi_az` | false |
+| `deletion_protection` | true |
+
+**Password:** Managed by AWS via `manage_master_user_password = true` (Secrets Manager).
+
+**Outputs:** `endpoint`, `port`, `db_name`, `access_policy_json`, `security_group_id`
+
+**Auto-wiring:** `access_policy_json` grants `rds-db:connect` + `secretsmanager:GetSecretValue`. Auto-attached to task role via `collect:access_policy_json`.
+
+**app.yaml:**
+```yaml
+databases:
+  - name: main
+    engine: postgres
+    instance_class: db.t3.micro
+    allocated_storage: 20
+    engine_version: "16"
+```
 
 ## service-alarm
 
