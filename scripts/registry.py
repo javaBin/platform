@@ -60,7 +60,9 @@ REGISTRY = [
             "ecs_cluster_name": "data.aws_ecs_cluster.platform_main.cluster_name",
             "execution_role_arn": "data.aws_iam_role.platform_ecs_execution.arn",
             "route53_zone_id": "data.aws_route53_zone.platform_main.zone_id",
-            "developer_boundary_arn": "data.aws_iam_policy.platform_developer_boundary.arn",
+            # Boundary ARN constructed from account ID — no data source needed.
+            # Avoids iam:GetPolicy permission requirement on the boundary policy.
+            "developer_boundary_arn": "NOT_USED",
         },
     },
 
@@ -128,7 +130,7 @@ REGISTRY = [
             "team": "yaml:team",
             "region": "env:AWS_REGION",
             "aws_account_id": "env:AWS_ACCOUNT_ID",
-            "permissions_boundary_arn": "ref:platform.developer_boundary_arn",
+            "permissions_boundary_arn": f"expr:arn:aws:iam::${{env:AWS_ACCOUNT_ID}}:policy/{PROJECT}-developer-boundary",
             "trusted_services": "list:yaml:compute.trusted_service|default:ecs-tasks.amazonaws.com",
             "additional_policy_jsons": "collect:access_policy_json",
         },

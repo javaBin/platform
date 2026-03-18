@@ -67,6 +67,6 @@ data "aws_route53_zone" "main" {
   private_zone = false
 }
 
-data "aws_iam_policy" "developer_boundary" {
-  name = "${var.project}-developer-boundary"
-}
+
+# Note: the developer boundary ARN is constructed directly by expand-modules.py
+# instead of using a data source, to avoid needing iam:GetPolicy permission.
