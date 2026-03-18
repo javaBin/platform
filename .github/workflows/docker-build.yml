@@ -79,21 +79,27 @@ jobs:
 
       - name: Determine image tags
         id: tags
+        env:
+          TEAM: ${{ steps.broker.outputs.team }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          REPO="${{ steps.ecr.outputs.registry }}/${{ github.event.repository.name }}"
+          REPO="${REGISTRY}/${TEAM}-${REPO_NAME}"
           SHA_TAG="sha-${GITHUB_SHA::8}"
           echo "primary_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
           echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
 
           TAGS="${REPO}:${SHA_TAG}"
 
-          if [ "${{ github.ref_name }}" = "main" ] || [ "${{ github.ref_name }}" = "master" ]; then
+          if [ "${REF_NAME}" = "main" ] || [ "${REF_NAME}" = "master" ]; then
             DATE_TAG="main-$(date -u +%Y%m%d-%H%M)"
             TAGS="${TAGS},${REPO}:${DATE_TAG},${REPO}:latest"
           fi
 
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAGS="${TAGS},${REPO}:${{ github.ref_name }}"
+          if echo "${REF}" | grep -q '^refs/tags/v'; then
+            TAGS="${TAGS},${REPO}:${REF_NAME}"
           fi
 
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"

@@ -68,6 +68,6 @@ jobs:
 
       - name: Deploy to ECS
         env:
-          SERVICE: ${{ inputs.service_name || github.event.repository.name }}
+          SERVICE: ${{ inputs.service_name || format('{0}-{1}', steps.broker.outputs.team, github.event.repository.name) }}
           CLUSTER: ${{ inputs.cluster_name }}
         run: sh .platform/scripts/ecs-deploy.sh
