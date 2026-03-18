@@ -7,7 +7,7 @@ Actions:
 
 The signing key lives in SSM. Only this Lambda can read it. CI roles invoke
 the Lambda but never see the key. Temp credentials are issued via STS
-AssumeRole on the app's CI role.
+AssumeRole on the team's CI role (resolved from GitHub team membership).
 """
 
 import hashlib
@@ -18,6 +18,7 @@ import os
 import time
 
 import boto3
+from shared.github import resolve_team
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -204,9 +205,18 @@ def action_status(event):
 
 
 def _issue_credentials(repo_name):
-    """Assume the app's CI role and return temporary credentials."""
+    """Resolve team from GitHub and assume the team's CI role."""
     account_id = os.environ.get("ACCOUNT_ID", "")
-    role_arn = f"arn:aws:iam::{account_id}:role/{PROJECT}-ci-app-{repo_name}"
+
+    team = resolve_team(repo_name)
+    if not team:
+        raise RuntimeError(
+            f"Repo '{repo_name}' is not in any GitHub team. "
+            f"Add it at https://github.com/orgs/javaBin/teams"
+        )
+
+    role_arn = f"arn:aws:iam::{account_id}:role/{PROJECT}-ci-team-{team}"
+    logger.info("Assuming team role %s for repo %s", role_arn, repo_name)
 
     resp = sts.assume_role(
         RoleArn=role_arn,

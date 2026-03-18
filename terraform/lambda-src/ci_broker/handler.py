@@ -13,26 +13,18 @@ Actions:
 import json
 import logging
 import os
-import time
-import urllib.request
 
 import boto3
+from shared.github import resolve_team
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-ssm = boto3.client("ssm")
 sts = boto3.client("sts")
 
 ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID", "")
 PROJECT = os.environ.get("PROJECT", "javabin")
 GITHUB_ORG = os.environ.get("GITHUB_ORG", "javaBin")
-GITHUB_APP_ID_PARAM = os.environ.get("GITHUB_APP_ID_PARAM", "/javabin/platform/github-app-id")
-GITHUB_APP_KEY_PARAM = os.environ.get("GITHUB_APP_KEY_PARAM", "/javabin/platform/github-app-key")
-
-# Cache GitHub App token across invocations (valid for 1 hour)
-_token_cache = {"token": None, "expires_at": 0}
-_ssm_cache = {}
 
 PLAN_DURATION = 3600   # 1 hour for plan
 DEPLOY_DURATION = 900  # 15 minutes for deploy
@@ -41,120 +33,6 @@ ROLE_MAP = {
     "plan": f"{PROJECT}-ci-team-",
     "deploy": f"{PROJECT}-ci-deploy-",
 }
-
-EXCLUDED_TEAMS = {"platform"}
-
-
-def _get_ssm(param_name):
-    if param_name not in _ssm_cache:
-        resp = ssm.get_parameter(Name=param_name, WithDecryption=True)
-        _ssm_cache[param_name] = resp["Parameter"]["Value"]
-    return _ssm_cache[param_name]
-
-
-def _github_app_token():
-    """Generate a GitHub App installation token (cached for 50 minutes)."""
-    now = time.time()
-    if _token_cache["token"] and _token_cache["expires_at"] > now:
-        return _token_cache["token"]
-
-    import subprocess
-    import tempfile
-
-    app_id = _get_ssm(GITHUB_APP_ID_PARAM)
-    private_key = _get_ssm(GITHUB_APP_KEY_PARAM)
-
-    # Build JWT (Header.Payload.Signature)
-    import base64
-    import hashlib
-    import hmac
-
-    header = base64.urlsafe_b64encode(json.dumps(
-        {"alg": "RS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
-
-    iat = int(now) - 60
-    exp = iat + 600
-    payload = base64.urlsafe_b64encode(json.dumps(
-        {"iss": app_id, "iat": iat, "exp": exp}).encode()).rstrip(b"=").decode()
-
-    signing_input = f"{header}.{payload}"
-
-    # Sign with RS256 using openssl (available in Lambda runtime)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as f:
-        f.write(private_key)
-        key_file = f.name
-
-    result = subprocess.run(
-        ["openssl", "dgst", "-sha256", "-sign", key_file],
-        input=signing_input.encode(),
-        capture_output=True,
-    )
-    os.unlink(key_file)
-
-    if result.returncode != 0:
-        raise RuntimeError(f"JWT signing failed: {result.stderr.decode()}")
-
-    signature = base64.urlsafe_b64encode(result.stdout).rstrip(b"=").decode()
-    jwt_token = f"{signing_input}.{signature}"
-
-    # Exchange JWT for installation token
-    # First, find the installation ID for the org
-    req = urllib.request.Request(
-        f"https://api.github.com/app/installations",
-        headers={
-            "Authorization": f"Bearer {jwt_token}",
-            "Accept": "application/vnd.github+json",
-        },
-    )
-    with urllib.request.urlopen(req) as resp:
-        installations = json.loads(resp.read())
-
-    install_id = None
-    for inst in installations:
-        if inst.get("account", {}).get("login") == GITHUB_ORG:
-            install_id = inst["id"]
-            break
-
-    if not install_id:
-        raise RuntimeError(f"No GitHub App installation found for {GITHUB_ORG}")
-
-    req = urllib.request.Request(
-        f"https://api.github.com/app/installations/{install_id}/access_tokens",
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {jwt_token}",
-            "Accept": "application/vnd.github+json",
-        },
-    )
-    with urllib.request.urlopen(req) as resp:
-        token_resp = json.loads(resp.read())
-
-    _token_cache["token"] = token_resp["token"]
-    _token_cache["expires_at"] = now + 3000  # Cache for ~50 minutes
-    return _token_cache["token"]
-
-
-def _resolve_team(repo_name):
-    """Resolve which team a repo belongs to via GitHub API."""
-    token = _github_app_token()
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{GITHUB_ORG}/{repo_name}/teams",
-        headers={
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github+json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req) as resp:
-            teams = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        logger.error("GitHub API error for %s: %s", repo_name, e)
-        return None
-
-    for team in teams:
-        if team["slug"] not in EXCLUDED_TEAMS:
-            return team["slug"]
-    return None
 
 
 def _assume_role(role_arn, session_name, duration):
@@ -183,7 +61,7 @@ def handler(event, context):
         return {"error": f"Invalid action: {action}. Must be plan or deploy", "approved": False}
 
     # Resolve team from GitHub
-    team = _resolve_team(repo)
+    team = resolve_team(repo)
     if not team:
         logger.warning("Repo %s does not belong to any team", repo)
         return {
