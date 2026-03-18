@@ -1266,7 +1266,19 @@ data "archive_file" "apply_gate" {
   type             = "zip"
   output_path      = "${path.module}/builds/apply_gate.zip"
   output_file_mode = "0644"
-  source_dir       = "${local.lambda_src_path}/apply_gate"
+
+  source {
+    content  = file("${local.lambda_src_path}/apply_gate/handler.py")
+    filename = "handler.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/__init__.py")
+    filename = "shared/__init__.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/github.py")
+    filename = "shared/github.py"
+  }
 }
 
 resource "aws_iam_role" "apply_gate" {
@@ -1311,6 +1323,15 @@ resource "aws_iam_role_policy" "apply_gate" {
         Action   = "sts:AssumeRole"
         Resource = "arn:aws:iam::${var.aws_account_id}:role/${var.project}-ci-team-*"
       },
+      {
+        Sid    = "ReadGitHubAppCredentials"
+        Effect = "Allow"
+        Action = "ssm:GetParameter"
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform/github-app-id",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform/github-app-key",
+        ]
+      },
     ]
   })
 }
@@ -1349,7 +1370,19 @@ data "archive_file" "ci_broker" {
   type             = "zip"
   output_path      = "${path.module}/builds/ci_broker.zip"
   output_file_mode = "0644"
-  source_dir       = "${local.lambda_src_path}/ci_broker"
+
+  source {
+    content  = file("${local.lambda_src_path}/ci_broker/handler.py")
+    filename = "handler.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/__init__.py")
+    filename = "shared/__init__.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/github.py")
+    filename = "shared/github.py"
+  }
 }
 
 resource "aws_iam_role" "ci_broker" {
