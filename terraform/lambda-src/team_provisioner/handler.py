@@ -256,7 +256,7 @@ def _send_welcome_email(access_token, javabin_email, personal_email, firstname, 
     if password_set_url:
         password_section = f"""\
             <p style="color:#333;font-size:16px;line-height:1.6;">
-              Klikk p\u00e5 knappen under for \u00e5 sette passordet ditt. Lenken er gyldig i 48 timer.
+              Klikk p\u00e5 knappen under for \u00e5 sette passordet ditt. Lenken kan kun brukes \u00e9n gang.
             </p>
             <table cellpadding="0" cellspacing="0" style="margin:24px 0;">
               <tr><td align="center" style="background-color:#f05350;border-radius:6px;">
@@ -1516,7 +1516,7 @@ def _generate_password_set_url(email):
     signing_key = _get_ssm_param(SIGNING_KEY_PARAM)
     payload = json.dumps({
         "email": email,
-        "exp": int(time.time()) + 48 * 3600,  # 48 hours
+        "exp": int(time.time()) + 60 * 86400,  # 60 days — single-use
         "jti": str(uuid.uuid4()),
     })
     payload_b64 = _b64url(payload)
