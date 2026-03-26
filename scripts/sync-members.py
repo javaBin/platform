@@ -261,7 +261,7 @@ def load_existing(path):
     try:
         # Use yaml if available, fall back to simple parsing
         import yaml
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
         if not data or "members" not in data:
             return {}
@@ -374,7 +374,7 @@ def main():
     if args.output == "-":
         print(content)
     else:
-        with open(args.output, "w") as f:
+        with open(args.output, "w", encoding="utf-8") as f:
             f.write(content)
         print(f"Written to {args.output}")
 
