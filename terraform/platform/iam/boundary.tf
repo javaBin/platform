@@ -173,9 +173,9 @@ resource "aws_iam_policy" "developer_boundary" {
         Effect = "Deny"
         Action = ["ssm:GetParameter*", "ssm:GetParametersByPath"]
         Resource = [
-          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform/*",
-          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/slack/*",
-          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform-overrides/*",
+          "arn:aws:ssm:*:*:parameter/${var.project}/platform/*",
+          "arn:aws:ssm:*:*:parameter/${var.project}/slack/*",
+          "arn:aws:ssm:*:*:parameter/${var.project}/platform-overrides/*",
         ]
       },
       {
@@ -183,8 +183,8 @@ resource "aws_iam_policy" "developer_boundary" {
         Effect = "Deny"
         Action = "iam:PassRole"
         NotResource = [
-          "arn:aws:iam::${var.aws_account_id}:role/$${aws:PrincipalTag/team}-*",
-          "arn:aws:iam::${var.aws_account_id}:role/${var.project}-ecs-execution",
+          "arn:aws:iam::*:role/$${aws:PrincipalTag/team}-*",
+          "arn:aws:iam::*:role/${var.project}-ecs-execution",
         ]
       },
       {
@@ -192,8 +192,8 @@ resource "aws_iam_policy" "developer_boundary" {
         Effect = "Deny"
         Action = ["logs:GetLogEvents", "logs:FilterLogEvents", "logs:StartQuery", "logs:GetQueryResults"]
         NotResource = [
-          "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/$${aws:PrincipalTag/team}/*",
-          "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/$${aws:PrincipalTag/team}/*:*",
+          "arn:aws:logs:*:*:log-group:/ecs/$${aws:PrincipalTag/team}/*",
+          "arn:aws:logs:*:*:log-group:/ecs/$${aws:PrincipalTag/team}/*:*",
         ]
       },
       {
@@ -232,20 +232,22 @@ resource "aws_iam_policy" "developer_boundary" {
           "lambda:CreateFunction", "events:PutRule", "states:CreateStateMachine",
         ]
         NotResource = [
+          # S3 ARNs have no region/account
           "arn:aws:s3:::$${aws:PrincipalTag/team}-*",
-          "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/$${aws:PrincipalTag/team}-*",
-          "arn:aws:sqs:${var.region}:${var.aws_account_id}:$${aws:PrincipalTag/team}-*",
-          "arn:aws:sns:${var.region}:${var.aws_account_id}:$${aws:PrincipalTag/team}-*",
-          "arn:aws:rds:${var.region}:${var.aws_account_id}:db:$${aws:PrincipalTag/team}-*",
-          "arn:aws:rds:${var.region}:${var.aws_account_id}:subgrp:$${aws:PrincipalTag/team}-*",
-          "arn:aws:ecs:${var.region}:${var.aws_account_id}:service/*/$${aws:PrincipalTag/team}-*",
-          "arn:aws:ecs:${var.region}:${var.aws_account_id}:task-definition/$${aws:PrincipalTag/team}-*:*",
-          "arn:aws:ecr:${var.region}:${var.aws_account_id}:repository/$${aws:PrincipalTag/team}-*",
-          "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/$${aws:PrincipalTag/team}/*",
-          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/$${aws:PrincipalTag/team}/*",
-          "arn:aws:lambda:${var.region}:${var.aws_account_id}:function:$${aws:PrincipalTag/team}-*",
-          "arn:aws:events:${var.region}:${var.aws_account_id}:rule/$${aws:PrincipalTag/team}-*",
-          "arn:aws:states:${var.region}:${var.aws_account_id}:stateMachine:$${aws:PrincipalTag/team}-*",
+          # Single-region account — wildcard region:account saves ~350 bytes
+          "arn:aws:dynamodb:*:*:table/$${aws:PrincipalTag/team}-*",
+          "arn:aws:sqs:*:*:$${aws:PrincipalTag/team}-*",
+          "arn:aws:sns:*:*:$${aws:PrincipalTag/team}-*",
+          "arn:aws:rds:*:*:db:$${aws:PrincipalTag/team}-*",
+          "arn:aws:rds:*:*:subgrp:$${aws:PrincipalTag/team}-*",
+          "arn:aws:ecs:*:*:service/*/$${aws:PrincipalTag/team}-*",
+          "arn:aws:ecs:*:*:task-definition/$${aws:PrincipalTag/team}-*:*",
+          "arn:aws:ecr:*:*:repository/$${aws:PrincipalTag/team}-*",
+          "arn:aws:logs:*:*:log-group:/ecs/$${aws:PrincipalTag/team}/*",
+          "arn:aws:ssm:*:*:parameter/${var.project}/apps/$${aws:PrincipalTag/team}/*",
+          "arn:aws:lambda:*:*:function:$${aws:PrincipalTag/team}-*",
+          "arn:aws:events:*:*:rule/$${aws:PrincipalTag/team}-*",
+          "arn:aws:states:*:*:stateMachine:$${aws:PrincipalTag/team}-*",
         ]
       },
     ]
