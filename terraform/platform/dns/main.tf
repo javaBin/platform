@@ -48,6 +48,14 @@ resource "aws_route53_record" "javabin_com_www" {
   records = ["194.63.248.52"]
 }
 
+resource "aws_route53_record" "javabin_com_www_aaaa" {
+  zone_id = aws_route53_zone.javabin_com.zone_id
+  name    = "www.javabin.com"
+  type    = "AAAA"
+  ttl     = 3600
+  records = ["2a01:5b40:0:248::52"]
+}
+
 resource "aws_route53_record" "javabin_com_dmarc" {
   zone_id = aws_route53_zone.javabin_com.zone_id
   name    = "_dmarc.javabin.com"
@@ -91,6 +99,14 @@ resource "aws_route53_record" "javabin_no_www" {
   type    = "A"
   ttl     = 3600
   records = ["194.63.248.52"]
+}
+
+resource "aws_route53_record" "javabin_no_www_aaaa" {
+  zone_id = aws_route53_zone.javabin_no.zone_id
+  name    = "www.javabin.no"
+  type    = "AAAA"
+  ttl     = 3600
+  records = ["2a01:5b40:0:248::52"]
 }
 
 resource "aws_route53_record" "javabin_no_mx" {
