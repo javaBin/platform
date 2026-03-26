@@ -1,31 +1,34 @@
 #!/usr/bin/env python3
 """Resolve group memberships from groups.yaml + members.yaml + access.yaml and invoke the team-provisioner Lambda.
 
-Usage: provision-groups.py <groups.yaml> <members.yaml> <access.yaml>
+Usage: provision-groups.py <groups.yaml> <members.yaml> [access.yaml] [--prev-members PATH] [--prev-groups PATH] [--prev-access PATH]
 
 Reads all YAML files, resolves which members belong to which groups based on
 the memberships field in members.yaml, and invokes the javabin-team-provisioner
 Lambda with action=sync_groups_and_heros.
 
-Access groups from access.yaml define which role groups get Google Workspace
-service access (email, drive, chat, meet). The Lambda syncs these as nested
-group memberships in Google Workspace.
+When --prev-* flags are provided, detects removals by comparing current vs
+previous YAML. Posts removal warnings to Slack if SLACK_WEBHOOK_URL is set.
 
 Requires: aws CLI, PyYAML (available on GitHub Actions ubuntu-latest runners)
 """
 
+import argparse
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import urllib.request
 
 import yaml
 
 
 def load_yaml(path):
+    if not path or not os.path.exists(path):
+        return {}
     with open(path) as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
 
 
 def resolve_memberships(groups, members_data):
@@ -36,7 +39,6 @@ def resolve_memberships(groups, members_data):
     for group in groups.get("groups", []):
         name = group["name"]
 
-        # All groups use explicit memberships — no implicit membership
         member_emails = [
             h["javabin_google_email"]
             for h in members_list
@@ -66,14 +68,6 @@ def build_member_details(members_data):
     ]
 
 
-def load_access_groups(access_path):
-    """Load access groups from access.yaml."""
-    if not access_path or not os.path.exists(access_path):
-        return []
-    data = load_yaml(access_path)
-    return data.get("access_groups", [])
-
-
 def invoke_lambda(payload):
     """Invoke the team-provisioner Lambda and print the response."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -100,18 +94,89 @@ def invoke_lambda(payload):
         print(f.read())
 
 
+def detect_removals(prev_members, curr_members, prev_groups, curr_groups):
+    """Detect members removed from YAML and group membership removals."""
+    prev_by_email = {m["personal_email"].lower(): m for m in (prev_members.get("members") or []) if m.get("personal_email")}
+    curr_by_email = {m["personal_email"].lower(): m for m in (curr_members.get("members") or []) if m.get("personal_email")}
+
+    removed_members = [prev_by_email[e] for e in sorted(prev_by_email.keys() - curr_by_email.keys())]
+
+    membership_removals = []
+    all_group_names = {g["name"] for g in (prev_groups.get("groups") or [])} | {g["name"] for g in (curr_groups.get("groups") or [])}
+    for gname in sorted(all_group_names):
+        prev_set = {
+            m["javabin_google_email"] for m in (prev_members.get("members") or [])
+            if m.get("javabin_google_email") and gname in (m.get("memberships") or [])
+        }
+        curr_set = {
+            m["javabin_google_email"] for m in (curr_members.get("members") or [])
+            if m.get("javabin_google_email") and gname in (m.get("memberships") or [])
+        }
+        removed = sorted(prev_set - curr_set)
+        if removed:
+            membership_removals.append({"group": gname, "removed": removed})
+
+    removed_groups = [
+        g["name"] for g in (prev_groups.get("groups") or [])
+        if g["name"] not in {g2["name"] for g2 in (curr_groups.get("groups") or [])}
+    ]
+
+    return removed_members, membership_removals, removed_groups
+
+
+def post_removal_warning(removed_members, membership_removals, removed_groups):
+    """Post a removal warning to Slack."""
+    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        return
+
+    lines = [":warning: *Removal Detected* (additive-only — no auto-action taken)\n"]
+
+    if removed_members:
+        lines.append("*Members removed from YAML:*")
+        for m in removed_members:
+            name = f"{m.get('firstname', '')} {m.get('lastname', '')}"
+            groups = ", ".join(m.get("memberships") or [])
+            lines.append(f"• {name} ({m.get('javabin_google_email', '')}) — was in: {groups}")
+        lines.append("")
+
+    if membership_removals:
+        lines.append("*Group membership removals:*")
+        for mr in membership_removals:
+            for email in mr["removed"]:
+                lines.append(f"• {email} removed from {mr['group']}")
+        lines.append("")
+
+    if removed_groups:
+        lines.append("*Groups removed:*")
+        for g in removed_groups:
+            lines.append(f"• {g}")
+        lines.append("")
+
+    lines.append("Run the `reconcile` workflow to apply these removals.")
+
+    payload = json.dumps({"text": "\n".join(lines)}).encode()
+    req = urllib.request.Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req)
+        print("Posted removal warning to Slack")
+    except Exception as e:
+        print(f"Warning: Slack notification failed: {e}", file=sys.stderr)
+
+
 def main():
-    if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <groups.yaml> <members.yaml> [access.yaml]", file=sys.stderr)
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Provision groups and members via Lambda")
+    parser.add_argument("groups_yaml", help="Path to groups.yaml")
+    parser.add_argument("members_yaml", help="Path to members.yaml")
+    parser.add_argument("access_yaml", nargs="?", help="Path to access.yaml")
+    parser.add_argument("--prev-members", help="Previous members.yaml for removal detection")
+    parser.add_argument("--prev-groups", help="Previous groups.yaml for removal detection")
+    parser.add_argument("--prev-access", help="Previous access.yaml for removal detection")
+    args = parser.parse_args()
 
-    groups_path = sys.argv[1]
-    members_path = sys.argv[2]
-    access_path = sys.argv[3] if len(sys.argv) > 3 else None
-
-    groups = load_yaml(groups_path)
-    members_data = load_yaml(members_path)
-    access_groups = load_access_groups(access_path)
+    groups = load_yaml(args.groups_yaml)
+    members_data = load_yaml(args.members_yaml)
+    access_groups = load_yaml(args.access_yaml).get("access_groups", []) if args.access_yaml else []
 
     resolved_groups = resolve_memberships(groups, members_data)
     member_details = build_member_details(members_data)
@@ -125,6 +190,26 @@ def main():
         print(f"\nAccess groups: {len(access_groups)}")
         for ag in access_groups:
             print(f"  {ag['name']}: {', '.join(ag.get('groups', []))}")
+
+    # Detect removals if previous state is provided
+    if args.prev_members:
+        prev_members = load_yaml(args.prev_members)
+        prev_groups = load_yaml(args.prev_groups) if args.prev_groups else groups
+        removed_members, membership_removals, removed_groups = detect_removals(
+            prev_members, members_data, prev_groups, groups,
+        )
+        if removed_members or membership_removals or removed_groups:
+            print(f"\nRemovals detected:")
+            if removed_members:
+                print(f"  {len(removed_members)} member(s) removed from YAML")
+            if membership_removals:
+                total_rm = sum(len(mr["removed"]) for mr in membership_removals)
+                print(f"  {total_rm} group membership removal(s)")
+            if removed_groups:
+                print(f"  {len(removed_groups)} group(s) removed")
+            post_removal_warning(removed_members, membership_removals, removed_groups)
+        else:
+            print("\nNo removals detected")
 
     # Pass CI context so the Lambda can attribute the sync in Slack
     ci_context = {
