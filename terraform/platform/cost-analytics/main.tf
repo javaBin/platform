@@ -154,7 +154,7 @@ resource "aws_bcmdataexports_export" "cur" {
     name = local.cur_report_name
 
     data_query {
-      query_statement = "SELECT identity_line_item_id, identity_time_interval, bill_invoice_id, bill_invoicing_entity, bill_billing_entity, bill_bill_type, bill_payer_account_id, bill_billing_period_start_date, bill_billing_period_end_date, line_item_usage_account_id, line_item_line_item_type, line_item_usage_start_date, line_item_usage_end_date, line_item_product_code, line_item_usage_type, line_item_operation, line_item_availability_zone, line_item_resource_id, line_item_usage_amount, line_item_normalization_factor, line_item_normalized_usage_amount, line_item_currency_code, line_item_unblended_rate, line_item_unblended_cost, line_item_blended_rate, line_item_blended_cost, line_item_line_item_description, product_product_name, product_region, pricing_unit, pricing_public_on_demand_cost, pricing_public_on_demand_rate, pricing_term, pricing_offering_class, resource_tags_user_team, resource_tags_user_service, resource_tags_user_environment, resource_tags_user_repo, resource_tags_user_managed_by FROM COST_AND_USAGE_REPORT"
+      query_statement = "SELECT * FROM COST_AND_USAGE_REPORT"
 
       table_configurations = {
         COST_AND_USAGE_REPORT = {
@@ -196,7 +196,8 @@ resource "aws_glue_catalog_database" "cur" {
 }
 
 resource "aws_iam_role" "cur_crawler" {
-  name = local.crawler_role_name
+  name                 = local.crawler_role_name
+  permissions_boundary = var.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
