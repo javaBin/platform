@@ -17,8 +17,8 @@
 # AWS managed policy limit: 6,144 bytes. Keep statements compact.
 ################################################################################
 
-data "aws_iam_policy" "org_boundary" {
-  name = "${var.project}-org-boundary"
+locals {
+  org_boundary_arn = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-org-boundary"
 }
 
 resource "aws_iam_policy" "developer_boundary" {

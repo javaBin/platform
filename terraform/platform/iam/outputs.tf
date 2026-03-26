@@ -40,5 +40,5 @@ output "developer_boundary_arn" {
 
 output "org_boundary_arn" {
   description = "ARN of the javabin-org-boundary IAM policy"
-  value       = data.aws_iam_policy.org_boundary.arn
+  value       = local.org_boundary_arn
 }

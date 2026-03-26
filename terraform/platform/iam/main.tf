@@ -34,7 +34,7 @@ data "aws_iam_openid_connect_provider" "github" {
 
 resource "aws_iam_role" "ci_infra_plan" {
   name                 = "${var.project}-ci-infra-plan"
-  permissions_boundary = data.aws_iam_policy.org_boundary.arn
+  permissions_boundary = local.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -146,7 +146,7 @@ resource "aws_iam_role_policy" "ci_infra_plan_extras" {
 
 resource "aws_iam_role" "ci_infra" {
   name                 = "${var.project}-ci-infra"
-  permissions_boundary = data.aws_iam_policy.org_boundary.arn
+  permissions_boundary = local.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -566,7 +566,7 @@ resource "aws_iam_role_policy" "ci_deploy_ssm" {
 
 resource "aws_iam_role" "ci_override_approver" {
   name                 = "${var.project}-ci-override-approver"
-  permissions_boundary = data.aws_iam_policy.org_boundary.arn
+  permissions_boundary = local.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -621,7 +621,7 @@ resource "aws_iam_role_policy" "ci_override_approver" {
 
 resource "aws_iam_role" "ci_registry" {
   name                 = "${var.project}-ci-registry"
-  permissions_boundary = data.aws_iam_policy.org_boundary.arn
+  permissions_boundary = local.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -685,7 +685,7 @@ resource "aws_iam_role_policy" "ci_registry" {
 
 resource "aws_iam_role" "ci_apply_gate" {
   name                 = "${var.project}-ci-apply-gate"
-  permissions_boundary = data.aws_iam_policy.org_boundary.arn
+  permissions_boundary = local.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
