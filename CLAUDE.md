@@ -200,6 +200,8 @@ terraform/state/
 | `scripts/expand-modules.py` | CI: reads app.yaml + module sources, generates expanded .tf files |
 | `scripts/registry.py` | Module registry — maps app.yaml sections to platform modules |
 | `scripts/provision-teams.py` | CI: fetch team YAMLs from registry, invoke team-provisioner Lambda |
+| `scripts/provision-groups.py` | CI: resolve members.yaml + access.yaml, invoke team-provisioner Lambda |
+| `scripts/sync-members.py` | CI: sync approved heroes from Google Sheets into members.yaml |
 | `scripts/review-plan.py` | CI: LLM plan review via Bedrock |
 | `scripts/notify-slack.py` | CI: generic Slack webhook notification |
 | `scripts/invoke-apply-gate.sh` | CI: invoke gate Lambda for apply credentials |
@@ -238,7 +240,7 @@ Scheduled:
 
 EventBridge (Create/Run) ──► compliance-reporter (report to Slack, no auto-fix)
   Hourly             ──► override-cleanup (delete stale SSM override tokens)
-Registry merge ──► team-provisioner (Google/GitHub/Budget/Cognito/Identity Center sync + hero provisioning)
+Registry merge ──► team-provisioner (Google/GitHub/Budget/Cognito/Identity Center sync + member provisioning + access group sync)
 AWS Budgets (200%) ──► budget-enforcer Lambda ──► ECS scale-to-zero + #javabin-cost-alerts
 EventBridge (Create/Run) ──► resource-tagger Lambda ──► Tag created-by + commit
 ```
