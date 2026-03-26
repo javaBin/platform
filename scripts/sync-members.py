@@ -220,12 +220,8 @@ def format_yaml(members):
         "# Board approves applications in the Google Sheet, then triggers a sync that",
         "# creates a PR updating this file.",
         "#",
-        "# Two member types:",
-        "#   - helt:  Approved hero volunteer (full access: email, drive, chat, meet)",
-        "#   - aktiv: Active contributor (java.no account for SSO, calendar, groups only)",
-        "#",
         "# Rules:",
-        "#   - type determines baseline access (see groups/access.yaml)",
+        "#   - All group memberships are explicit (including helter)",
         "#   - memberships references group names from groups.yaml",
         "#   - alias is optional — members can PR their preferred alias",
         "#   - javabin_google_email is the Google Workspace account (firstname.lastname@java.no)",
@@ -242,7 +238,6 @@ def format_yaml(members):
             lines.append(f"    lastname: {m['lastname']}")
             lines.append(f"    personal_email: {m['personal_email']}")
             lines.append(f"    javabin_google_email: {m['javabin_google_email']}")
-            lines.append(f"    type: {m.get('type', 'helt')}")
             alias = m.get("alias") or ""
             lines.append(f"    alias: {alias}" if alias else "    alias:")
             memberships = m.get("memberships", [])
@@ -363,7 +358,6 @@ def main():
             "lastname": lastname,
             "personal_email": personal_email,
             "javabin_google_email": javabin_email,
-            "type": "helt",
             "alias": "",
             "memberships": memberships,
         }
