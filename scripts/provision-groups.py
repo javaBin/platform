@@ -59,7 +59,6 @@ def build_member_details(members_data):
             "firstname": h["firstname"],
             "lastname": h["lastname"],
             "personal_email": h["personal_email"],
-            "type": h.get("type", "helt"),
             "alias": h.get("alias") or "",
         }
         for h in members_list
