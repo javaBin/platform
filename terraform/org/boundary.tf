@@ -1,22 +1,21 @@
 ################################################################################
-# Permission Boundary: javabin-developer-boundary
+# Permission Boundary: javabin-org-boundary
 #
-# This is the cornerstone of the IAM security model. Any role carrying this
-# boundary can only create roles that also carry it (self-replicating).
+# Structural safety net for ALL roles in the account. Carried by platform
+# roles (infra, plan, override-approver, registry, apply-gate) and cross-team
+# Lambda roles (resource-tagger, budget-enforcer, apply-gate, ci-broker).
 #
-# The boundary defines the maximum possible permissions for any non-platform
-# role. Hard denies here cannot be overridden by any policy attached to
-# roles that carry this boundary.
+# Contains ONLY account-level structural denies — things that are dangerous
+# regardless of team scope. Team ABAC isolation lives in the developer
+# boundary (terraform/platform/iam/boundary.tf), which is a strict superset.
 #
-# IMPORTANT: This resource lives in terraform/org/ (human-applied) because
-# the boundary's self-protection denies iam:CreatePolicyVersion on itself.
-# The CI pipeline (which carries the boundary) cannot modify it.
+# IMPORTANT: Human-applied. The self-protection deny prevents any role
+# carrying this boundary from modifying it.
 ################################################################################
 
-resource "aws_iam_policy" "developer_boundary" {
-  name        = "${var.project}-developer-boundary"
-  description = "Permission boundary for all non-platform roles. Self-replicating: roles with this boundary can only create roles that also carry it."
-
+resource "aws_iam_policy" "org_boundary" {
+  name        = "${var.project}-org-boundary"
+  description = "Structural permission boundary for platform roles. Denies account-level dangerous operations."
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -32,10 +31,27 @@ resource "aws_iam_policy" "developer_boundary" {
       },
 
       ########################################################################
-      # Self-replicating: deny creating/modifying roles without this boundary
+      # Self-protection: deny modifying this boundary policy
       ########################################################################
       {
-        Sid    = "DenyRolesWithoutBoundary"
+        Sid    = "DenyOrgBoundaryTamper"
+        Effect = "Deny"
+        Action = [
+          "iam:DeletePolicy",
+          "iam:DeletePolicyVersion",
+          "iam:CreatePolicyVersion",
+          "iam:SetDefaultPolicyVersion"
+        ]
+        Resource = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-org-boundary"
+      },
+
+      ########################################################################
+      # Self-replicating: roles can only create roles with one of the two
+      # boundaries. Infra role needs to create team roles (developer boundary)
+      # and platform roles (org boundary).
+      ########################################################################
+      {
+        Sid    = "DenyNoBoundary"
         Effect = "Deny"
         Action = [
           "iam:CreateRole",
@@ -44,16 +60,29 @@ resource "aws_iam_policy" "developer_boundary" {
         Resource = "*"
         Condition = {
           StringNotEquals = {
-            "iam:PermissionsBoundary" = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary"
+            "iam:PermissionsBoundary" = [
+              "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-org-boundary",
+              "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary",
+            ]
           }
         }
       },
 
       ########################################################################
-      # Deny creating IAM users and access keys (console/programmatic)
+      # Deny removing the boundary from any role
       ########################################################################
       {
-        Sid    = "DenyIAMUserCreation"
+        Sid      = "DenyDeleteBoundary"
+        Effect   = "Deny"
+        Action   = "iam:DeleteRolePermissionsBoundary"
+        Resource = "*"
+      },
+
+      ########################################################################
+      # Deny creating IAM users and access keys
+      ########################################################################
+      {
+        Sid    = "DenyIAMUsers"
         Effect = "Deny"
         Action = [
           "iam:CreateUser",
@@ -68,33 +97,10 @@ resource "aws_iam_policy" "developer_boundary" {
       },
 
       ########################################################################
-      # Deny modifying or deleting this boundary policy itself
-      ########################################################################
-      {
-        Sid    = "DenyBoundaryTampering"
-        Effect = "Deny"
-        Action = [
-          "iam:DeletePolicy",
-          "iam:DeletePolicyVersion",
-          "iam:CreatePolicyVersion",
-          "iam:SetDefaultPolicyVersion"
-        ]
-        Resource = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary"
-      },
-      {
-        Sid    = "DenyDeleteRoleBoundary"
-        Effect = "Deny"
-        Action = [
-          "iam:DeleteRolePermissionsBoundary"
-        ]
-        Resource = "*"
-      },
-
-      ########################################################################
       # Deny IAM Identity Center, Organizations, SCPs
       ########################################################################
       {
-        Sid    = "DenyIdentityCenterAndOrgs"
+        Sid    = "DenyOrgAndSSO"
         Effect = "Deny"
         Action = [
           "organizations:*",
@@ -108,9 +114,13 @@ resource "aws_iam_policy" "developer_boundary" {
 
       ########################################################################
       # Deny disabling/deleting protective services
+      #
+      # Specific destructive actions only — NOT wildcards. The infra role
+      # carries this boundary and needs to manage these services (create
+      # detectors, recorders, etc.).
       ########################################################################
       {
-        Sid    = "DenyProtectiveServicesTampering"
+        Sid    = "DenyProtectiveSvcs"
         Effect = "Deny"
         Action = [
           "guardduty:DeleteDetector",
@@ -136,7 +146,7 @@ resource "aws_iam_policy" "developer_boundary" {
       # Deny platform networking: VPC, subnets, IGW, NAT gateway
       ########################################################################
       {
-        Sid    = "DenyPlatformNetworking"
+        Sid    = "DenyNetworking"
         Effect = "Deny"
         Action = [
           "ec2:CreateVpc",
@@ -155,137 +165,10 @@ resource "aws_iam_policy" "developer_boundary" {
         ]
         Resource = "*"
       },
-
-      ########################################################################
-      # Protect platform security groups
-      #
-      # Teams CAN create security groups (needed for RDS, custom services).
-      # Teams CANNOT modify or delete platform-owned security groups.
-      # Platform SGs are named javabin-* (e.g., javabin-alb-sg, javabin-ecs-tasks-sg).
-      # App SGs use app-name prefix (e.g., moresleep-rds-sg).
-      ########################################################################
-      {
-        Sid    = "DenyPlatformSecurityGroups"
-        Effect = "Deny"
-        Action = [
-          "ec2:DeleteSecurityGroup",
-          "ec2:AuthorizeSecurityGroupIngress",
-          "ec2:RevokeSecurityGroupIngress",
-          "ec2:AuthorizeSecurityGroupEgress",
-          "ec2:RevokeSecurityGroupEgress",
-          "ec2:ModifySecurityGroupRules",
-        ]
-        Resource = "arn:aws:ec2:${var.region}:${var.aws_account_id}:security-group/*"
-        Condition = {
-          StringLike = {
-            "ec2:ResourceTag/Name" = "${var.project}-*"
-          }
-        }
-      },
-
-      ########################################################################
-      # Deny platform ECS cluster, ALB, ACM certs
-      ########################################################################
-      {
-        Sid    = "DenyPlatformECSCluster"
-        Effect = "Deny"
-        Action = [
-          "ecs:DeleteCluster",
-          "ecs:UpdateCluster"
-        ]
-        Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:cluster/${var.project}-platform"
-      },
-      {
-        Sid    = "DenyPlatformALB"
-        Effect = "Deny"
-        Action = [
-          "elasticloadbalancing:DeleteLoadBalancer",
-          "elasticloadbalancing:ModifyLoadBalancerAttributes"
-        ]
-        Resource = "arn:aws:elasticloadbalancing:${var.region}:${var.aws_account_id}:loadbalancer/app/${var.project}-*"
-      },
-      {
-        Sid    = "DenyPlatformACM"
-        Effect = "Deny"
-        Action = [
-          "acm:DeleteCertificate"
-        ]
-        Resource = "arn:aws:acm:${var.region}:${var.aws_account_id}:certificate/*"
-      },
-
-      ########################################################################
-      # Deny access to state and CI artifact buckets/tables
-      ########################################################################
-      {
-        Sid    = "DenyStateBuckets"
-        Effect = "Deny"
-        Action = [
-          "s3:DeleteBucket",
-          "s3:PutBucketPolicy",
-          "s3:DeleteBucketPolicy",
-          "s3:PutBucketVersioning",
-          "s3:PutEncryptionConfiguration"
-        ]
-        Resource = [
-          "arn:aws:s3:::${var.project}-terraform-*",
-          "arn:aws:s3:::${var.project}-ci-*"
-        ]
-      },
-      {
-        Sid    = "DenyStateTables"
-        Effect = "Deny"
-        Action = [
-          "dynamodb:DeleteTable",
-          "dynamodb:UpdateTable"
-        ]
-        Resource = "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/${var.project}-terraform-*"
-      },
-
-      ########################################################################
-      # Enforce team-prefixed naming on resource creation
-      #
-      # Teams can only create resources with names matching their team prefix.
-      # Uses ${aws:PrincipalTag/team} policy variable in Resource ARNs.
-      # The AllowAll above permits all actions; this deny blocks creates
-      # that don't match the team naming convention.
-      #
-      # Not enforced for: security groups (ARN uses ID, not name),
-      # EC2 networking (already denied above), CloudWatch metrics (not resources).
-      ########################################################################
-      {
-        Sid    = "DenyNonTeamPrefixedCreation"
-        Effect = "Deny"
-        Action = [
-          "s3:CreateBucket",
-          "dynamodb:CreateTable",
-          "sqs:CreateQueue",
-          "sns:CreateTopic",
-          "rds:CreateDBInstance",
-          "rds:CreateDBSubnetGroup",
-          "ecs:CreateService",
-          "ecs:RegisterTaskDefinition",
-          "ecr:CreateRepository",
-          "logs:CreateLogGroup",
-          "ssm:PutParameter",
-        ]
-        NotResource = [
-          "arn:aws:s3:::$${aws:PrincipalTag/team}-*",
-          "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/$${aws:PrincipalTag/team}-*",
-          "arn:aws:sqs:${var.region}:${var.aws_account_id}:$${aws:PrincipalTag/team}-*",
-          "arn:aws:sns:${var.region}:${var.aws_account_id}:$${aws:PrincipalTag/team}-*",
-          "arn:aws:rds:${var.region}:${var.aws_account_id}:db:$${aws:PrincipalTag/team}-*",
-          "arn:aws:rds:${var.region}:${var.aws_account_id}:subgrp:$${aws:PrincipalTag/team}-*",
-          "arn:aws:ecs:${var.region}:${var.aws_account_id}:service/*/$${aws:PrincipalTag/team}-*",
-          "arn:aws:ecs:${var.region}:${var.aws_account_id}:task-definition/$${aws:PrincipalTag/team}-*:*",
-          "arn:aws:ecr:${var.region}:${var.aws_account_id}:repository/$${aws:PrincipalTag/team}-*",
-          "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/$${aws:PrincipalTag/team}/*",
-          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/$${aws:PrincipalTag/team}/*",
-        ]
-      }
     ]
   })
 
   tags = {
-    Name = "${var.project}-developer-boundary"
+    Name = "${var.project}-org-boundary"
   }
 }

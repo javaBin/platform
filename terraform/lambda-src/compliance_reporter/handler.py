@@ -28,7 +28,7 @@ ALLOWED_IDENTITIES = [
     if s.strip()
 ]
 
-REQUIRED_TAGS = {"project", "team", "managed-by"}
+REQUIRED_TAGS = {"team", "service", "managed-by"}
 
 # AWS clients
 ec2 = boto3.client("ec2")
@@ -226,7 +226,7 @@ def report_to_slack(untagged_resources, event_name, caller_arn):
         {"type": "section",
          "text": {"type": "mrkdwn",
                   "text": f"*{len(untagged_resources)}* resource(s) created by `{event_name}` "
-                          f"are missing required tags (`project`, `team`, `managed-by`)."}},
+                          f"are missing required tags (`team`, `service`, `managed-by`)."}},
         {"type": "section",
          "text": {"type": "mrkdwn",
                   "text": "\n".join(resource_lines)}},

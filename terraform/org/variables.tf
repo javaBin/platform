@@ -22,10 +22,13 @@ variable "environment" {
   default     = "production"
 }
 
-variable "boundary_policy_arn" {
-  description = "ARN of the javabin-developer-boundary IAM policy (must exist before SCP is applied)"
-  type        = string
-  default     = "arn:aws:iam::553637109631:policy/javabin-developer-boundary"
+variable "boundary_policy_arns" {
+  description = "ARNs of the permitted permission boundary policies (org + developer)"
+  type        = list(string)
+  default = [
+    "arn:aws:iam::553637109631:policy/javabin-org-boundary",
+    "arn:aws:iam::553637109631:policy/javabin-developer-boundary",
+  ]
 }
 
 variable "exempt_roles" {

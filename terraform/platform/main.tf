@@ -72,6 +72,8 @@ module "lambdas" {
   alb_dns_name                   = module.ingress.alb_dns_name
   alb_zone_id                    = module.ingress.alb_zone_id
   route53_zone_id                = module.ingress.route53_zone_id
+  org_boundary_arn               = module.iam.org_boundary_arn
+  developer_boundary_arn         = module.iam.developer_boundary_arn
 }
 
 module "identity" {
