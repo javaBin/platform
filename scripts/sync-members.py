@@ -38,6 +38,7 @@ COLUMN_MAP = {
     "name": "Navn",
     "email": "Epostadresse",
     "groups": "Gruppetilhørlighet",
+    "region": "Hvilken region er du tilknyttet",
     "approved": "Approved",
 }
 
@@ -48,6 +49,17 @@ GROUP_MAP = {
     "Kodesmia": "kodesmia",
     "Region": "region",
     "PKOM": "pkom",
+}
+
+# Maps region column values to regional group names.
+REGION_MAP = {
+    "Oslo": "oslo",
+    "Bergen": "bergen",
+    "Trondheim": "trondheim",
+    "Tromsø": "tromso",
+    "Stavanger": "stavanger",
+    "Vestfold": "vestfold",
+    "Sørlandet": "sorlandet",
 }
 
 
@@ -340,11 +352,18 @@ def main():
         javabin_email = derive_email(firstname, lastname)
         memberships = map_groups(groups_str)
 
+        # Add regional group from the region column
+        region_col = COLUMN_MAP.get("region", "")
+        region_val = row.get(region_col, "").strip()
+        if region_val and region_val in REGION_MAP:
+            memberships.append(REGION_MAP[region_val])
+
         entry = {
             "firstname": firstname,
             "lastname": lastname,
             "personal_email": personal_email,
             "javabin_google_email": javabin_email,
+            "type": "helt",
             "alias": "",
             "memberships": memberships,
         }
