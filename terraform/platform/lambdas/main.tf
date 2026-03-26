@@ -69,6 +69,10 @@ data "archive_file" "cost_report" {
     content  = file("${local.lambda_src_path}/shared/constants.py")
     filename = "shared/constants.py"
   }
+  source {
+    content  = file("${local.lambda_src_path}/shared/athena.py")
+    filename = "shared/athena.py"
+  }
 }
 
 data "archive_file" "daily_cost_check" {
@@ -91,6 +95,10 @@ data "archive_file" "daily_cost_check" {
   source {
     content  = file("${local.lambda_src_path}/shared/constants.py")
     filename = "shared/constants.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/athena.py")
+    filename = "shared/athena.py"
   }
 }
 
@@ -313,6 +321,49 @@ resource "aws_iam_role_policy" "cost_report" {
           }
         }
       },
+      {
+        Sid    = "AthenaQuery"
+        Effect = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults",
+          "athena:StopQueryExecution",
+        ]
+        Resource = "arn:aws:athena:${var.region}:${var.aws_account_id}:workgroup/${var.athena_workgroup}"
+      },
+      {
+        Sid    = "GlueReadCatalog"
+        Effect = "Allow"
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetTable",
+          "glue:GetPartitions",
+        ]
+        Resource = [
+          "arn:aws:glue:${var.region}:${var.aws_account_id}:catalog",
+          "arn:aws:glue:${var.region}:${var.aws_account_id}:database/${var.cur_glue_database}",
+          "arn:aws:glue:${var.region}:${var.aws_account_id}:table/${var.cur_glue_database}/${var.cur_glue_table}",
+        ]
+      },
+      {
+        Sid    = "S3ReadCURData"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:ListBucket"]
+        Resource = [
+          var.cur_data_bucket_arn,
+          "${var.cur_data_bucket_arn}/*",
+        ]
+      },
+      {
+        Sid    = "S3WriteAthenaResults"
+        Effect = "Allow"
+        Action = ["s3:PutObject", "s3:GetObject", "s3:GetBucketLocation", "s3:AbortMultipartUpload", "s3:ListBucket"]
+        Resource = [
+          var.athena_results_bucket_arn,
+          "${var.athena_results_bucket_arn}/*",
+        ]
+      },
     ]
   })
 }
@@ -354,6 +405,49 @@ resource "aws_iam_role_policy" "daily_cost_check" {
         Effect   = "Allow"
         Action   = "ce:GetCostAndUsage"
         Resource = "*"
+      },
+      {
+        Sid    = "AthenaQuery"
+        Effect = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults",
+          "athena:StopQueryExecution",
+        ]
+        Resource = "arn:aws:athena:${var.region}:${var.aws_account_id}:workgroup/${var.athena_workgroup}"
+      },
+      {
+        Sid    = "GlueReadCatalog"
+        Effect = "Allow"
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetTable",
+          "glue:GetPartitions",
+        ]
+        Resource = [
+          "arn:aws:glue:${var.region}:${var.aws_account_id}:catalog",
+          "arn:aws:glue:${var.region}:${var.aws_account_id}:database/${var.cur_glue_database}",
+          "arn:aws:glue:${var.region}:${var.aws_account_id}:table/${var.cur_glue_database}/${var.cur_glue_table}",
+        ]
+      },
+      {
+        Sid    = "S3ReadCURData"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:ListBucket"]
+        Resource = [
+          var.cur_data_bucket_arn,
+          "${var.cur_data_bucket_arn}/*",
+        ]
+      },
+      {
+        Sid    = "S3WriteAthenaResults"
+        Effect = "Allow"
+        Action = ["s3:PutObject", "s3:GetObject", "s3:GetBucketLocation", "s3:AbortMultipartUpload", "s3:ListBucket"]
+        Resource = [
+          var.athena_results_bucket_arn,
+          "${var.athena_results_bucket_arn}/*",
+        ]
       },
     ]
   })
@@ -695,7 +789,7 @@ resource "aws_lambda_function" "cost_report" {
   role             = aws_iam_role.cost_report.arn
   handler          = "handler.handler"
   runtime          = "python3.12"
-  timeout          = 60
+  timeout          = 120
   memory_size      = 256
   filename         = data.archive_file.cost_report.output_path
   source_code_hash = data.archive_file.cost_report.output_base64sha256
@@ -704,6 +798,9 @@ resource "aws_lambda_function" "cost_report" {
     variables = {
       COST_WEBHOOK_PARAM = "/javabin/slack/platform-cost-alerts-webhook"
       DEPLOY_REGION      = var.region
+      CUR_DATABASE       = var.cur_glue_database
+      CUR_TABLE          = var.cur_glue_table
+      ATHENA_WORKGROUP   = var.athena_workgroup
     }
   }
 }
@@ -713,7 +810,7 @@ resource "aws_lambda_function" "daily_cost_check" {
   role             = aws_iam_role.daily_cost_check.arn
   handler          = "handler.handler"
   runtime          = "python3.12"
-  timeout          = 60
+  timeout          = 90
   memory_size      = 128
   filename         = data.archive_file.daily_cost_check.output_path
   source_code_hash = data.archive_file.daily_cost_check.output_base64sha256
@@ -721,6 +818,9 @@ resource "aws_lambda_function" "daily_cost_check" {
   environment {
     variables = {
       COST_WEBHOOK_PARAM = "/javabin/slack/platform-cost-alerts-webhook"
+      CUR_DATABASE       = var.cur_glue_database
+      CUR_TABLE          = var.cur_glue_table
+      ATHENA_WORKGROUP   = var.athena_workgroup
     }
   }
 }

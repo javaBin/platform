@@ -95,3 +95,30 @@ variable "developer_boundary_arn" {
   type        = string
 }
 
+# --- Cost analytics (CUR / Athena) ---
+
+variable "cur_glue_database" {
+  description = "Glue catalog database name for CUR data"
+  type        = string
+}
+
+variable "cur_glue_table" {
+  description = "Glue catalog table name for CUR data"
+  type        = string
+}
+
+variable "athena_workgroup" {
+  description = "Athena workgroup name for cost queries"
+  type        = string
+}
+
+variable "athena_results_bucket_arn" {
+  description = "ARN of the S3 bucket for Athena query results"
+  type        = string
+}
+
+variable "cur_data_bucket_arn" {
+  description = "ARN of the S3 bucket containing CUR Parquet data"
+  type        = string
+}
+
