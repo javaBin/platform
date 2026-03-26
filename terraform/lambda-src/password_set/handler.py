@@ -33,7 +33,7 @@ DEDUP_TABLE_NAME = os.environ.get("DEDUP_TABLE_NAME", "javabin-alert-dedup")
 TEAM_PROVISIONER_FUNCTION = os.environ.get(
     "TEAM_PROVISIONER_FUNCTION", "javabin-team-provisioner"
 )
-PASSWORD_TOKEN_TTL = 48 * 3600  # 48 hours
+PASSWORD_TOKEN_TTL = 60 * 86400  # 60 days — single-use via DynamoDB
 
 _secret_cache = {}
 
@@ -106,11 +106,7 @@ def _validate_token(token):
     except Exception:
         return None, "Invalid token payload"
 
-    # Check expiry
-    if time.time() > payload.get("exp", 0):
-        return None, "Token has expired"
-
-    # Check single-use via DynamoDB
+    # Check single-use via DynamoDB (no time-based expiry — tokens are one-time use only)
     jti = payload.get("jti", "")
     dedup_key = f"pwset:{jti}"
     try:
@@ -129,7 +125,7 @@ def _mark_token_used(jti):
         _dedup_table().put_item(Item={
             "finding_key": f"pwset:{jti}",
             "used_at": int(time.time()),
-            "expires_at": int(time.time()) + (30 * 86400),
+            "expires_at": int(time.time()) + (60 * 86400),  # Match token lifetime
         })
     except Exception as e:
         logger.warning("Failed to mark token used: %s", e)
