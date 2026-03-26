@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import boto3
 from botocore.config import Config
+from shared.athena import run_query
 from shared.constants import USD_TO_NOK, risk_emoji
 from shared.slack import get_webhook_url, post_to_slack
 
@@ -16,6 +17,9 @@ logger.setLevel(logging.INFO)
 ssm = boto3.client("ssm")
 
 COST_WEBHOOK_PARAM = os.environ["COST_WEBHOOK_PARAM"]
+CUR_DATABASE = os.environ.get("CUR_DATABASE", "")
+CUR_TABLE = os.environ.get("CUR_TABLE", "")
+ATHENA_WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "")
 
 # ---------------------------------------------------------------------------
 # Service categorisation — pattern-based, not hardcoded lists
@@ -315,7 +319,7 @@ def _llm_structured(prompt, tool_config):
 
 
 def generate_narrative(this_week, prev_week, mtd, tw_total, pw_total,
-                       mtd_total, projected, month_name):
+                       mtd_total, projected, month_name, resource_summary=""):
     """Generate executive summary. Returns dict with summary/notable or None."""
     top_services = sorted(this_week.items(), key=lambda x: x[1], reverse=True)[:8]
     svc_summary = ", ".join(f"{s}: ${c:.2f}" for s, c in top_services)
@@ -341,8 +345,9 @@ MTD: ${mtd_total:.2f} | Projected {month_name}: ${projected:.2f}
 
 Top services: {svc_summary}
 Biggest movers WoW: {mover_lines or 'no significant changes'}
+{resource_summary}
 
-Be specific about which services drove changes. Set notable=true only if there is a meaningful change worth highlighting, false if costs are stable week-over-week."""
+Be specific about which services and resources drove changes. Set notable=true only if there is a meaningful change worth highlighting, false if costs are stable week-over-week."""
     return _llm_structured(prompt, _NARRATIVE_TOOL)
 
 
@@ -373,6 +378,104 @@ Services with biggest increases:
 
 Explain the likely root causes. Consider: new resources, data transfer, infrastructure scaling."""
     return _llm_structured(prompt, _SPIKE_TOOL)
+
+
+# ---------------------------------------------------------------------------
+# CUR resource-level drilldown via Athena
+# ---------------------------------------------------------------------------
+def _friendly_resource_id(resource_id):
+    """Shorten an ARN to a readable name."""
+    if not resource_id:
+        return "(no resource ID)"
+    # Strip common ARN prefix, keep the useful tail
+    if "::" in resource_id:
+        # S3 bucket: arn:aws:s3:::bucket-name → bucket-name
+        return resource_id.rsplit(":::", 1)[-1]
+    if "/" in resource_id:
+        # ECS/Lambda/etc: ...service/cluster/name → name
+        parts = resource_id.split("/")
+        return parts[-1] if len(parts) <= 3 else "/".join(parts[-2:])
+    if ":" in resource_id:
+        return resource_id.rsplit(":", 1)[-1]
+    return resource_id
+
+
+def get_resource_drilldown(week_start, week_end):
+    """Query CUR via Athena for top resources this week. Returns dict or None."""
+    if not (CUR_DATABASE and CUR_TABLE and ATHENA_WORKGROUP):
+        return None
+
+    year = str(week_start.year)
+    month = f"{week_start.month:02d}"
+
+    # Top 10 resources overall
+    top_query = f"""
+    SELECT line_item_resource_id,
+           line_item_product_code,
+           COALESCE(resource_tags_user_team, '') as team,
+           SUM(CAST(line_item_unblended_cost AS double)) as total_cost
+    FROM "{CUR_DATABASE}"."{CUR_TABLE}"
+    WHERE year = '{year}' AND month = '{month}'
+      AND line_item_usage_start_date >= TIMESTAMP '{week_start}'
+      AND line_item_usage_start_date < TIMESTAMP '{week_end + timedelta(days=1)}'
+      AND line_item_resource_id != ''
+      AND line_item_line_item_type = 'Usage'
+    GROUP BY line_item_resource_id, line_item_product_code,
+             COALESCE(resource_tags_user_team, '')
+    HAVING SUM(CAST(line_item_unblended_cost AS double)) >= 0.01
+    ORDER BY total_cost DESC
+    LIMIT 10
+    """
+
+    top_resources = run_query(CUR_DATABASE, top_query, ATHENA_WORKGROUP)
+    if not top_resources:
+        return None
+
+    return {"top_resources": top_resources}
+
+
+def build_resource_drilldown_blocks(drilldown):
+    """Build Block Kit blocks for resource-level cost drilldown."""
+    blocks = []
+    top = drilldown.get("top_resources", [])
+    if not top:
+        return blocks
+
+    blocks.append({
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": ":mag: *Resource-Level Drilldown*"}
+    })
+
+    header = [
+        {"type": "raw_text", "text": "Resource"},
+        {"type": "raw_text", "text": "Service"},
+        {"type": "raw_text", "text": "Team"},
+        {"type": "raw_text", "text": "Cost"},
+    ]
+    rows = [header]
+
+    for item in top:
+        cost = float(item.get("total_cost", 0))
+        nok = cost * USD_TO_NOK
+        rows.append([
+            {"type": "raw_text", "text": _friendly_resource_id(item.get("line_item_resource_id", ""))},
+            {"type": "raw_text", "text": item.get("line_item_product_code", "")},
+            {"type": "raw_text", "text": item.get("team", "(untagged)")},
+            {"type": "raw_text", "text": f"${cost:.2f} (~{nok:.0f} NOK)"},
+        ])
+
+    blocks.append({
+        "type": "table",
+        "column_settings": [
+            {"is_wrapped": True},
+            {},
+            {},
+            {"align": "right"},
+        ],
+        "rows": rows,
+    })
+
+    return blocks
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +596,14 @@ def build_blocks(this_week, prev_week, mtd, prev_mtd, project_costs, team_costs,
 
     blocks.append({"type": "divider"})
 
+    # Resource-level drilldown from CUR (graceful — skipped if unavailable)
+    drilldown = get_resource_drilldown(tw_start, tw_end)
+    if drilldown:
+        blocks.extend(build_resource_drilldown_blocks(drilldown))
+        blocks.append({"type": "divider"})
+    else:
+        logger.info("CUR resource drilldown unavailable — skipping")
+
     # LLM spike root cause (shown as a section — important)
     spike_result = analyze_spike(this_week, prev_week, tw_total, pw_total)
     if spike_result:
@@ -506,9 +617,19 @@ def build_blocks(this_week, prev_week, mtd, prev_mtd, project_costs, team_costs,
         blocks.append({"type": "divider"})
 
     # LLM narrative + footer as context blocks
+    resource_summary = ""
+    if drilldown:
+        top_res = drilldown.get("top_resources", [])[:5]
+        resource_summary = "\nTop resources by cost: " + ", ".join(
+            f"{_friendly_resource_id(r.get('line_item_resource_id',''))} "
+            f"({r.get('line_item_product_code','')}, {r.get('team','?')}): "
+            f"${float(r.get('total_cost',0)):.2f}"
+            for r in top_res
+        )
     narrative_result = generate_narrative(
         this_week, prev_week, mtd,
         tw_total, pw_total, mtd_total, projected, curr_month_name,
+        resource_summary=resource_summary,
     )
 
     ce_url = cost_explorer_url(tw_start, tw_end)

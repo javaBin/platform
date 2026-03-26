@@ -5,6 +5,7 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 import boto3
+from shared.athena import run_query
 from shared.constants import USD_TO_NOK
 from shared.slack import get_webhook_url, post_to_slack
 
@@ -17,6 +18,9 @@ COST_WEBHOOK_PARAM = os.environ["COST_WEBHOOK_PARAM"]
 SPIKE_THRESHOLD = float(os.environ.get("SPIKE_THRESHOLD", "1.2"))  # 20% above average
 # Minimum daily spend (USD) to qualify as a spike — filters noise on tiny amounts
 MIN_SPIKE_AMOUNT = float(os.environ.get("MIN_SPIKE_AMOUNT", "1.00"))
+CUR_DATABASE = os.environ.get("CUR_DATABASE", "")
+CUR_TABLE = os.environ.get("CUR_TABLE", "")
+ATHENA_WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "")
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +134,54 @@ def cost_explorer_url(start, end, service=None):
 
 
 # ---------------------------------------------------------------------------
+# CUR resource drilldown for spiking services
+# ---------------------------------------------------------------------------
+def get_spike_resources(day, service):
+    """Query CUR for top resources in a spiking service. Returns list or []."""
+    if not (CUR_DATABASE and CUR_TABLE and ATHENA_WORKGROUP):
+        return []
+
+    year = str(day.year)
+    month = f"{day.month:02d}"
+    next_day = day + timedelta(days=1)
+
+    query = f"""
+    SELECT line_item_resource_id,
+           line_item_usage_type,
+           COALESCE(resource_tags_user_team, '') as team,
+           SUM(CAST(line_item_unblended_cost AS double)) as total_cost
+    FROM "{CUR_DATABASE}"."{CUR_TABLE}"
+    WHERE year = '{year}' AND month = '{month}'
+      AND line_item_usage_start_date >= TIMESTAMP '{day}'
+      AND line_item_usage_start_date < TIMESTAMP '{next_day}'
+      AND line_item_product_code = '{service}'
+      AND line_item_resource_id != ''
+      AND line_item_line_item_type = 'Usage'
+    GROUP BY line_item_resource_id, line_item_usage_type,
+             COALESCE(resource_tags_user_team, '')
+    HAVING SUM(CAST(line_item_unblended_cost AS double)) >= 0.01
+    ORDER BY total_cost DESC
+    LIMIT 5
+    """
+
+    return run_query(CUR_DATABASE, query, ATHENA_WORKGROUP)
+
+
+def _friendly_resource_id(resource_id):
+    """Shorten an ARN to a readable name."""
+    if not resource_id:
+        return "(no resource ID)"
+    if ":::" in resource_id:
+        return resource_id.rsplit(":::", 1)[-1]
+    if "/" in resource_id:
+        parts = resource_id.split("/")
+        return parts[-1] if len(parts) <= 3 else "/".join(parts[-2:])
+    if ":" in resource_id:
+        return resource_id.rsplit(":", 1)[-1]
+    return resource_id
+
+
+# ---------------------------------------------------------------------------
 # Spike detection
 # ---------------------------------------------------------------------------
 def detect_spikes(yesterday_costs, avg_costs):
@@ -237,6 +289,16 @@ def build_alert_blocks(spikes, spike_details, yesterday_date):
             )
             detail_parts.append(f"*By team:* {team_lines}")
 
+        resources = detail.get("resources")
+        if resources:
+            res_lines = "\n".join(
+                f"  \u2022 {_friendly_resource_id(r.get('line_item_resource_id', ''))}: "
+                f"${float(r.get('total_cost', 0)):.2f}"
+                f"{' (' + r['team'] + ')' if r.get('team') else ''}"
+                for r in resources
+            )
+            detail_parts.append(f"*Top resources:*\n{res_lines}")
+
         ce_url = detail.get("url")
         if ce_url:
             detail_parts.append(f"<{ce_url}|View in Cost Explorer>")
@@ -295,6 +357,10 @@ def handler(event, context):
             detail["team_tags"] = get_tag_breakdown(ce, yesterday, svc, tag_key="team")
         except Exception as e:
             logger.warning("Team tag query failed for %s: %s", svc, e)
+        try:
+            detail["resources"] = get_spike_resources(yesterday, svc)
+        except Exception as e:
+            logger.warning("CUR resource query failed for %s: %s", svc, e)
         spike_details[svc] = detail
 
     blocks = build_alert_blocks(spikes, spike_details, yesterday)

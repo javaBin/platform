@@ -9,9 +9,10 @@
 #   ingress     ALB, ACM wildcard cert, Route53 DNS
 #   iam         GitHub OIDC, CI roles, permission boundary, ECS execution role
 #   compute     ECS cluster, public ECR images
-#   monitoring  SNS topics, EventBridge rules, Config, GuardDuty, Security Hub
-#   lambdas     slack-alert, cost-report, daily-cost-check, auto-tagger
-#   identity    Cognito pools (Identity Center is in terraform/org/)
+#   monitoring       SNS topics, EventBridge rules, Config, GuardDuty, Security Hub
+#   cost-analytics   CUR, Athena, Glue, billing alarms, account budget
+#   lambdas          slack-alert, cost-report, daily-cost-check, auto-tagger
+#   identity         Cognito pools (Identity Center is in terraform/org/)
 ################################################################################
 
 module "networking" {
@@ -53,6 +54,21 @@ module "monitoring" {
   aws_account_id = var.aws_account_id
 }
 
+module "cost_analytics" {
+  source                      = "./cost-analytics"
+  project                     = var.project
+  region                      = var.region
+  aws_account_id              = var.aws_account_id
+  alerts_topic_arn            = module.monitoring.alerts_topic_arn
+  billing_alarm_threshold_usd = 200
+  account_budget_usd          = 500
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+}
+
 module "lambdas" {
   source                         = "./lambdas"
   project                        = var.project
@@ -74,6 +90,11 @@ module "lambdas" {
   route53_zone_id                = module.ingress.route53_zone_id
   org_boundary_arn               = module.iam.org_boundary_arn
   developer_boundary_arn         = module.iam.developer_boundary_arn
+  cur_glue_database              = module.cost_analytics.glue_database_name
+  cur_glue_table                 = module.cost_analytics.glue_table_name
+  athena_workgroup               = module.cost_analytics.athena_workgroup_name
+  athena_results_bucket_arn      = module.cost_analytics.athena_results_bucket_arn
+  cur_data_bucket_arn            = module.cost_analytics.cur_data_bucket_arn
 }
 
 module "identity" {
