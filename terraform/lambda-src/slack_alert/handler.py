@@ -359,7 +359,6 @@ def format_ci_source(ci_context):
     repo = ci_context.get("GitHubRepo") or ci_context.get("repo")
     sha = ci_context.get("GitHubSHA")
     run_id = ci_context.get("GitHubRunID")
-    actor = ci_context.get("GitHubActor")
 
     if repo:
         repo_url = f"https://github.com/{repo}"
@@ -369,10 +368,7 @@ def format_ci_source(ci_context):
         if run_id:
             parts.append(f"<{repo_url}/actions/runs/{run_id}|run>")
 
-    source_line = f":robot_face: *Source:* {' / '.join(parts)}" if parts else ":robot_face: *Source:* CI/CD pipeline"
-    if actor:
-        source_line += f" (triggered by {actor})"
-    return source_line
+    return f":robot_face: *Source:* {' / '.join(parts)}" if parts else ":robot_face: *Source:* CI/CD pipeline"
 
 
 def extract_resource_name(event_name, detail):
@@ -482,6 +478,56 @@ def context_footer(parsed):
     }
 
 
+def _extract_tags(detail):
+    """Extract resource tags from CloudTrail event request/response if available."""
+    tags = {}
+    for key in ("requestParameters", "responseElements"):
+        container = detail.get(key) or {}
+        # S3, Lambda, etc. use tagSet or tags
+        for tag_field in ("tagSet", "tags", "tagList"):
+            tag_data = container.get(tag_field)
+            if isinstance(tag_data, dict):
+                items = tag_data.get("items", tag_data.get("member", []))
+            elif isinstance(tag_data, list):
+                items = tag_data
+            else:
+                continue
+            for item in items:
+                if isinstance(item, dict):
+                    k = item.get("key") or item.get("Key") or item.get("tagKey", "")
+                    v = item.get("value") or item.get("Value") or item.get("tagValue", "")
+                    if k:
+                        tags[k] = v
+    return tags
+
+
+def _build_footer(parsed, tags=None, actor=None):
+    """Build context footer with account, region, timestamp, and optionally tags + actor."""
+    account = parsed.get("account", "unknown")
+    region = parsed.get("region", "unknown")
+    ts = parsed.get("time", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+    footer_parts = [f"AWS Account {account} | {region} | {ts}"]
+
+    if actor:
+        footer_parts.append(f"By: {actor}")
+
+    if tags:
+        # Show key tags: team, service, created-by, commit
+        display_tags = {k: v for k, v in tags.items()
+                        if k in ("team", "service", "created-by", "commit", "environment", "repo")}
+        if display_tags:
+            tag_str = " | ".join(f"{k}={v}" for k, v in sorted(display_tags.items()))
+            footer_parts.append(tag_str)
+
+    return {
+        "type": "context",
+        "elements": [
+            {"type": "mrkdwn", "text": "\n".join(footer_parts)}
+        ]
+    }
+
+
 def format_resource_creation(parsed):
     """Resource creation alert — Block Kit."""
     detail = parsed.get("detail", {})
@@ -498,26 +544,23 @@ def format_resource_creation(parsed):
     console_url = build_console_url(event_name, event_source, resource_name, region)
     res_display = resource_link(resource_name, console_url) if resource_name else "_unknown_"
     service = service_display_name(event_source)
-
-    if is_ci:
-        header_text = ":package: Resource Created (CI/CD)"
-        source_line = format_ci_source(ci_ctx)
-    else:
-        header_text = ":warning: Resource Created (Console)"
-        source_line = ":bust_in_silhouette: *Source:* Manual console action"
-
+    tags = _extract_tags(detail)
     cost_estimate = estimate_cost(event_name, detail)
 
+    if is_ci:
+        header_text = f":package: {service or 'Resource'} Created (CI/CD)"
+        source_line = format_ci_source(ci_ctx)
+    else:
+        header_text = f":warning: {service or 'Resource'} Created (Console)"
+        source_line = ":bust_in_silhouette: *Source:* Manual console action"
+
     fields = [
-        {"type": "mrkdwn", "text": f"*Action*\n{display_name}"},
         {"type": "mrkdwn", "text": f"*Resource*\n{res_display}"},
-        {"type": "mrkdwn", "text": f"*Created by*\n{actor}"},
-        {"type": "mrkdwn", "text": f"*Region*\n{region}"},
     ]
-    if service:
-        fields.append({"type": "mrkdwn", "text": f"*Service*\n{service}"})
     if cost_estimate:
         fields.append({"type": "mrkdwn", "text": f"*Est. Cost*\n{cost_estimate}"})
+    fields.append({"type": "mrkdwn", "text": f"*Action*\n{display_name}"})
+    fields.append({"type": "mrkdwn", "text": f"*Region*\n{region}"})
 
     blocks = [
         {"type": "header", "text": {"type": "plain_text", "text": header_text, "emoji": True}},
@@ -548,9 +591,9 @@ def format_resource_creation(parsed):
         })
 
     blocks.append({"type": "divider"})
-    blocks.append(context_footer(parsed))
+    blocks.append(_build_footer(parsed, tags=tags, actor=actor))
 
-    fallback = f"{'CI/CD' if is_ci else 'Console'} created {display_name}: {resource_name or 'unknown'}"
+    fallback = f"{'CI/CD' if is_ci else 'Console'} created {service or display_name}: {resource_name or 'unknown'}"
     return {"blocks": blocks, "text": fallback}
 
 
@@ -621,19 +664,17 @@ def format_resource_modification(parsed):
     service = service_display_name(event_source)
 
     fields = [
-        {"type": "mrkdwn", "text": f"*Action*\n{display_name}"},
         {"type": "mrkdwn", "text": f"*Resource*\n{res_display}"},
-        {"type": "mrkdwn", "text": f"*Modified by*\n{actor}"},
+        {"type": "mrkdwn", "text": f"*Action*\n{display_name}"},
         {"type": "mrkdwn", "text": f"*Region*\n{region}"},
     ]
-    if service:
-        fields.append({"type": "mrkdwn", "text": f"*Service*\n{service}"})
 
     source_line = format_ci_source(ci_ctx) if is_ci else None
 
     blocks = [
         {"type": "header",
-         "text": {"type": "plain_text", "text": ":wrench: Resource Modified", "emoji": True}},
+         "text": {"type": "plain_text",
+                  "text": f":wrench: {service or 'Resource'} Modified", "emoji": True}},
     ]
     if source_line:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": source_line}})
@@ -665,9 +706,9 @@ def format_resource_modification(parsed):
             })
 
     blocks.append({"type": "divider"})
-    blocks.append(context_footer(parsed))
+    blocks.append(_build_footer(parsed, actor=actor))
 
-    fallback = f"Resource modified: {display_name} on {resource_name or 'unknown'} by {actor}"
+    fallback = f"{service or 'Resource'} modified: {display_name} on {resource_name or 'unknown'}"
     return {"blocks": blocks, "text": fallback}
 
 
@@ -687,29 +728,27 @@ def format_resource_deletion(parsed):
     service = service_display_name(event_source)
 
     fields = [
-        {"type": "mrkdwn", "text": f"*Action*\n{display_name}"},
         {"type": "mrkdwn", "text": f"*Resource*\n`{resource_name or 'unknown'}`"},
-        {"type": "mrkdwn", "text": f"*Deleted by*\n{actor}"},
+        {"type": "mrkdwn", "text": f"*Action*\n{display_name}"},
         {"type": "mrkdwn", "text": f"*Region*\n{region}"},
     ]
-    if service:
-        fields.append({"type": "mrkdwn", "text": f"*Service*\n{service}"})
 
     source_line = format_ci_source(ci_ctx) if is_ci else None
 
     blocks = [
         {"type": "header",
-         "text": {"type": "plain_text", "text": ":wastebasket: Resource Deleted", "emoji": True}},
+         "text": {"type": "plain_text",
+                  "text": f":wastebasket: {service or 'Resource'} Deleted", "emoji": True}},
     ]
     if source_line:
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": source_line}})
     blocks.extend([
         {"type": "section", "fields": fields},
         {"type": "divider"},
-        context_footer(parsed),
+        _build_footer(parsed, actor=actor),
     ])
 
-    fallback = f"Resource deleted: {display_name} — {resource_name or 'unknown'} by {actor}"
+    fallback = f"{service or 'Resource'} deleted: {resource_name or 'unknown'}"
     return {"blocks": blocks, "text": fallback}
 
 
@@ -738,7 +777,7 @@ def format_compliance_alert(parsed):
          "text": {"type": "plain_text", "text": ":red_circle: Untagged Resource Detected", "emoji": True}},
         {"type": "section",
          "text": {"type": "mrkdwn",
-                  "text": "A resource is missing required tags (`project`, `team`, `managed-by`)."}},
+                  "text": "A resource is missing required tags (`service`, `team`, `managed-by`)."}},
         {"type": "section", "fields": [
             {"type": "mrkdwn", "text": f"*Resource Type*\n{short_type}"},
             {"type": "mrkdwn", "text": f"*Resource ID*\n`{resource_id}`"},
