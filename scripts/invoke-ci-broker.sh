@@ -17,7 +17,7 @@ echo "Requesting ${ACTION} credentials for ${REPO}..."
 
 RESPONSE=$(aws lambda invoke \
   --function-name "${PROJECT:-javabin}-ci-broker" \
-  --payload "$(printf '{"repo":"%s","action":"%s"}' "$REPO" "$ACTION")" \
+  --payload "$(printf '{"repo":"%s","action":"%s","session_name":"%s"}' "$REPO" "$ACTION" "${SESSION_NAME:-}")" \
   --cli-binary-format raw-in-base64-out \
   /tmp/broker-response.json 2>&1)
 

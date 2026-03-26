@@ -21,11 +21,15 @@ fi
 
 echo "Requesting apply credentials from gate Lambda..."
 
+# Build session name from GitHub context for alert attribution
+GATE_SESSION="${GITHUB_ACTOR:-unknown}-$(echo "${GITHUB_SHA:-00000000}" | cut -c1-8)-${GITHUB_RUN_ID:-0}"
+
 PAYLOAD=$(jq -n \
   --arg action "check" \
   --arg plan_key "$PLAN_KEY" \
   --arg repo_name "$REPO_NAME" \
-  '{action: $action, plan_key: $plan_key, repo_name: $repo_name}')
+  --arg session_name "$GATE_SESSION" \
+  '{action: $action, plan_key: $plan_key, repo_name: $repo_name, session_name: $session_name}')
 
 RESPONSE=$(aws lambda invoke \
   --function-name "$LAMBDA_NAME" \

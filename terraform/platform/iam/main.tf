@@ -34,7 +34,7 @@ data "aws_iam_openid_connect_provider" "github" {
 
 resource "aws_iam_role" "ci_infra_plan" {
   name                 = "${var.project}-ci-infra-plan"
-  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
+  permissions_boundary = local.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -146,7 +146,7 @@ resource "aws_iam_role_policy" "ci_infra_plan_extras" {
 
 resource "aws_iam_role" "ci_infra" {
   name                 = "${var.project}-ci-infra"
-  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
+  permissions_boundary = local.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -265,7 +265,7 @@ resource "aws_iam_role_policy" "ci_infra_deny" {
 
 resource "aws_iam_role" "ci_app_broker" {
   name                 = "${var.project}-ci-app-broker"
-  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
+  permissions_boundary = aws_iam_policy.developer_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -321,7 +321,7 @@ resource "aws_iam_role" "ci_team" {
   for_each = toset(var.registered_teams)
 
   name                 = "${var.project}-ci-team-${each.key}"
-  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
+  permissions_boundary = aws_iam_policy.developer_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -357,20 +357,8 @@ resource "aws_iam_role_policy" "ci_team_allow" {
   name = "team-management"
   role = aws_iam_role.ci_team[each.key].id
 
-  # IAM model: AllowAll + DenyCrossTeam + DenyMutateShared
-  #
-  # 1. AllowAll: unrestricted allow (the deny policies are the real gates)
-  # 2. DenyCrossTeamAccess: blocks ANY action on resources tagged with
-  #    another team's name. Uses Null condition so creates (no tags yet)
-  #    pass through. Accepts "shared" for platform infra teams interact with.
-  # 3. DenyMutateSharedInfra: protects shared resources from deletion/
-  #    modification while allowing teams to create children (listener rules,
-  #    ECS services, DNS records). Works because children inherit the TEAM's
-  #    tag from default_tags, not the parent's "shared" tag.
-  # 4. Backend access: explicit S3 path + DynamoDB key scoping per team.
-  #
-  # The ci_team_deny policy adds a third layer protecting VPC, security
-  # services, IAM users, and platform-specific ARNs.
+  # AllowAll + backend access only. All deny rules are in the developer
+  # boundary (iam/boundary.tf) using ABAC variables — one policy for all teams.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -379,56 +367,6 @@ resource "aws_iam_role_policy" "ci_team_allow" {
         Effect   = "Allow"
         Action   = "*"
         Resource = "*"
-      },
-      {
-        # Block access to resources owned by other teams or by platform.
-        # Only fires when aws:ResourceTag/team EXISTS and doesn't match.
-        # Creates pass through (new resources have no tags yet).
-        # "shared" is accepted — platform infra that all teams use.
-        Sid    = "DenyCrossTeamAccess"
-        Effect = "Deny"
-        Action = "*"
-        NotResource = [
-          # State backend excluded — scoped separately by S3 key prefix
-          # and DynamoDB LeadingKeys (teams can't access each other's state).
-          "arn:aws:s3:::${var.project}-terraform-state-${var.aws_account_id}",
-          "arn:aws:s3:::${var.project}-terraform-state-${var.aws_account_id}/*",
-          "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/${var.project}-terraform-app-locks",
-          # Plan artifacts — teams upload/download their own plans.
-          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}",
-          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*",
-        ]
-        Condition = {
-          StringNotEquals = {
-            "aws:ResourceTag/team" = [each.key, "shared"]
-          }
-          "Null" = {
-            "aws:ResourceTag/team" = "false"
-          }
-        }
-      },
-      {
-        # Protect shared infrastructure from destructive operations.
-        # Teams can CREATE children (listener rules, ECS services, DNS records)
-        # because those target the child resource which gets team=teamX.
-        # But they cannot delete/modify the parent (ALB, cluster, zone).
-        Sid    = "DenyMutateSharedInfra"
-        Effect = "Deny"
-        Action = [
-          "ec2:Delete*", "ec2:Modify*",
-          "elasticloadbalancing:Delete*", "elasticloadbalancing:Modify*",
-          "ecs:DeleteCluster", "ecs:UpdateCluster", "ecs:UpdateClusterSettings",
-          "iam:DeleteRole", "iam:UpdateRole", "iam:DeleteRolePolicy",
-          "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy",
-          "route53:DeleteHostedZone",
-          "sns:DeleteTopic", "sns:SetTopicAttributes",
-        ]
-        Resource = "*"
-        Condition = {
-          StringEquals = {
-            "aws:ResourceTag/team" = "shared"
-          }
-        }
       },
       {
         # Terraform state: S3 scoped to team's key prefix.
@@ -465,148 +403,6 @@ resource "aws_iam_role_policy" "ci_team_allow" {
   })
 }
 
-resource "aws_iam_role_policy" "ci_team_deny" {
-  for_each = toset(var.registered_teams)
-
-  name = "deny-platform-operations"
-  role = aws_iam_role.ci_team[each.key].id
-
-  # Deny policy protects infrastructure that can't be scoped by tags.
-  #
-  # The allow policy uses AllowAll + DenyCrossTeamAccess (tag-based).
-  # This deny policy adds explicit blocks for services where tags don't
-  # work: networking, security services, IAM users, and specific
-  # platform ARNs that need protection beyond tag-based isolation.
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      # ----------------------------------------------------------------
-      # EC2 networking — MUST be explicit deny
-      #
-      # AWS EC2 does NOT support aws:RequestTag conditions on CreateVpc,
-      # CreateSubnet, CreateInternetGateway, or CreateNatGateway.
-      # Resource doesn't exist at creation time so aws:ResourceTag is N/A.
-      # Cross-service dependencies (subnet→VPC) can't be scoped by tag.
-      # See: docs.aws.amazon.com/AWSEC2/latest/UserGuide/supported-iam-actions-tagging.html
-      # ----------------------------------------------------------------
-      {
-        Sid    = "DenyNetworkInfra"
-        Effect = "Deny"
-        Action = [
-          "ec2:CreateVpc", "ec2:DeleteVpc", "ec2:ModifyVpcAttribute",
-          "ec2:CreateSubnet", "ec2:DeleteSubnet",
-          "ec2:CreateNatGateway", "ec2:DeleteNatGateway",
-          "ec2:CreateInternetGateway", "ec2:DeleteInternetGateway",
-          "ec2:AttachInternetGateway", "ec2:DetachInternetGateway",
-          "ec2:CreateRouteTable", "ec2:DeleteRouteTable",
-        ]
-        Resource = "*"
-      },
-      # ----------------------------------------------------------------
-      # Security services — MUST be explicit deny
-      #
-      # GuardDuty, Security Hub, AWS Config, and CloudTrail do NOT
-      # support aws:ResourceTag or aws:RequestTag conditions in IAM.
-      # There is no tag-based mechanism to protect these services.
-      # ----------------------------------------------------------------
-      {
-        Sid    = "DenySecurityServices"
-        Effect = "Deny"
-        Action = [
-          "guardduty:*",
-          "securityhub:*",
-          "config:*",
-          "cloudtrail:*",
-        ]
-        Resource = "*"
-      },
-      # ----------------------------------------------------------------
-      # Organizations + Account — MUST be explicit deny
-      #
-      # These are account-level services with no resource tagging.
-      # ----------------------------------------------------------------
-      {
-        Sid    = "DenyOrgAndAccount"
-        Effect = "Deny"
-        Action = [
-          "organizations:*",
-          "account:*",
-        ]
-        Resource = "*"
-      },
-      # ----------------------------------------------------------------
-      # IAM user creation — MUST be explicit deny
-      #
-      # IAM users are global resources, not taggable per-team.
-      # Prevents creation of long-lived credentials.
-      # ----------------------------------------------------------------
-      {
-        Sid    = "DenyDangerousIAM"
-        Effect = "Deny"
-        Action = [
-          "iam:CreateUser",
-          "iam:CreateAccessKey",
-          "iam:CreateLoginProfile",
-        ]
-        Resource = "*"
-      },
-      # ----------------------------------------------------------------
-      # Platform SNS topics — scoped to platform ARNs (ABAC-friendly)
-      #
-      # SNS supports full tag-based ABAC. Teams CAN create their own
-      # topics (gated by aws:RequestTag/team in the allow policy).
-      # This deny only protects platform-owned alert topics by ARN.
-      # ----------------------------------------------------------------
-      {
-        Sid    = "DenyPlatformSNS"
-        Effect = "Deny"
-        Action = ["sns:DeleteTopic", "sns:SetTopicAttributes"]
-        Resource = [
-          "arn:aws:sns:${var.region}:${var.aws_account_id}:${var.project}-alerts",
-          "arn:aws:sns:${var.region}:${var.aws_account_id}:${var.project}-security",
-          "arn:aws:sns:${var.region}:${var.aws_account_id}:${var.project}-budget-enforcement",
-        ]
-      },
-      # ----------------------------------------------------------------
-      # Platform S3 buckets — scoped to platform ARNs (ABAC-friendly)
-      #
-      # S3 supports full tag-based ABAC. Teams CAN create/delete their
-      # own buckets (gated by aws:RequestTag/team). This protects only
-      # the Terraform state and CI artifact buckets.
-      # ----------------------------------------------------------------
-      {
-        Sid    = "DenyPlatformS3"
-        Effect = "Deny"
-        Action = ["s3:DeleteBucket", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy"]
-        Resource = [
-          "arn:aws:s3:::${var.project}-terraform-state-${var.aws_account_id}",
-          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}",
-        ]
-      },
-      # ----------------------------------------------------------------
-      # Platform ECS cluster + ALB — scoped to platform ARNs (ABAC-friendly)
-      #
-      # ECS and ELBv2 support tag-based ABAC. Teams CAN manage their
-      # own services (gated by aws:ResourceTag/team). This protects
-      # only the shared platform cluster and load balancer.
-      # ----------------------------------------------------------------
-      {
-        Sid    = "DenyPlatformCompute"
-        Effect = "Deny"
-        Action = [
-          "ecs:DeleteCluster", "ecs:UpdateCluster",
-          "elasticloadbalancingv2:DeleteLoadBalancer",
-          "elasticloadbalancingv2:ModifyLoadBalancerAttributes",
-        ]
-        Resource = [
-          "arn:aws:ecs:${var.region}:${var.aws_account_id}:cluster/${var.project}-platform",
-          "arn:aws:elasticloadbalancingv2:${var.region}:${var.aws_account_id}:loadbalancer/app/${var.project}-*",
-        ]
-      },
-    ]
-  })
-}
-
 ################################################################################
 # 3. javabin-ci-deploy-{team} — Per-team deploy role (build + push + deploy)
 #
@@ -619,7 +415,7 @@ resource "aws_iam_role" "ci_deploy" {
   for_each = toset(var.registered_teams)
 
   name                 = "${var.project}-ci-deploy-${each.key}"
-  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
+  permissions_boundary = aws_iam_policy.developer_boundary.arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -670,11 +466,8 @@ resource "aws_iam_role_policy" "ci_deploy_ecr" {
           "ecr:CreateRepository",
           "ecr:DescribeRepositories",
         ]
-        # ECR push actions don't support tag-based authorization.
-        # Blast radius is contained: ci-broker limits which team role you get,
-        # and each team can only push to repos they've registered.
-        # Wildcard is required because app ECR repos use plain names (not project-prefixed).
-        Resource = "arn:aws:ecr:${var.region}:${var.aws_account_id}:repository/*"
+        # Scoped to team's repos. ECR repos use {team}-{service} naming.
+        Resource = "arn:aws:ecr:${var.region}:${var.aws_account_id}:repository/${each.key}-*"
       }
     ]
   })
@@ -720,7 +513,7 @@ resource "aws_iam_role_policy" "ci_deploy_ecs" {
         Action = ["iam:PassRole"]
         Resource = [
           aws_iam_role.ecs_execution.arn,
-          "arn:aws:iam::${var.aws_account_id}:role/${var.project}-*",
+          "arn:aws:iam::${var.aws_account_id}:role/${each.key}-*",
         ]
       }
     ]
@@ -736,9 +529,12 @@ resource "aws_iam_role_policy" "ci_deploy_logs" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
-      Resource = "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/${var.project}/*"
+      Effect = "Allow"
+      Action = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
+      Resource = [
+        "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/${each.key}/*",
+        "arn:aws:logs:${var.region}:${var.aws_account_id}:log-group:/ecs/${each.key}/*:*",
+      ]
     }]
   })
 }
@@ -770,7 +566,7 @@ resource "aws_iam_role_policy" "ci_deploy_ssm" {
 
 resource "aws_iam_role" "ci_override_approver" {
   name                 = "${var.project}-ci-override-approver"
-  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
+  permissions_boundary = local.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -825,7 +621,7 @@ resource "aws_iam_role_policy" "ci_override_approver" {
 
 resource "aws_iam_role" "ci_registry" {
   name                 = "${var.project}-ci-registry"
-  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
+  permissions_boundary = local.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -889,7 +685,7 @@ resource "aws_iam_role_policy" "ci_registry" {
 
 resource "aws_iam_role" "ci_apply_gate" {
   name                 = "${var.project}-ci-apply-gate"
-  permissions_boundary = data.aws_iam_policy.developer_boundary.arn
+  permissions_boundary = local.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

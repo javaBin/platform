@@ -88,6 +88,7 @@ def action_check(event):
     """
     plan_key = event["plan_key"]
     repo_name = event["repo_name"]
+    session_name = event.get("session_name")
     prefix = _plan_prefix(plan_key)
 
     # Read risk assessment
@@ -103,7 +104,7 @@ def action_check(event):
 
     # LOW/MEDIUM — auto-approve
     if risk_level in ("LOW", "MEDIUM"):
-        credentials = _issue_credentials(repo_name)
+        credentials = _issue_credentials(repo_name, session_name)
         return {
             "approved": True,
             "risk_level": risk_level,
@@ -204,7 +205,14 @@ def action_status(event):
     }
 
 
-def _issue_credentials(repo_name):
+def _sanitize_session_name(name):
+    """Sanitize a string for use as STS RoleSessionName (max 64 chars, [\\w+=,.@-])."""
+    import re
+    sanitized = re.sub(r"[^\w+=,.@-]", "-", name)
+    return sanitized[:64] if sanitized else "apply-gate"
+
+
+def _issue_credentials(repo_name, session_name=None):
     """Resolve team from GitHub and assume the team's CI role."""
     account_id = os.environ.get("ACCOUNT_ID", "")
 
@@ -218,9 +226,10 @@ def _issue_credentials(repo_name):
     role_arn = f"arn:aws:iam::{account_id}:role/{PROJECT}-ci-team-{team}"
     logger.info("Assuming team role %s for repo %s", role_arn, repo_name)
 
+    role_session = _sanitize_session_name(session_name) if session_name else f"apply-gate-{repo_name}"
     resp = sts.assume_role(
         RoleArn=role_arn,
-        RoleSessionName=f"apply-gate-{repo_name}",
+        RoleSessionName=role_session,
         DurationSeconds=CREDENTIAL_DURATION,
     )
 
