@@ -13,6 +13,7 @@
 #   cost-analytics   CUR, Athena, Glue, billing alarms, account budget
 #   lambdas          slack-alert, cost-report, daily-cost-check, auto-tagger
 #   identity         Cognito pools (Identity Center is in terraform/org/)
+#   dns              Route53 hosted zones for java.no, javabin.no/com, teknologihuset.no
 ################################################################################
 
 module "networking" {
@@ -105,4 +106,9 @@ module "identity" {
   google_client_id     = var.google_client_id
   google_client_secret = var.google_client_secret
   certificate_arn      = var.certificate_arn
+}
+
+module "dns" {
+  source  = "./dns"
+  project = var.project
 }
