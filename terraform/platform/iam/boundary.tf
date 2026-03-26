@@ -23,7 +23,7 @@ locals {
 
 resource "aws_iam_policy" "developer_boundary" {
   name        = "${var.project}-developer-boundary"
-  description = "Team permission boundary: org denies + ABAC isolation + naming enforcement."
+  description = "Permission boundary for all non-platform roles. Self-replicating: roles with this boundary can only create roles that also carry it."
 
   policy = jsonencode({
     Version = "2012-10-17"
