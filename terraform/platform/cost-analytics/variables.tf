@@ -25,7 +25,12 @@ variable "billing_alarm_threshold_usd" {
 }
 
 variable "account_budget_usd" {
-  description = "Account-level monthly budget in USD — auto-deny at 100%"
+  description = "Account-level monthly budget in USD — notifications at 80% and 100%"
   type        = number
   default     = 500
+}
+
+variable "org_boundary_arn" {
+  description = "ARN of the org permission boundary (required for all IAM roles)"
+  type        = string
 }

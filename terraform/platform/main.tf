@@ -61,6 +61,7 @@ module "cost_analytics" {
   region                      = var.region
   aws_account_id              = var.aws_account_id
   alerts_topic_arn            = module.monitoring.alerts_topic_arn
+  org_boundary_arn            = module.iam.org_boundary_arn
   billing_alarm_threshold_usd = 200
   account_budget_usd          = 500
 
