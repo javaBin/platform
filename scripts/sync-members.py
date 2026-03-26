@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Sync approved heroes from a Google Sheet into heros.yaml.
+"""Sync approved heroes from a Google Sheet into members.yaml.
 
 Reads the hero applications spreadsheet via the Google Sheets API,
 filters for approved entries, normalizes names and emails, and outputs
-an updated heros.yaml that merges new entries with existing ones.
+an updated members.yaml that merges new entries with existing ones.
 
 Usage:
-  sync-heros.py --sheet-id ID --range RANGE --sa-json PATH --admin-email EMAIL \
-                 [--existing PATH] [--output PATH]
+  sync-members.py --sheet-id ID --range RANGE --sa-json PATH --admin-email EMAIL \
+                   [--existing PATH] [--output PATH]
 
 The column and group mappings are configurable dicts at the top of the file.
 When the form structure changes, update COLUMN_MAP and GROUP_MAP.
@@ -38,6 +38,7 @@ COLUMN_MAP = {
     "name": "Navn",
     "email": "Epostadresse",
     "groups": "Gruppetilhørlighet",
+    "region": "Hvilken region er du tilknyttet",
     "approved": "Approved",
 }
 
@@ -48,6 +49,17 @@ GROUP_MAP = {
     "Kodesmia": "kodesmia",
     "Region": "region",
     "PKOM": "pkom",
+}
+
+# Maps region column values to regional group names.
+REGION_MAP = {
+    "Oslo": "oslo",
+    "Bergen": "bergen",
+    "Trondheim": "trondheim",
+    "Tromsø": "tromso",
+    "Stavanger": "stavanger",
+    "Vestfold": "vestfold",
+    "Sørlandet": "sorlandet",
 }
 
 
@@ -200,18 +212,22 @@ def map_groups(groups_str):
 # ---------------------------------------------------------------------------
 
 def format_yaml(members):
-    """Format the heros.yaml content. Uses simple string formatting to avoid yaml dependency."""
+    """Format the members.yaml content. Uses simple string formatting to avoid yaml dependency."""
     lines = [
-        "# Hero membership registry — source of truth for all javaBin hero volunteers.",
+        "# Member registry — source of truth for all javaBin members with java.no accounts.",
         "#",
-        "# Synced from the yearly Google Forms hero application via sync-heros workflow.",
+        "# Synced from the yearly Google Forms hero application via sync-members workflow.",
         "# Board approves applications in the Google Sheet, then triggers a sync that",
         "# creates a PR updating this file.",
         "#",
+        "# Two member types:",
+        "#   - helt:  Approved hero volunteer (full access: email, drive, chat, meet)",
+        "#   - aktiv: Active contributor (java.no account for SSO, calendar, groups only)",
+        "#",
         "# Rules:",
-        "#   - The sync script auto-adds 'helter' to every hero's memberships",
+        "#   - type determines baseline access (see groups/access.yaml)",
         "#   - memberships references group names from groups.yaml",
-        "#   - alias is optional — heroes can PR their preferred alias",
+        "#   - alias is optional — members can PR their preferred alias",
         "#   - javabin_google_email is the Google Workspace account (firstname.lastname@java.no)",
         "#   - personal_email is the unique key for dedup/merge during sync",
         "",
@@ -226,6 +242,7 @@ def format_yaml(members):
             lines.append(f"    lastname: {m['lastname']}")
             lines.append(f"    personal_email: {m['personal_email']}")
             lines.append(f"    javabin_google_email: {m['javabin_google_email']}")
+            lines.append(f"    type: {m.get('type', 'helt')}")
             alias = m.get("alias") or ""
             lines.append(f"    alias: {alias}" if alias else "    alias:")
             memberships = m.get("memberships", [])
@@ -243,7 +260,7 @@ def format_yaml(members):
 # ---------------------------------------------------------------------------
 
 def load_existing(path):
-    """Load existing heros.yaml. Returns dict keyed by personal_email (lowercase)."""
+    """Load existing members.yaml. Returns dict keyed by personal_email (lowercase)."""
     if not path or not os.path.exists(path):
         return {}
     try:
@@ -256,7 +273,7 @@ def load_existing(path):
         return {m["personal_email"].lower(): m for m in data["members"] if m.get("personal_email")}
     except ImportError:
         # Fallback: return empty, sync will create fresh
-        print("Warning: PyYAML not available, cannot merge with existing heros.yaml", file=sys.stderr)
+        print("Warning: PyYAML not available, cannot merge with existing members.yaml", file=sys.stderr)
         return {}
 
 
@@ -289,12 +306,12 @@ def merge_heroes(existing, new_entries):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Sync approved heroes from Google Sheets to heros.yaml")
+    parser = argparse.ArgumentParser(description="Sync approved heroes from Google Sheets to members.yaml")
     parser.add_argument("--sheet-id", required=True, help="Google Sheet ID")
     parser.add_argument("--range", required=True, help="Sheet range (e.g., 'Form Responses 1')")
     parser.add_argument("--sa-json", required=True, help="Path to Google SA JSON key file")
     parser.add_argument("--admin-email", required=True, help="Google Workspace admin email for impersonation")
-    parser.add_argument("--existing", help="Path to existing heros.yaml to merge with")
+    parser.add_argument("--existing", help="Path to existing members.yaml to merge with")
     parser.add_argument("--output", default="-", help="Output path (default: stdout)")
     args = parser.parse_args()
 
@@ -335,11 +352,18 @@ def main():
         javabin_email = derive_email(firstname, lastname)
         memberships = map_groups(groups_str)
 
+        # Add regional group from the region column
+        region_col = COLUMN_MAP.get("region", "")
+        region_val = row.get(region_col, "").strip()
+        if region_val and region_val in REGION_MAP:
+            memberships.append(REGION_MAP[region_val])
+
         entry = {
             "firstname": firstname,
             "lastname": lastname,
             "personal_email": personal_email,
             "javabin_google_email": javabin_email,
+            "type": "helt",
             "alias": "",
             "memberships": memberships,
         }

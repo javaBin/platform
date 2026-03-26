@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Resolve group memberships from groups.yaml + heros.yaml and invoke the team-provisioner Lambda.
+"""Resolve group memberships from groups.yaml + members.yaml + access.yaml and invoke the team-provisioner Lambda.
 
-Usage: provision-groups.py <groups.yaml> <heros.yaml>
+Usage: provision-groups.py <groups.yaml> <members.yaml> <access.yaml>
 
-Reads both YAML files, resolves which heroes belong to which groups based on
-the memberships field in heros.yaml, and invokes the javabin-team-provisioner
+Reads all YAML files, resolves which members belong to which groups based on
+the memberships field in members.yaml, and invokes the javabin-team-provisioner
 Lambda with action=sync_groups_and_heros.
 
-All group memberships are explicit — heroes must list each group in their memberships field.
+Access groups from access.yaml define which role groups get Google Workspace
+service access (email, drive, chat, meet). The Lambda syncs these as nested
+group memberships in Google Workspace.
 
 Requires: aws CLI, PyYAML (available on GitHub Actions ubuntu-latest runners)
 """
@@ -26,9 +28,9 @@ def load_yaml(path):
         return yaml.safe_load(f)
 
 
-def resolve_memberships(groups, heros):
-    """For each group, determine which heroes are members."""
-    members_list = heros.get("members") or []
+def resolve_memberships(groups, members_data):
+    """For each group, determine which members belong to it."""
+    members_list = members_data.get("members") or []
 
     resolved_groups = []
     for group in groups.get("groups", []):
@@ -48,20 +50,29 @@ def resolve_memberships(groups, heros):
     return resolved_groups
 
 
-def build_hero_details(heros):
-    """Extract hero details needed for account creation and alias management."""
-    members_list = heros.get("members") or []
+def build_member_details(members_data):
+    """Extract member details needed for account creation and alias management."""
+    members_list = members_data.get("members") or []
     return [
         {
             "javabin_google_email": h["javabin_google_email"],
             "firstname": h["firstname"],
             "lastname": h["lastname"],
             "personal_email": h["personal_email"],
+            "type": h.get("type", "helt"),
             "alias": h.get("alias") or "",
         }
         for h in members_list
         if h.get("javabin_google_email")
     ]
+
+
+def load_access_groups(access_path):
+    """Load access groups from access.yaml."""
+    if not access_path or not os.path.exists(access_path):
+        return []
+    data = load_yaml(access_path)
+    return data.get("access_groups", [])
 
 
 def invoke_lambda(payload):
@@ -91,22 +102,30 @@ def invoke_lambda(payload):
 
 
 def main():
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <groups.yaml> <heros.yaml>", file=sys.stderr)
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <groups.yaml> <members.yaml> [access.yaml]", file=sys.stderr)
         sys.exit(1)
 
-    groups_path, heros_path = sys.argv[1], sys.argv[2]
+    groups_path = sys.argv[1]
+    members_path = sys.argv[2]
+    access_path = sys.argv[3] if len(sys.argv) > 3 else None
 
     groups = load_yaml(groups_path)
-    heros = load_yaml(heros_path)
+    members_data = load_yaml(members_path)
+    access_groups = load_access_groups(access_path)
 
-    resolved_groups = resolve_memberships(groups, heros)
-    hero_details = build_hero_details(heros)
+    resolved_groups = resolve_memberships(groups, members_data)
+    member_details = build_member_details(members_data)
 
     total_members = sum(len(g["members"]) for g in resolved_groups)
     print(f"Resolved {len(resolved_groups)} groups with {total_members} total memberships")
     for g in resolved_groups:
         print(f"  {g['name']}: {len(g['members'])} member(s)")
+
+    if access_groups:
+        print(f"\nAccess groups: {len(access_groups)}")
+        for ag in access_groups:
+            print(f"  {ag['name']}: {', '.join(ag.get('groups', []))}")
 
     # Pass CI context so the Lambda can attribute the sync in Slack
     ci_context = {
@@ -121,11 +140,12 @@ def main():
     payload = {
         "action": "sync_groups_and_heros",
         "groups": resolved_groups,
-        "heros": hero_details,
+        "heros": member_details,
+        **({"access_groups": access_groups} if access_groups else {}),
         **({"ci_context": ci_context} if ci_context else {}),
     }
 
-    print(f"\nInvoking javabin-team-provisioner with {len(hero_details)} hero(es)...")
+    print(f"\nInvoking javabin-team-provisioner with {len(member_details)} member(s)...")
     invoke_lambda(payload)
 
 
