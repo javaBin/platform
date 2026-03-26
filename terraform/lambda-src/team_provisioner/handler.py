@@ -1483,6 +1483,95 @@ def handle_sync_groups_and_heros(event):
 
         results[name] = gr
 
+    # Step 6: Sync access groups (nested group membership for Workspace service access)
+    access_groups = event.get("access_groups", [])
+    access_results = {}
+    if access_groups:
+        # Build a map of group name → google email from the groups we just synced
+        group_email_map = {g.get("name"): g.get("google") for g in groups if g.get("name") and g.get("google")}
+
+        for ag in access_groups:
+            ag_name = ag.get("name", "")
+            ag_google = ag.get("google", "")
+            role_groups = ag.get("groups", [])
+            if not ag_name or not ag_google:
+                continue
+
+            ag_key = urllib.parse.quote(ag_google, safe="")
+            try:
+                # Ensure the access group exists
+                existing_ag = _google_api("GET", f"/groups/{ag_key}", access_token)
+                if not existing_ag or existing_ag.get("already_exists"):
+                    _google_api("POST", "/groups", access_token, {
+                        "email": ag_google,
+                        "name": ag_name,
+                        "description": ag.get("description", f"Access group: {ag_name}"),
+                    })
+                    logger.info("Created access group %s", ag_google)
+
+                # Get current members of the access group
+                current_members = set()
+                page_token = None
+                while True:
+                    path = f"/groups/{ag_key}/members?maxResults=200"
+                    if page_token:
+                        path += f"&pageToken={urllib.parse.quote(page_token, safe='')}"
+                    resp = _google_api("GET", path, access_token)
+                    if resp and "members" in resp:
+                        for m in resp["members"]:
+                            current_members.add(m["email"].lower())
+                    if resp and resp.get("nextPageToken"):
+                        page_token = resp["nextPageToken"]
+                    else:
+                        break
+
+                # Desired: role group emails as members (nested groups)
+                desired_members = set()
+                for rg in role_groups:
+                    rg_email = group_email_map.get(rg)
+                    if rg_email:
+                        desired_members.add(rg_email.lower())
+                    else:
+                        logger.warning("Access group %s references unknown group: %s", ag_name, rg)
+
+                # Add missing group members
+                added = 0
+                for email in desired_members - current_members:
+                    _google_api(
+                        "POST", f"/groups/{ag_key}/members", access_token,
+                        {"email": email, "role": "MEMBER"},
+                    )
+                    added += 1
+
+                # Remove groups no longer in the access list
+                removed = 0
+                for email in current_members - desired_members:
+                    # Only remove group emails (containing @java.no) that are role groups
+                    # Preserve any directly-added individual members
+                    if email.endswith("@java.no") and email in {
+                        v.lower() for v in group_email_map.values()
+                    }:
+                        member_key = urllib.parse.quote(email, safe="")
+                        _google_api("DELETE", f"/groups/{ag_key}/members/{member_key}", access_token)
+                        removed += 1
+
+                access_results[ag_name] = {
+                    "synced": True,
+                    "added": added,
+                    "removed": removed,
+                    "total_groups": len(desired_members),
+                }
+                logger.info(
+                    "Synced access group %s: %d role groups (+%d/-%d)",
+                    ag_google, len(desired_members), added, removed,
+                )
+            except Exception as e:
+                logger.error("Access group sync failed for %s: %s", ag_name, e)
+                access_results[ag_name] = {"error": str(e)[:200]}
+
+    if access_results:
+        results["_access_groups"] = access_results
+
     try:
         notify_slack(results, ci_context=event.get("ci_context"))
     except Exception as e:
