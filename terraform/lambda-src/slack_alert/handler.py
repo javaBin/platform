@@ -380,6 +380,22 @@ def extract_resource_name(event_name, detail):
     response = detail.get("responseElements") or {}
     request = detail.get("requestParameters") or {}
 
+    # Event-specific extractors (before generic field loop)
+    if event_name == "CreateTags":
+        resources = request.get("resourcesSet", {}).get("items", [])
+        if resources:
+            return resources[0].get("resourceId")
+
+    if event_name == "UpdateService":
+        svc = request.get("service", "")
+        if svc:
+            return svc.split("/")[-1] if "/" in svc else svc
+
+    if event_name == "ModifyTargetGroupAttributes":
+        tg_arn = request.get("targetGroupArn", "")
+        if "targetgroup/" in tg_arn:
+            return tg_arn.split("targetgroup/")[1].split("/")[0]
+
     name_fields = [
         "bucketName", "functionName", "clusterName", "serviceName",
         "dBInstanceIdentifier", "tableName", "loadBalancerName",

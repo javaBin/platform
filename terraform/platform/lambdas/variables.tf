@@ -85,3 +85,13 @@ variable "domain" {
   type        = string
 }
 
+variable "org_boundary_arn" {
+  description = "ARN of the org permission boundary (for cross-team Lambda roles)"
+  type        = string
+}
+
+variable "developer_boundary_arn" {
+  description = "ARN of the developer permission boundary (for team-scoped Lambda roles)"
+  type        = string
+}
+

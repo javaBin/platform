@@ -35,11 +35,18 @@ ROLE_MAP = {
 }
 
 
+def _sanitize_session_name(name):
+    """Sanitize a string for use as STS RoleSessionName (max 64 chars, [\w+=,.@-])."""
+    import re
+    sanitized = re.sub(r"[^\w+=,.@-]", "-", name)
+    return sanitized[:64] if sanitized else "ci-broker"
+
+
 def _assume_role(role_arn, session_name, duration):
     """Assume an IAM role and return temporary credentials."""
     resp = sts.assume_role(
         RoleArn=role_arn,
-        RoleSessionName=session_name,
+        RoleSessionName=_sanitize_session_name(session_name),
         DurationSeconds=duration,
     )
     creds = resp["Credentials"]
@@ -75,8 +82,10 @@ def handler(event, context):
     role_arn = f"arn:aws:iam::{ACCOUNT_ID}:role/{role_prefix}{team}"
     duration = PLAN_DURATION if action == "plan" else DEPLOY_DURATION
 
+    session_name = event.get("session_name") or f"ci-broker-{repo}"
+
     try:
-        credentials = _assume_role(role_arn, f"ci-broker-{repo}", duration)
+        credentials = _assume_role(role_arn, session_name, duration)
     except Exception as e:
         logger.error("Failed to assume %s: %s", role_arn, e)
         return {

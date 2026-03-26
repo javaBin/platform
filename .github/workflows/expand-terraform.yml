@@ -1,8 +1,7 @@
-name: Expand Terraform
+name: Generate Terraform
 
-# Expands app.yaml into raw Terraform resource definitions using the module
-# expander. Commits the generated .tf files back to the repo so that
-# tf-plan and tf-apply work on committed files — no repeated expansion.
+# Generates Terraform module blocks from app.yaml. Commits the generated .tf
+# files back to the repo so tf-plan and tf-apply work on committed files.
 
 on:
   workflow_call:
@@ -19,13 +18,17 @@ on:
         description: "Terraform root directory"
         type: string
         default: "terraform"
+      platform_ref:
+        description: "Platform repo git ref for module sources"
+        type: string
+        default: "main"
 
 permissions:
   contents: write
 
 jobs:
-  expand:
-    name: Expand Terraform
+  generate:
+    name: Generate Terraform
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -46,25 +49,20 @@ jobs:
           repository: javaBin/platform
           token: ${{ steps.app-token.outputs.token }}
           path: .platform
-          sparse-checkout: |
-            scripts
-            terraform/modules
+          sparse-checkout: scripts
 
-      - uses: hashicorp/setup-terraform@v4
-        with:
-          terraform_version: "1.7"
-          terraform_wrapper: false
-
-      - name: Expand modules from app.yaml
+      - name: Generate modules from app.yaml
         env:
           APP_SERVICE: ${{ github.event.repository.name }}
           AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
           AWS_REGION: ${{ inputs.aws_region }}
           TF_ROOT: ${{ inputs.tf_root }}
+          PLATFORM_REF: ${{ inputs.platform_ref }}
           PLATFORM_ROOT: .platform
-        run: python3 .platform/scripts/expand-modules.py
+        run: python3 .platform/scripts/generate-modules.py
 
       - name: Commit and push generated files
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
-        run: sh .platform/scripts/commit-generated-tf.sh "${{ inputs.tf_root }}" "$BRANCH"
+          TF_ROOT: ${{ inputs.tf_root }}
+        run: sh .platform/scripts/commit-generated-tf.sh "$TF_ROOT" "$BRANCH"

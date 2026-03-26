@@ -68,5 +68,4 @@ data "aws_route53_zone" "main" {
 }
 
 
-# Note: the developer boundary ARN is constructed directly by expand-modules.py
-# instead of using a data source, to avoid needing iam:GetPolicy permission.
+data "aws_caller_identity" "current" {}

@@ -35,5 +35,10 @@ output "github_oidc_provider_arn" {
 
 output "developer_boundary_arn" {
   description = "ARN of the javabin-developer-boundary IAM policy"
-  value       = data.aws_iam_policy.developer_boundary.arn
+  value       = aws_iam_policy.developer_boundary.arn
+}
+
+output "org_boundary_arn" {
+  description = "ARN of the javabin-org-boundary IAM policy"
+  value       = data.aws_iam_policy.org_boundary.arn
 }

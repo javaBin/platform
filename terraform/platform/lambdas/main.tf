@@ -416,7 +416,7 @@ resource "aws_iam_role_policy_attachment" "compliance_reporter_logs" {
 # --- resource-tagger role ---
 resource "aws_iam_role" "resource_tagger" {
   name                 = "${var.project}-resource-tagger"
-  permissions_boundary = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary"
+  permissions_boundary = var.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -612,7 +612,7 @@ resource "aws_iam_role_policy_attachment" "team_provisioner_logs" {
 # --- password-set role ---
 resource "aws_iam_role" "password_set" {
   name                 = "${var.project}-password-set"
-  permissions_boundary = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary"
+  permissions_boundary = var.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -946,7 +946,7 @@ resource "aws_sns_topic_policy" "budget_enforcement" {
 # --- budget-enforcer role ---
 resource "aws_iam_role" "budget_enforcer" {
   name                 = "${var.project}-budget-enforcer"
-  permissions_boundary = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary"
+  permissions_boundary = var.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -1283,7 +1283,7 @@ data "archive_file" "apply_gate" {
 
 resource "aws_iam_role" "apply_gate" {
   name                 = "${var.project}-apply-gate"
-  permissions_boundary = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary"
+  permissions_boundary = var.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -1387,7 +1387,7 @@ data "archive_file" "ci_broker" {
 
 resource "aws_iam_role" "ci_broker" {
   name                 = "${var.project}-ci-broker"
-  permissions_boundary = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary"
+  permissions_boundary = var.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
