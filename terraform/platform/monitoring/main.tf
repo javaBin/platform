@@ -331,7 +331,7 @@ resource "aws_iam_role_policy_attachment" "config_role" {
 }
 
 ################################################################################
-# Config Rule — Required Tags (project, team, managed-by)
+# Config Rule — Required Tags (service, team, managed-by)
 ################################################################################
 
 resource "aws_config_config_rule" "required_tags" {
@@ -343,7 +343,7 @@ resource "aws_config_config_rule" "required_tags" {
   }
 
   input_parameters = jsonencode({
-    tag1Key = "project"
+    tag1Key = "service"
     tag2Key = "team"
     tag3Key = "managed-by"
   })
