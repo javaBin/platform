@@ -406,9 +406,8 @@ resource "aws_route53_record" "teknologihuset_no_carddav_txt" {
 # ==============================================================================
 # aws.javabin.no → IAM Identity Center SSO portal redirect
 #
-# S3 website hosting bucket configured to redirect all requests to the
-# Identity Center portal. Route53 alias points to the S3 website endpoint.
-# This only handles HTTP — browsers follow the 301 to the HTTPS portal.
+# CloudFront + ACM for HTTPS, S3 website hosting for the redirect.
+# Both HTTP and HTTPS on aws.javabin.no redirect to the SSO portal.
 # ==============================================================================
 
 resource "aws_s3_bucket" "sso_redirect" {
@@ -437,14 +436,123 @@ resource "aws_s3_bucket_public_access_block" "sso_redirect" {
   restrict_public_buckets = true
 }
 
+# ACM certificate in us-east-1 (required for CloudFront)
+resource "aws_acm_certificate" "sso_redirect" {
+  provider          = aws.us_east_1
+  domain_name       = "aws.javabin.no"
+  validation_method = "DNS"
+
+  tags = {
+    Name = "aws.javabin.no"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_route53_record" "sso_redirect_cert_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.sso_redirect.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  }
+
+  zone_id         = aws_route53_zone.javabin_no.zone_id
+  name            = each.value.name
+  type            = each.value.type
+  ttl             = 300
+  records         = [each.value.record]
+  allow_overwrite = true
+}
+
+resource "aws_acm_certificate_validation" "sso_redirect" {
+  provider                = aws.us_east_1
+  certificate_arn         = aws_acm_certificate.sso_redirect.arn
+  validation_record_fqdns = [for record in aws_route53_record.sso_redirect_cert_validation : record.fqdn]
+}
+
+# CloudFront distribution — forwards to S3 website redirect
+resource "aws_cloudfront_distribution" "sso_redirect" {
+  enabled         = true
+  aliases         = ["aws.javabin.no"]
+  comment         = "aws.javabin.no → SSO portal redirect"
+  is_ipv6_enabled = true
+  price_class     = "PriceClass_100"
+
+  origin {
+    domain_name = aws_s3_bucket_website_configuration.sso_redirect.website_endpoint
+    origin_id   = "s3-redirect"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  default_cache_behavior {
+    target_origin_id       = "s3-redirect"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    forwarded_values {
+      query_string = false
+      cookies {
+        forward = "none"
+      }
+    }
+
+    min_ttl     = 0
+    default_ttl = 86400
+    max_ttl     = 86400
+  }
+
+  viewer_certificate {
+    acm_certificate_arn      = aws_acm_certificate_validation.sso_redirect.certificate_arn
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
+  }
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "none"
+    }
+  }
+
+  tags = {
+    Name = "aws.javabin.no-redirect"
+  }
+
+  depends_on = [aws_acm_certificate_validation.sso_redirect]
+}
+
+# Route53 alias → CloudFront (instead of S3 directly)
 resource "aws_route53_record" "sso_redirect" {
   zone_id = aws_route53_zone.javabin_no.zone_id
   name    = "aws.javabin.no"
   type    = "A"
 
   alias {
-    name                   = aws_s3_bucket_website_configuration.sso_redirect.website_domain
-    zone_id                = aws_s3_bucket.sso_redirect.hosted_zone_id
+    name                   = aws_cloudfront_distribution.sso_redirect.domain_name
+    zone_id                = aws_cloudfront_distribution.sso_redirect.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "sso_redirect_aaaa" {
+  zone_id = aws_route53_zone.javabin_no.zone_id
+  name    = "aws.javabin.no"
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cloudfront_distribution.sso_redirect.domain_name
+    zone_id                = aws_cloudfront_distribution.sso_redirect.hosted_zone_id
     evaluate_target_health = false
   }
 }
