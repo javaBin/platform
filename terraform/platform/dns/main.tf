@@ -474,7 +474,26 @@ resource "aws_acm_certificate_validation" "sso_redirect" {
   validation_record_fqdns = [for record in aws_route53_record.sso_redirect_cert_validation : record.fqdn]
 }
 
-# CloudFront distribution — forwards to S3 website redirect
+# CloudFront Function — redirects all requests to the SSO portal with /start path
+resource "aws_cloudfront_function" "sso_redirect" {
+  name    = "${var.project}-sso-redirect"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+  code    = <<-EOF
+    function handler(event) {
+      return {
+        statusCode: 301,
+        statusDescription: 'Moved Permanently',
+        headers: {
+          location: { value: '${var.sso_portal_url}' },
+          'cache-control': { value: 'max-age=86400' }
+        }
+      };
+    }
+  EOF
+}
+
+# CloudFront distribution — uses function for redirect (not S3)
 resource "aws_cloudfront_distribution" "sso_redirect" {
   enabled         = true
   aliases         = ["aws.javabin.no"]
@@ -482,9 +501,10 @@ resource "aws_cloudfront_distribution" "sso_redirect" {
   is_ipv6_enabled = true
   price_class     = "PriceClass_100"
 
+  # Dummy origin — CloudFront requires one but the function handles everything
   origin {
     domain_name = aws_s3_bucket_website_configuration.sso_redirect.website_endpoint
-    origin_id   = "s3-redirect"
+    origin_id   = "dummy"
 
     custom_origin_config {
       http_port              = 80
@@ -495,7 +515,7 @@ resource "aws_cloudfront_distribution" "sso_redirect" {
   }
 
   default_cache_behavior {
-    target_origin_id       = "s3-redirect"
+    target_origin_id       = "dummy"
     viewer_protocol_policy = "redirect-to-https"
     allowed_methods        = ["GET", "HEAD"]
     cached_methods         = ["GET", "HEAD"]
@@ -511,6 +531,11 @@ resource "aws_cloudfront_distribution" "sso_redirect" {
     min_ttl     = 0
     default_ttl = 86400
     max_ttl     = 86400
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.sso_redirect.arn
+    }
   }
 
   viewer_certificate {
