@@ -402,3 +402,49 @@ resource "aws_route53_record" "teknologihuset_no_carddav_txt" {
   ttl     = 3600
   records = ["path=/"]
 }
+
+# ==============================================================================
+# aws.javabin.no → IAM Identity Center SSO portal redirect
+#
+# S3 website hosting bucket configured to redirect all requests to the
+# Identity Center portal. Route53 alias points to the S3 website endpoint.
+# This only handles HTTP — browsers follow the 301 to the HTTPS portal.
+# ==============================================================================
+
+resource "aws_s3_bucket" "sso_redirect" {
+  bucket = "aws.javabin.no"
+
+  tags = {
+    Name = "aws.javabin.no-redirect"
+  }
+}
+
+resource "aws_s3_bucket_website_configuration" "sso_redirect" {
+  bucket = aws_s3_bucket.sso_redirect.id
+
+  redirect_all_requests_to {
+    host_name = "javabin.awsapps.com"
+    protocol  = "https"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "sso_redirect" {
+  bucket = aws_s3_bucket.sso_redirect.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_route53_record" "sso_redirect" {
+  zone_id = aws_route53_zone.javabin_no.zone_id
+  name    = "aws.javabin.no"
+  type    = "A"
+
+  alias {
+    name                   = aws_s3_bucket_website_configuration.sso_redirect.website_domain
+    zone_id                = aws_s3_bucket.sso_redirect.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
