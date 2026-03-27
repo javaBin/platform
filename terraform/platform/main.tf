@@ -112,4 +112,5 @@ module "identity" {
 module "dns" {
   source  = "./dns"
   project = var.project
+  region  = var.region
 }
