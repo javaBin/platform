@@ -164,6 +164,9 @@ resource "aws_bcmdataexports_export" "cur" {
           INCLUDE_RESOURCES                     = "TRUE"
           INCLUDE_MANUAL_DISCOUNT_COMPATIBILITY = "FALSE"
           INCLUDE_SPLIT_COST_ALLOCATION_DATA    = "FALSE"
+          # AWS returns this in response even when unset — must declare to
+          # avoid "inconsistent result after apply" provider bug (issue #42761)
+          BILLING_VIEW_ARN = "arn:aws:billing::${var.aws_account_id}:billingview/primary"
         }
       }
     }
