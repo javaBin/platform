@@ -113,4 +113,9 @@ module "dns" {
   source  = "./dns"
   project = var.project
   region  = var.region
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
 }
