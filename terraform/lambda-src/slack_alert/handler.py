@@ -337,6 +337,14 @@ def parse_identity(detail):
 
             return f"{role_name} (CI/CD)", True, ci_ctx or None
 
+        # Identity Center SSO: AWSReservedSSO_{permission-set}_{hash}
+        sso_match = re.match(r"AWSReservedSSO_(.+)_[0-9a-f]+$", role_name)
+        if sso_match:
+            display = sso_match.group(1)
+            if session:
+                return f"{display} ({session})", False, None
+            return display, False, None
+
         # Non-CI assumed role
         if session:
             return f"{role_name} ({session})", False, None
