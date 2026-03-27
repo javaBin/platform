@@ -132,6 +132,16 @@ resource "aws_iam_role_policy" "ci_infra_plan_extras" {
         Action   = "pricing:GetProducts"
         Resource = "*"
       },
+      {
+        # BCM Data Exports (CUR 2.0) — not in ReadOnlyAccess managed policy
+        Sid    = "BCMDataExportsRead"
+        Effect = "Allow"
+        Action = [
+          "bcm-data-exports:Get*",
+          "bcm-data-exports:List*",
+        ]
+        Resource = "*"
+      },
     ]
   })
 }
