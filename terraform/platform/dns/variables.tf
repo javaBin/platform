@@ -11,5 +11,5 @@ variable "region" {
 variable "sso_portal_url" {
   description = "IAM Identity Center portal URL to redirect aws.javabin.no to"
   type        = string
-  default     = "https://javabin.awsapps.com/start"
+  default     = "https://javabin.awsapps.com/start/"
 }
