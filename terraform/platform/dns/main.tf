@@ -406,35 +406,9 @@ resource "aws_route53_record" "teknologihuset_no_carddav_txt" {
 # ==============================================================================
 # aws.javabin.no → IAM Identity Center SSO portal redirect
 #
-# CloudFront + ACM for HTTPS, S3 website hosting for the redirect.
-# Both HTTP and HTTPS on aws.javabin.no redirect to the SSO portal.
+# CloudFront + ACM for HTTPS. CloudFront Function handles the 302 redirect.
+# No S3 bucket needed — dummy origin since the function intercepts all requests.
 # ==============================================================================
-
-resource "aws_s3_bucket" "sso_redirect" {
-  bucket = "aws.javabin.no"
-
-  tags = {
-    Name = "aws.javabin.no-redirect"
-  }
-}
-
-resource "aws_s3_bucket_website_configuration" "sso_redirect" {
-  bucket = aws_s3_bucket.sso_redirect.id
-
-  redirect_all_requests_to {
-    host_name = "javabin.awsapps.com"
-    protocol  = "https"
-  }
-}
-
-resource "aws_s3_bucket_public_access_block" "sso_redirect" {
-  bucket = aws_s3_bucket.sso_redirect.id
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
 
 # ACM certificate in us-east-1 (required for CloudFront)
 resource "aws_acm_certificate" "sso_redirect" {
@@ -482,11 +456,11 @@ resource "aws_cloudfront_function" "sso_redirect" {
   code    = <<-EOF
     function handler(event) {
       return {
-        statusCode: 301,
-        statusDescription: 'Moved Permanently',
+        statusCode: 302,
+        statusDescription: 'Found',
         headers: {
           location: { value: '${var.sso_portal_url}' },
-          'cache-control': { value: 'max-age=86400' }
+          'cache-control': { value: 'no-cache' }
         }
       };
     }
@@ -501,15 +475,15 @@ resource "aws_cloudfront_distribution" "sso_redirect" {
   is_ipv6_enabled = true
   price_class     = "PriceClass_100"
 
-  # Dummy origin — CloudFront requires one but the function handles everything
+  # Dummy origin — CloudFront requires one but the function intercepts all requests
   origin {
-    domain_name = aws_s3_bucket_website_configuration.sso_redirect.website_endpoint
+    domain_name = "invalid.invalid"
     origin_id   = "dummy"
 
     custom_origin_config {
       http_port              = 80
       https_port             = 443
-      origin_protocol_policy = "http-only"
+      origin_protocol_policy = "https-only"
       origin_ssl_protocols   = ["TLSv1.2"]
     }
   }
