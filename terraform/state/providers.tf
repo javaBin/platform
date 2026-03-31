@@ -11,7 +11,7 @@ terraform {
 
 locals {
   required_tags = {
-    team        = "javabin"
+    team        = "platform"
     service     = "state"
     repo        = "javaBin/platform"
     environment = var.environment

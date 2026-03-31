@@ -31,6 +31,11 @@ _recent_alerts = {}
 DEDUP_WINDOW = 300  # 5 minutes
 DEDUP_TTL_DAYS = 30
 
+# CI activity tracker: resource_name -> timestamp
+# Suppresses SecurityHub/GuardDuty findings for resources actively managed by CI
+_recent_ci_resources = {}
+CI_SUPPRESS_WINDOW = 600  # 10 minutes
+
 
 # ---------------------------------------------------------------------------
 # DynamoDB dedup — persistent dedup for Security Hub + compliance alerts
@@ -68,6 +73,29 @@ def record_finding_alert(dedup_key):
         })
     except Exception as e:
         logger.warning("DynamoDB dedup write failed: %s", e)
+
+# ---------------------------------------------------------------------------
+# CI resource suppression — track resources managed by CI, suppress noisy findings
+# ---------------------------------------------------------------------------
+def _track_ci_resource(resource_name):
+    """Record a resource being actively managed by CI."""
+    if not resource_name:
+        return
+    now = time.time()
+    for k in list(_recent_ci_resources):
+        if now - _recent_ci_resources[k] > CI_SUPPRESS_WINDOW:
+            del _recent_ci_resources[k]
+    _recent_ci_resources[resource_name] = now
+
+
+def _is_ci_managed_resource(resource_name):
+    """Check if a resource was recently managed by CI (within suppress window)."""
+    now = time.time()
+    for k in list(_recent_ci_resources):
+        if now - _recent_ci_resources[k] > CI_SUPPRESS_WINDOW:
+            del _recent_ci_resources[k]
+    return resource_name in _recent_ci_resources if resource_name else False
+
 
 # ---------------------------------------------------------------------------
 # Console URL builder — derives service from eventSource, minimal overrides
@@ -205,13 +233,19 @@ def _is_service_linked_role(detail):
 
 def is_duplicate(action, resource):
     key = f"{action}:{resource}"
+    resource_key = f"__resource__:{resource}"
     now = time.time()
     for k in list(_recent_alerts):
         if now - _recent_alerts[k] > DEDUP_WINDOW:
             del _recent_alerts[k]
     if key in _recent_alerts:
         return True
+    # For deletions: suppress if any delete on same resource happened recently
+    if action.startswith(("Delete", "Terminate")) and resource_key in _recent_alerts:
+        return True
     _recent_alerts[key] = now
+    if action.startswith(("Delete", "Terminate")):
+        _recent_alerts[resource_key] = now
     return False
 
 
@@ -335,6 +369,9 @@ def parse_identity(detail):
                     if app_match:
                         ci_ctx["repo"] = f"{GITHUB_ORG_URL.split('/')[-1]}/{app_match.group(1)}"
 
+            gh_actor = ci_ctx.get("GitHubActor", "")
+            if gh_actor:
+                return f"{gh_actor} via {role_name} (CI/CD)", True, ci_ctx or None
             return f"{role_name} (CI/CD)", True, ci_ctx or None
 
         # Identity Center SSO: AWSReservedSSO_{permission-set}_{hash}
@@ -376,7 +413,14 @@ def format_ci_source(ci_context):
         if run_id:
             parts.append(f"<{repo_url}/actions/runs/{run_id}|run>")
 
-    return f":robot_face: *Source:* {' / '.join(parts)}" if parts else ":robot_face: *Source:* CI/CD pipeline"
+    if not parts:
+        return ":robot_face: *Source:* CI/CD pipeline"
+
+    source = f":robot_face: *Source:* {' / '.join(parts)}"
+    actor = ci_context.get("GitHubActor")
+    if actor:
+        source += f" — by {actor}"
+    return source
 
 
 def extract_resource_name(event_name, detail):
@@ -472,19 +516,6 @@ def resource_link(resource_name, url):
 # ---------------------------------------------------------------------------
 # Block Kit formatters
 # ---------------------------------------------------------------------------
-def context_footer(parsed):
-    """Standard context footer block."""
-    account = parsed.get("account", "unknown")
-    region = parsed.get("region", "unknown")
-    ts = parsed.get("time", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-    return {
-        "type": "context",
-        "elements": [
-            {"type": "mrkdwn",
-             "text": f"AWS Account {account} | {region} | {ts}"}
-        ]
-    }
-
 
 def _extract_tags(detail):
     """Extract resource tags from CloudTrail event request/response if available."""
@@ -556,6 +587,7 @@ def format_resource_creation(parsed):
     cost_estimate = estimate_cost(event_name, detail)
 
     if is_ci:
+        _track_ci_resource(resource_name)
         header_text = f":package: {service or 'Resource'} Created (CI/CD)"
         source_line = format_ci_source(ci_ctx)
     else:
@@ -666,10 +698,14 @@ def format_resource_modification(parsed):
     if is_duplicate(event_name, resource_name or "unknown"):
         return None
 
+    if is_ci:
+        _track_ci_resource(resource_name)
+
     display_name = re.sub(r"\d{8}$", "", event_name)
     console_url = build_console_url(event_name, event_source, resource_name, region)
     res_display = resource_link(resource_name, console_url) if resource_name else "_unknown_"
     service = service_display_name(event_source)
+    tags = _extract_tags(detail)
 
     fields = [
         {"type": "mrkdwn", "text": f"*Resource*\n{res_display}"},
@@ -714,7 +750,7 @@ def format_resource_modification(parsed):
             })
 
     blocks.append({"type": "divider"})
-    blocks.append(_build_footer(parsed, actor=actor))
+    blocks.append(_build_footer(parsed, tags=tags, actor=actor))
 
     fallback = f"{service or 'Resource'} modified: {display_name} on {resource_name or 'unknown'}"
     return {"blocks": blocks, "text": fallback}
@@ -732,8 +768,13 @@ def format_resource_deletion(parsed):
     if is_duplicate(event_name, resource_name or "unknown"):
         return None
 
+    # Track CI-managed resources to suppress noisy SecurityHub/GuardDuty findings
+    if is_ci:
+        _track_ci_resource(resource_name)
+
     display_name = re.sub(r"\d{8}$", "", event_name)
     service = service_display_name(event_source)
+    tags = _extract_tags(detail)
 
     fields = [
         {"type": "mrkdwn", "text": f"*Resource*\n`{resource_name or 'unknown'}`"},
@@ -753,7 +794,7 @@ def format_resource_deletion(parsed):
     blocks.extend([
         {"type": "section", "fields": fields},
         {"type": "divider"},
-        _build_footer(parsed, actor=actor),
+        _build_footer(parsed, tags=tags, actor=actor),
     ])
 
     fallback = f"{service or 'Resource'} deleted: {resource_name or 'unknown'}"
@@ -796,7 +837,7 @@ def format_compliance_alert(parsed):
          "text": {"type": "mrkdwn",
                   "text": "_Tags should be applied via CI/CD. Check the deploying workflow._"}},
         {"type": "divider"},
-        context_footer(parsed),
+        _build_footer(parsed),
     ]
 
     fallback = f"Untagged resource: {short_type} — {resource_id}"
@@ -850,7 +891,7 @@ def format_iam_change(parsed):
         })
 
     blocks.append({"type": "divider"})
-    blocks.append(context_footer(parsed))
+    blocks.append(_build_footer(parsed, actor=actor))
 
     fallback = f"IAM change: {event_name} on {target} by {actor}"
     return {"blocks": blocks, "text": fallback}
@@ -874,7 +915,7 @@ def format_console_login(parsed):
             {"type": "mrkdwn", "text": f"*Region*\n{region}"},
         ]},
         {"type": "divider"},
-        context_footer(parsed),
+        _build_footer(parsed, actor=actor),
     ]
 
     fallback = f"Console login: {actor} — {result}"
@@ -890,6 +931,15 @@ def format_guardduty_finding(parsed):
     description = detail.get("description", "")
     region = parsed.get("region", detail.get("region", "unknown"))
     account = parsed.get("account", detail.get("accountId", "unknown"))
+
+    # Suppress findings for resources recently managed by CI
+    resource = detail.get("resource", {})
+    for s3_detail in resource.get("S3BucketDetails", []):
+        bucket_name = s3_detail.get("Name", "")
+        if _is_ci_managed_resource(bucket_name):
+            logger.info("GuardDuty finding suppressed (CI-managed resource): %s on %s",
+                        finding_type, bucket_name)
+            return None
 
     if severity >= 7:
         sev_emoji = ":red_circle:"
@@ -966,6 +1016,16 @@ def format_securityhub_finding(parsed):
     region = parsed.get("region", "unknown")
     account = parsed.get("account", "unknown")
     finding_id = finding.get("Id", "")
+
+    # Suppress findings for resources recently managed by CI
+    for res in finding.get("Resources", []):
+        res_id = res.get("Id", "")
+        # Extract resource name from ARN (e.g. arn:aws:s3:::aws.javabin.no -> aws.javabin.no)
+        resource_name = res_id.split(":")[-1].split("/")[-1] if res_id else ""
+        if _is_ci_managed_resource(resource_name):
+            logger.info("Security Hub finding suppressed (CI-managed resource): %s on %s",
+                        title, resource_name)
+            return None
 
     # DynamoDB dedup — suppress if already alerted for this resource+finding
     dedup_key = _finding_dedup_key(finding)
