@@ -818,6 +818,8 @@ resource "aws_lambda_function" "daily_cost_check" {
   environment {
     variables = {
       COST_WEBHOOK_PARAM = "/javabin/slack/platform-cost-alerts-webhook"
+      MIN_SPIKE_AMOUNT   = "10.00"
+      MIN_SPIKE_DELTA    = "10.00"
       CUR_DATABASE       = var.cur_glue_database
       CUR_TABLE          = var.cur_glue_table
       ATHENA_WORKGROUP   = var.athena_workgroup
