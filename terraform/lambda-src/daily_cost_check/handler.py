@@ -17,7 +17,9 @@ ssm = boto3.client("ssm")
 COST_WEBHOOK_PARAM = os.environ["COST_WEBHOOK_PARAM"]
 SPIKE_THRESHOLD = float(os.environ.get("SPIKE_THRESHOLD", "1.2"))  # 20% above average
 # Minimum daily spend (USD) to qualify as a spike — filters noise on tiny amounts
-MIN_SPIKE_AMOUNT = float(os.environ.get("MIN_SPIKE_AMOUNT", "1.00"))
+MIN_SPIKE_AMOUNT = float(os.environ.get("MIN_SPIKE_AMOUNT", "10.00"))
+# Minimum absolute cost difference (USD) to qualify — ignores small dollar swings
+MIN_SPIKE_DELTA = float(os.environ.get("MIN_SPIKE_DELTA", "10.00"))
 CUR_DATABASE = os.environ.get("CUR_DATABASE", "")
 CUR_TABLE = os.environ.get("CUR_TABLE", "")
 ATHENA_WORKGROUP = os.environ.get("ATHENA_WORKGROUP", "")
@@ -188,7 +190,8 @@ def detect_spikes(yesterday_costs, avg_costs):
     """Return list of (service, yesterday, avg, pct_change) for spikes.
 
     Filters out services where yesterday's spend is below MIN_SPIKE_AMOUNT
-    to avoid alerting on insignificant absolute values with high percentage changes.
+    or where the absolute difference is below MIN_SPIKE_DELTA to avoid
+    alerting on insignificant cost changes.
     """
     spikes = []
     for svc, cost in yesterday_costs.items():
@@ -196,10 +199,13 @@ def detect_spikes(yesterday_costs, avg_costs):
             continue
         avg = avg_costs.get(svc, 0)
         if avg < 0.01:
-            spikes.append((svc, cost, 0, None))
+            if cost >= MIN_SPIKE_DELTA:
+                spikes.append((svc, cost, 0, None))
         elif cost > avg * SPIKE_THRESHOLD:
-            pct = ((cost - avg) / avg) * 100
-            spikes.append((svc, cost, avg, pct))
+            delta = cost - avg
+            if delta >= MIN_SPIKE_DELTA:
+                pct = (delta / avg) * 100
+                spikes.append((svc, cost, avg, pct))
     spikes.sort(key=lambda x: x[1] - x[2], reverse=True)
     return spikes
 
@@ -317,7 +323,7 @@ def build_alert_blocks(spikes, spike_details, yesterday_date):
         "type": "context",
         "elements": [{"type": "mrkdwn",
                        "text": f"<{overall_url}|View all in Cost Explorer> | Generated {ts} | "
-                               f"Min spike threshold: ${MIN_SPIKE_AMOUNT:.2f} | NOK rate: ~{USD_TO_NOK}"}]
+                               f"Min cost: ${MIN_SPIKE_AMOUNT:.2f} | Min delta: ${MIN_SPIKE_DELTA:.2f} | NOK rate: ~{USD_TO_NOK}"}]
     })
 
     return blocks
