@@ -1743,7 +1743,7 @@ def _generate_password_set_url(email):
 def handle_resend_password_link(event):
     """Handle the resend_password_link action — generate a new password-set link and email it.
 
-    Use when the original 48h link has expired. Can be triggered by direct Lambda
+    Use when the original 60-day link has expired. Can be triggered by direct Lambda
     invocation with: {"action": "resend_password_link", "email": "user@java.no",
     "personal_email": "user@gmail.com", "firstname": "Name"}
     """
