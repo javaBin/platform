@@ -21,6 +21,7 @@ dynamodb = boto3.resource("dynamodb")
 # SSM parameter names passed via environment
 INFRA_WEBHOOK_PARAM = os.environ["INFRA_WEBHOOK_PARAM"]
 COST_WEBHOOK_PARAM = os.environ["COST_WEBHOOK_PARAM"]
+SECURITY_WEBHOOK_PARAM = os.environ.get("SECURITY_WEBHOOK_PARAM", "")
 SECURITY_TOPIC_ARN = os.environ["SECURITY_TOPIC_ARN"]
 PROJECT_PREFIX = os.environ.get("PROJECT_PREFIX", "javabin")
 GITHUB_ORG_URL = os.environ.get("GITHUB_ORG_URL", "https://github.com/javaBin")
@@ -932,6 +933,16 @@ def format_guardduty_finding(parsed):
     region = parsed.get("region", detail.get("region", "unknown"))
     account = parsed.get("account", detail.get("accountId", "unknown"))
 
+    # Dedup root credential usage — GuardDuty fires per API call (ConsoleLogin,
+    # Search, GetIdentityMetadata, etc.).  One alert per hour is enough.
+    if finding_type == "Policy:IAMUser/RootCredentialUsage":
+        hour_key = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H")
+        dedup_key = f"guardduty:root:{hour_key}"
+        if is_finding_already_alerted(dedup_key):
+            logger.info("GuardDuty root credential finding suppressed (hourly dedup): %s", title)
+            return None
+        record_finding_alert(dedup_key)
+
     # Suppress findings for resources recently managed by CI
     resource = detail.get("resource", {})
     for s3_detail in resource.get("S3BucketDetails", []):
@@ -1293,7 +1304,7 @@ def format_securityhub_summary():
 
 def summary_handler(event, context):
     """Lambda handler for the weekly Security Hub summary."""
-    webhook_url = _get_webhook(INFRA_WEBHOOK_PARAM)
+    webhook_url = _get_webhook(SECURITY_WEBHOOK_PARAM if SECURITY_WEBHOOK_PARAM else INFRA_WEBHOOK_PARAM)
     try:
         result = format_securityhub_summary()
         if result:
@@ -1310,6 +1321,15 @@ def summary_handler(event, context):
 # ---------------------------------------------------------------------------
 # Main handler
 # ---------------------------------------------------------------------------
+def _is_security_finding(parsed):
+    """Check if the event is a Security Hub or GuardDuty finding."""
+    detail_type = parsed.get("detail-type", "")
+    return detail_type in (
+        "Security Hub Findings - Imported",
+        "GuardDuty Finding",
+    )
+
+
 def handler(event, context):
     for record in event["Records"]:
         sns_message = record["Sns"]
@@ -1317,7 +1337,7 @@ def handler(event, context):
         subject = sns_message.get("Subject", "AWS Alert")
         raw_message = sns_message["Message"]
 
-        # Route to correct webhook based on SNS topic
+        # Default webhook based on SNS topic
         if topic_arn == SECURITY_TOPIC_ARN:
             webhook_url = _get_webhook(INFRA_WEBHOOK_PARAM)
         else:
@@ -1325,6 +1345,11 @@ def handler(event, context):
 
         try:
             parsed = json.loads(raw_message)
+            # Route Security Hub + GuardDuty findings to dedicated security channel
+            if (topic_arn == SECURITY_TOPIC_ARN
+                    and SECURITY_WEBHOOK_PARAM
+                    and _is_security_finding(parsed)):
+                webhook_url = _get_webhook(SECURITY_WEBHOOK_PARAM)
             result = format_structured_alert(subject, parsed)
         except (json.JSONDecodeError, TypeError):
             result = format_plain_alert(subject, raw_message)
