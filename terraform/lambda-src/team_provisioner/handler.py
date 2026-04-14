@@ -161,7 +161,8 @@ GOOGLE_SCOPES = (
     "https://www.googleapis.com/auth/admin.directory.group.member "
     "https://www.googleapis.com/auth/admin.directory.user "
     "https://www.googleapis.com/auth/admin.directory.user.alias "
-    "https://www.googleapis.com/auth/gmail.send"
+    "https://www.googleapis.com/auth/gmail.send "
+    "https://www.googleapis.com/auth/gmail.settings.sharing"
 )
 
 
@@ -237,6 +238,116 @@ def _google_api(method, path, access_token, body=None):
         body_text = e.read().decode("utf-8", errors="replace")
         logger.error("Google API %s %s → %d: %s", method, path, e.code, body_text)
         raise
+
+
+def _get_user_google_access_token(user_email):
+    """Get a Google access token impersonating a specific user (not the admin).
+
+    Required for Gmail per-user settings (forwarding, filters, etc.).
+    Tokens are cached per user for ~58 minutes.
+    """
+    cache_key = f"_google_token_{user_email}"
+    cached = _credential_cache.get(cache_key)
+    if cached and cached["exp"] > time.time() + 120:
+        return cached["token"]
+
+    sa_json = json.loads(_get_ssm_param(GOOGLE_SA_PARAM))
+
+    now = int(time.time())
+    signed_jwt = _create_jwt(
+        {
+            "iss": sa_json["client_email"],
+            "sub": user_email,
+            "scope": "https://www.googleapis.com/auth/gmail.settings.sharing",
+            "aud": "https://oauth2.googleapis.com/token",
+            "iat": now,
+            "exp": now + 3600,
+        },
+        sa_json["private_key"],
+    )
+
+    data = urllib.parse.urlencode(
+        {
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": signed_jwt,
+        }
+    ).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            token = json.loads(resp.read())["access_token"]
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="replace")
+        logger.error("Google OAuth token exchange (user=%s) failed: %d %s", user_email, e.code, body_text)
+        raise
+
+    _credential_cache[cache_key] = {"token": token, "exp": time.time() + 3500}
+    return token
+
+
+def _setup_email_forwarding(user_email, forward_to):
+    """Set up auto-forwarding on a java.no account to the member's personal email.
+
+    Uses domain-wide delegation to impersonate the user. With delegation the
+    forwarding address is created with verificationStatus=accepted (no
+    confirmation email required).
+    """
+    user_token = _get_user_google_access_token(user_email)
+    gmail_base = "https://gmail.googleapis.com/gmail/v1/users/me/settings"
+
+    # Step 1: Register the forwarding address
+    fwd_body = json.dumps({"forwardingEmail": forward_to}).encode("utf-8")
+    fwd_req = urllib.request.Request(
+        f"{gmail_base}/forwardingAddresses",
+        data=fwd_body,
+        method="POST",
+    )
+    fwd_req.add_header("Authorization", f"Bearer {user_token}")
+    fwd_req.add_header("Content-Type", "application/json")
+
+    try:
+        with urllib.request.urlopen(fwd_req) as resp:
+            fwd_result = json.loads(resp.read())
+            status = fwd_result.get("verificationStatus", "unknown")
+            if status != "accepted":
+                logger.warning("Forwarding address %s for %s has status: %s", forward_to, user_email, status)
+                return False
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            logger.info("Forwarding address %s already registered for %s", forward_to, user_email)
+        else:
+            body_text = e.read().decode("utf-8", errors="replace")
+            logger.error("Failed to create forwarding address %s for %s: %d %s", forward_to, user_email, e.code, body_text)
+            return False
+
+    # Step 2: Enable auto-forwarding (keep copy in inbox)
+    auto_body = json.dumps({
+        "enabled": True,
+        "emailAddress": forward_to,
+        "disposition": "leaveInInbox",
+    }).encode("utf-8")
+    auto_req = urllib.request.Request(
+        f"{gmail_base}/autoForwarding",
+        data=auto_body,
+        method="PUT",
+    )
+    auto_req.add_header("Authorization", f"Bearer {user_token}")
+    auto_req.add_header("Content-Type", "application/json")
+
+    try:
+        with urllib.request.urlopen(auto_req) as resp:
+            resp.read()
+            logger.info("Auto-forwarding enabled: %s → %s", user_email, forward_to)
+            return True
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="replace")
+        logger.error("Failed to enable auto-forwarding %s → %s: %d %s", user_email, forward_to, e.code, body_text)
+        return False
 
 
 def _send_welcome_email(access_token, javabin_email, personal_email, firstname, password_set_url=None):
@@ -1329,8 +1440,14 @@ def handle_sync_groups_and_heros(event):
                     accounts_created.append(email)
                     logger.info("Created Google Workspace account: %s (recovery: %s)", email, personal_email)
 
-                    # Send welcome email to personal address via Gmail API
                     if personal_email:
+                        # Set up auto-forwarding to personal email
+                        try:
+                            _setup_email_forwarding(email, personal_email)
+                        except Exception as fe:
+                            logger.warning("Could not set up forwarding %s → %s: %s", email, personal_email, fe)
+
+                        # Send welcome email to personal address via Gmail API
                         try:
                             pw_url = _generate_password_set_url(email)
                             _send_welcome_email(
@@ -1341,6 +1458,12 @@ def handle_sync_groups_and_heros(event):
                             logger.warning("Could not send welcome email to %s: %s", personal_email, we)
                 else:
                     accounts_existed.append(email)
+                    # Ensure forwarding is set up for existing accounts too
+                    if personal_email:
+                        try:
+                            _setup_email_forwarding(email, personal_email)
+                        except Exception as fe:
+                            logger.warning("Could not set up forwarding %s → %s: %s", email, personal_email, fe)
             except Exception as e:
                 logger.error("Failed to create account %s: %s", email, e)
                 accounts_failed.append({"email": email, "error": str(e)[:200]})
