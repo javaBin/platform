@@ -773,13 +773,14 @@ resource "aws_lambda_function" "slack_alert" {
 
   environment {
     variables = {
-      INFRA_WEBHOOK_PARAM = "/javabin/slack/platform-resource-alerts-webhook"
-      COST_WEBHOOK_PARAM  = "/javabin/slack/platform-cost-alerts-webhook"
-      SECURITY_TOPIC_ARN  = var.security_topic_arn
-      PROJECT_PREFIX      = var.project
-      GITHUB_ORG_URL      = local.github_org_url
-      DEPLOY_REGION       = var.region
-      DEDUP_TABLE_NAME    = var.alert_dedup_table_name
+      INFRA_WEBHOOK_PARAM    = "/javabin/slack/platform-resource-alerts-webhook"
+      COST_WEBHOOK_PARAM     = "/javabin/slack/platform-cost-alerts-webhook"
+      SECURITY_WEBHOOK_PARAM = "/javabin/slack/platform-security-alerts-webhook"
+      SECURITY_TOPIC_ARN     = var.security_topic_arn
+      PROJECT_PREFIX         = var.project
+      GITHUB_ORG_URL         = local.github_org_url
+      DEPLOY_REGION          = var.region
+      DEDUP_TABLE_NAME       = var.alert_dedup_table_name
     }
   }
 }
@@ -1349,13 +1350,14 @@ resource "aws_lambda_function" "securityhub_summary" {
 
   environment {
     variables = {
-      INFRA_WEBHOOK_PARAM = "/javabin/slack/platform-resource-alerts-webhook"
-      COST_WEBHOOK_PARAM  = "/javabin/slack/platform-cost-alerts-webhook"
-      SECURITY_TOPIC_ARN  = var.security_topic_arn
-      PROJECT_PREFIX      = var.project
-      GITHUB_ORG_URL      = local.github_org_url
-      DEPLOY_REGION       = var.region
-      DEDUP_TABLE_NAME    = var.alert_dedup_table_name
+      INFRA_WEBHOOK_PARAM    = "/javabin/slack/platform-resource-alerts-webhook"
+      COST_WEBHOOK_PARAM     = "/javabin/slack/platform-cost-alerts-webhook"
+      SECURITY_WEBHOOK_PARAM = "/javabin/slack/platform-security-alerts-webhook"
+      SECURITY_TOPIC_ARN     = var.security_topic_arn
+      PROJECT_PREFIX         = var.project
+      GITHUB_ORG_URL         = local.github_org_url
+      DEPLOY_REGION          = var.region
+      DEDUP_TABLE_NAME       = var.alert_dedup_table_name
     }
   }
 }
