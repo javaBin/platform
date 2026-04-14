@@ -887,7 +887,7 @@ resource "aws_lambda_function" "team_provisioner" {
   role             = aws_iam_role.team_provisioner.arn
   handler          = "handler.handler"
   runtime          = "python3.12"
-  timeout          = 60
+  timeout          = 300
   memory_size      = 256
   filename         = data.archive_file.team_provisioner.output_path
   source_code_hash = data.archive_file.team_provisioner.output_base64sha256
