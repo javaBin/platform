@@ -229,13 +229,15 @@ terraform/state/
 ## Alert Routing
 
 ```
-EventBridge ──► javabin-security SNS ──► slack-alert Lambda ──► #javabin-infra-alerts
-GuardDuty   ──► Security Hub ──► SNS ──► slack-alert Lambda ──► #javabin-infra-alerts
+EventBridge ──► javabin-security SNS ──► slack-alert Lambda:
+  Security Hub findings (NEW only) ──► #platform-security-alerts
+  GuardDuty findings              ──► #platform-security-alerts
+  IAM / resource / login events   ──► #javabin-infra-alerts
 Cost Anomaly ──► javabin-alerts SNS ──► slack-alert Lambda ──► #javabin-cost-alerts
 
 Scheduled:
   Monday 08:00 UTC ──► cost-report ──► #javabin-cost-alerts
-  Monday 08:00 UTC ──► securityhub-summary ──► #javabin-infra-alerts
+  Monday 08:00 UTC ──► securityhub-summary ──► #platform-security-alerts
   Daily 08:00 UTC  ──► daily-cost-check ──► #javabin-cost-alerts (only on spikes)
 
 EventBridge (Create/Run) ──► compliance-reporter (report to Slack, no auto-fix)
@@ -252,6 +254,7 @@ All parameters are in `eu-central-1`. Use `--profile javabin --region eu-central
 | Path | Type | Used By |
 |------|------|---------|
 | `/javabin/slack/platform-resource-alerts-webhook` | SecureString | slack-alert, compliance-reporter, platform-ci |
+| `/javabin/slack/platform-security-alerts-webhook` | SecureString | slack-alert (Security Hub + GuardDuty), securityhub-summary |
 | `/javabin/slack/platform-cost-alerts-webhook` | String | slack-alert (cost), cost-report, daily-cost-check |
 | `/javabin/slack/platform-override-alerts-webhook` | SecureString | tf-apply (block notification), approve-override |
 | `/javabin/platform/google-admin-sa` | SecureString | team-provisioner (GCP SA JSON key, domain-wide delegation) |
