@@ -247,16 +247,6 @@ resource "aws_route53_record" "java_no_lister" {
   records = ["ghs.googlehosted.com."]
 }
 
-# ---------- Atlassian alias ----------
-
-resource "aws_route53_record" "java_no_wiki" {
-  zone_id = aws_route53_zone.java_no.zone_id
-  name    = "wiki.java.no"
-  type    = "CNAME"
-  ttl     = 3600
-  records = ["javabin.atlassian.net"]
-}
-
 # ---------- GitHub Pages subdomains ----------
 
 resource "aws_route53_record" "java_no_github_pages" {
