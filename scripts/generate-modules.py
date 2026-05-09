@@ -253,6 +253,58 @@ def generate(app, account_id, region, platform_ref):
         if queue.get("env"):
             env_map[queue["env"]] = f"module.{mod_name}.queue_url"
 
+    # Auth (Cognito app client) — optional
+    auth_raw = app.get("auth")
+    if auth_raw and auth_raw != "none":
+        # Accept shorthand: auth: internal -> {pool: internal}
+        auth = {"pool": auth_raw} if isinstance(auth_raw, str) else auth_raw
+        pool = auth.get("pool")
+        if pool == "both":
+            raise NotImplementedError(
+                "auth.pool: 'both' is not yet supported — pick 'internal' or 'external'. "
+                "When the first concrete need lands, decide on COGNITO_INTERNAL_*/COGNITO_EXTERNAL_* env-var conventions."
+            )
+        if pool not in ("internal", "external"):
+            raise ValueError(f"auth.pool must be 'internal' or 'external' (got {pool!r})")
+
+        host = routing.get("host")
+        if not host:
+            raise ValueError("auth: requires routing.host (callback URLs default to it)")
+
+        callback_urls = auth.get("callback_urls") or [
+            f"https://{host}/",
+            f"https://{host}/auth/callback",
+        ]
+        logout_urls = auth.get("logout_urls") or [f"https://{host}/"]
+        generate_secret = auth.get("generate_secret", True)
+
+        auth_attrs = {
+            "app_name": name,
+            "team": team,
+            "pool": pool,
+            "callback_urls": callback_urls,
+            "logout_urls": logout_urls,
+            "generate_secret": generate_secret,
+            "project": PROJECT,
+        }
+        if auth.get("scopes"):
+            auth_attrs["allowed_oauth_scopes"] = auth["scopes"]
+        if auth.get("external_pool_custom_domain"):
+            auth_attrs["external_pool_custom_domain"] = auth["external_pool_custom_domain"]
+
+        blocks.append(module_block("auth", src("cognito-app-client"), auth_attrs))
+        policy_map["auth"] = "module.auth.access_policy_json"
+
+        env_map["COGNITO_USER_POOL_ID"] = f"module.auth.{pool}_user_pool_id"
+        env_map["COGNITO_DOMAIN"] = f"module.auth.{pool}_user_pool_domain"
+        env_map["COGNITO_ISSUER_URL"] = f"module.auth.{pool}_issuer_url"
+        secret_map["COGNITO_CLIENT_ID"] = f"module.auth.{pool}_client_id_arn"
+        if generate_secret:
+            secret_map["COGNITO_CLIENT_SECRET"] = f"module.auth.{pool}_client_secret_arn"
+
+        if auth.get("groups"):
+            env_map["COGNITO_GROUPS"] = ",".join(auth["groups"])
+
     # Task role (always)
     blocks.append(module_block("task_role", src("service-role"), {
         "name": name,
