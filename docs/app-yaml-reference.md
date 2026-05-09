@@ -167,16 +167,68 @@ resources:
 
 ### auth
 
-Cognito user pool client registration. Creates app credentials and stores them in SSM at `/{project}/platform-apps/{name}/cognito-{pool}-client-{id,secret}`.
+Registers the app as a Cognito client in the platform's internal or external user pool, stores the credentials in SSM, and injects them into the container as environment variables.
+
+Shorthand:
 
 ```yaml
-auth: internal    # options: internal, external, both, none
+auth: internal    # uses defaults below
 ```
 
-- `internal` — Javabin members (Google Workspace SSO)
-- `external` — public users (self-registration)
-- `both` — creates clients in both pools
+Full form:
+
+```yaml
+auth:
+  pool: internal              # 'internal' or 'external' (see "pool: both" below)
+  callback_urls:              # optional
+    - https://app.javazone.no/auth/callback
+  logout_urls:                # optional
+    - https://app.javazone.no/
+  scopes:                     # optional, default ['openid', 'email', 'profile']
+    - openid
+    - email
+    - profile
+  groups:                     # optional, reference-only — exposed as COGNITO_GROUPS env var
+    - admins
+    - editors
+```
+
+A client secret is always generated — every app on this platform is a
+server-side container.
+
+- `internal` — Javabin members (Google Workspace SSO via SAML)
+- `external` — public users (Google OAuth, self-registration)
 - `none` or omitted — no Cognito integration
+
+`auth:` requires `routing.host` — callback and logout URL defaults are derived from it.
+
+#### Defaults
+
+If `callback_urls` is omitted, defaults to `[https://{routing.host}/, https://{routing.host}/auth/callback]`.
+If `logout_urls` is omitted, defaults to `[https://{routing.host}/]`.
+
+#### Injected environment variables
+
+When `auth:` is set, these env vars are injected into the container automatically:
+
+| Var | Source | Notes |
+|---|---|---|
+| `COGNITO_USER_POOL_ID` | Looked up from the platform pool | Used to construct the issuer URL on the backend |
+| `COGNITO_DOMAIN` | Hosted-UI FQDN of the pool | e.g. `javabin-internal.auth.eu-central-1.amazoncognito.com` (internal); empty for external when no custom domain is configured |
+| `COGNITO_ISSUER_URL` | `https://cognito-idp.{region}.amazonaws.com/{pool_id}` | OIDC issuer for JWT validation |
+| `COGNITO_CLIENT_ID` | SSM SecureString (via ECS task `secrets`) | The OAuth client ID |
+| `COGNITO_CLIENT_SECRET` | SSM SecureString (via ECS task `secrets`) | Always generated — server-side apps only |
+| `COGNITO_GROUPS` | Comma-joined list from `auth.groups` | Optional; for app-level authorization on `cognito:groups` JWT claim |
+
+The credentials live in SSM at `/{project}/platform-apps/{name}/cognito-{pool}-client-{id,secret}`. The shared ECS execution role has read access to that path.
+
+#### Groups are reference-only
+
+`auth.groups` is a list of group names that the app *expects* to see on the `cognito:groups` JWT claim. **No Cognito groups are created or modified from `app.yaml`.** Groups themselves are managed by the team-provisioner Lambda (e.g. `team-{team}` groups synced from the registry). If you need a new group, add it via the registry or Cognito console out-of-band, then list it here so the app can read `COGNITO_GROUPS` for authorization checks.
+
+#### `pool: both` is not yet supported
+
+The generator rejects `auth.pool: both`. Apps that need to accept users from both pools should split into two clients with explicit env-var naming — defer this until a concrete need lands.
 
 ### domain
 

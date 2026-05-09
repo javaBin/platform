@@ -18,17 +18,18 @@ DOMAIN = "javazone.no"
 # ---------------------------------------------------------------------------
 
 MODULE_SOURCES = {
-    "platform-data":    "terraform/modules/platform-data",
-    "ecr-repo":         "terraform/modules/ecr-repo",
-    "service-routing":  "terraform/modules/service-routing",
-    "service-role":     "terraform/modules/service-role",
-    "ecs-service":      "terraform/modules/ecs-service",
-    "service-alarm":    "terraform/modules/service-alarm",
-    "service-bucket":   "terraform/modules/service-bucket",
-    "service-database": "terraform/modules/service-database",
-    "service-rds":      "terraform/modules/service-rds",
-    "service-secret":   "terraform/modules/service-secret",
-    "service-queue":    "terraform/modules/service-queue",
+    "platform-data":      "terraform/modules/platform-data",
+    "ecr-repo":           "terraform/modules/ecr-repo",
+    "service-routing":    "terraform/modules/service-routing",
+    "service-role":       "terraform/modules/service-role",
+    "ecs-service":        "terraform/modules/ecs-service",
+    "service-alarm":      "terraform/modules/service-alarm",
+    "service-bucket":     "terraform/modules/service-bucket",
+    "service-database":   "terraform/modules/service-database",
+    "service-rds":        "terraform/modules/service-rds",
+    "service-secret":     "terraform/modules/service-secret",
+    "service-queue":      "terraform/modules/service-queue",
+    "cognito-app-client": "terraform/modules/cognito-app-client",
 }
 
 # ---------------------------------------------------------------------------

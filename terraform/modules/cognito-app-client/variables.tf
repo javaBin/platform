@@ -3,6 +3,11 @@ variable "app_name" {
   type        = string
 }
 
+variable "team" {
+  description = "Team that owns the app — used as a prefix on the Cognito client name to avoid cross-team collisions"
+  type        = string
+}
+
 variable "pool" {
   description = "Which Cognito pool(s) to register with: 'internal', 'external', or 'both'"
   type        = string
@@ -13,14 +18,20 @@ variable "pool" {
   }
 }
 
-variable "internal_user_pool_id" {
-  description = "Cognito User Pool ID for internal (employee/hero) users"
+variable "internal_pool_name" {
+  description = "Name of the internal Cognito user pool (looked up by name)"
   type        = string
-  default     = ""
+  default     = "javabin-internal"
 }
 
-variable "external_user_pool_id" {
-  description = "Cognito User Pool ID for external (public) users"
+variable "external_pool_name" {
+  description = "Name of the external Cognito user pool (looked up by name)"
+  type        = string
+  default     = "javabin-external"
+}
+
+variable "external_pool_custom_domain" {
+  description = "Custom domain registered on the external pool (e.g. auth-external.javazone.no). Empty if no custom domain is configured — COGNITO_DOMAIN will be empty for external apps."
   type        = string
   default     = ""
 }
