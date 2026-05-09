@@ -1,8 +1,8 @@
 """Compliance reporter — detects untagged resources and reports to Slack.
 
-This Lambda does NOT auto-tag resources.
-Tags are applied at creation via CI/CD. This reporter catches leaks and
-posts to Slack so the team can investigate.
+This Lambda does NOT auto-tag resources. Tags are applied at creation via
+CI/CD. This reporter catches leaks and posts to Slack so the team can
+investigate.
 
 Trigger: EventBridge (Create events via CloudTrail)
 """

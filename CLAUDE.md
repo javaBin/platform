@@ -1,7 +1,6 @@
 # CLAUDE.md — Javabin Platform Infrastructure
 
 Terraform-managed AWS infrastructure for **Javabin** (java.no), the Norwegian Java User Group.
-Adapted from the internal-platform reference implementation (Internal/Internal).
 
 ## Context
 
@@ -14,7 +13,7 @@ sourced from this repo.
 **Region:** eu-central-1 (Frankfurt) — confirmed, all existing infra here
 **Domain:** javazone.no (Route53 hosted zone, 78 records). java.no DNS not in AWS — TBD.
 **GitHub Org:** github.com/javaBin
-**CI/CD:** GitHub Actions 
+**CI/CD:** GitHub Actions
 **Bedrock:** All models available (no per-model access request needed)
 
 ### Existing Infrastructure (do not touch)
@@ -60,28 +59,6 @@ Migration happens later per-app at developer's pace — apps move from old ALB/E
 - **Pattern matching, not lists**: When categorizing AWS services, use keyword matching. Don't hardcode service name lists.
 - **No `.zip` files in git**: Lambda zips are build artifacts from `archive_file`. They're in `.gitignore`.
 - **Terraform-first**: Everything lives in Terraform from the first resource. No "set up manually, migrate later." Only exception: bootstrap script for state bucket.
-
-## Key Differences from Reference (internal-platform)
-
-| Reference (Internal) | Javabin adaptation |
-|---|---|
-| GitLab CI / GitLab OIDC | GitHub Actions / GitHub OIDC |
-| `ci-runner-*` roles | `javabin-ci-*` roles |
-| `gl__{project}__{sha}__{pipeline}` session name | OIDC sub claim is the session name automatically |
-| Single repo/account | Multi-repo golden path via `javaBin/registry` |
-| ci-authorizer Lambda (custom OIDC) | GitHub environment protection + `job_workflow_ref` conditions |
-| `internal/internal/internal/` namespace | `javaBin/` GitHub org |
-| `*.ai.internal.com` | `*.javazone.no` (java.no DNS not in Route53) |
-| eu-central-1 | eu-central-1 (same — existing infra is here) |
-| Bedrock eu.anthropic.claude-haiku-4-5-20251001-v1:0 | Same model, available in eu-central-1 (all models available, no per-model access needed) |
-| ECS cluster: ai-platform | ECS cluster: javabin-platform |
-| Slack channels: ai-platform-* | Slack channels: javabin-infra-*, javabin-cost-* |
-| `.internal/app.yaml` | `app.yaml` (repo root) |
-| No Identity Center | IAM Identity Center + Google Workspace SAML |
-| No Cognito | Internal + External Cognito User Pools |
-| No registry repo | `javaBin/registry` for team registration |
-| SNS topics: ai-platform-* | SNS topics: javabin-* |
-| SSM: /ai-platform/* | SSM: /javabin/* |
 
 ## File Reference
 
