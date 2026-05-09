@@ -188,11 +188,13 @@ auth:
     - openid
     - email
     - profile
-  generate_secret: true       # optional, default true (server-side apps)
   groups:                     # optional, reference-only — exposed as COGNITO_GROUPS env var
     - admins
     - editors
 ```
+
+A client secret is always generated — every app on this platform is a
+server-side container.
 
 - `internal` — Javabin members (Google Workspace SSO via SAML)
 - `external` — public users (Google OAuth, self-registration)
@@ -215,7 +217,7 @@ When `auth:` is set, these env vars are injected into the container automaticall
 | `COGNITO_DOMAIN` | Hosted-UI FQDN of the pool | e.g. `javabin-internal.auth.eu-central-1.amazoncognito.com` (internal); empty for external when no custom domain is configured |
 | `COGNITO_ISSUER_URL` | `https://cognito-idp.{region}.amazonaws.com/{pool_id}` | OIDC issuer for JWT validation |
 | `COGNITO_CLIENT_ID` | SSM SecureString (via ECS task `secrets`) | The OAuth client ID |
-| `COGNITO_CLIENT_SECRET` | SSM SecureString (via ECS task `secrets`) | Only injected when `generate_secret: true` (default) |
+| `COGNITO_CLIENT_SECRET` | SSM SecureString (via ECS task `secrets`) | Always generated — server-side apps only |
 | `COGNITO_GROUPS` | Comma-joined list from `auth.groups` | Optional; for app-level authorization on `cognito:groups` JWT claim |
 
 The credentials live in SSM at `/{project}/platform-apps/{name}/cognito-{pool}-client-{id,secret}`. The shared ECS execution role has read access to that path.

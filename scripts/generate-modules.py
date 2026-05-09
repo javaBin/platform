@@ -276,7 +276,6 @@ def generate(app, account_id, region, platform_ref):
             f"https://{host}/auth/callback",
         ]
         logout_urls = auth.get("logout_urls") or [f"https://{host}/"]
-        generate_secret = auth.get("generate_secret", True)
 
         auth_attrs = {
             "app_name": name,
@@ -284,7 +283,6 @@ def generate(app, account_id, region, platform_ref):
             "pool": pool,
             "callback_urls": callback_urls,
             "logout_urls": logout_urls,
-            "generate_secret": generate_secret,
             "project": PROJECT,
         }
         if auth.get("scopes"):
@@ -299,8 +297,7 @@ def generate(app, account_id, region, platform_ref):
         env_map["COGNITO_DOMAIN"] = f"module.auth.{pool}_user_pool_domain"
         env_map["COGNITO_ISSUER_URL"] = f"module.auth.{pool}_issuer_url"
         secret_map["COGNITO_CLIENT_ID"] = f"module.auth.{pool}_client_id_arn"
-        if generate_secret:
-            secret_map["COGNITO_CLIENT_SECRET"] = f"module.auth.{pool}_client_secret_arn"
+        secret_map["COGNITO_CLIENT_SECRET"] = f"module.auth.{pool}_client_secret_arn"
 
         if auth.get("groups"):
             env_map["COGNITO_GROUPS"] = ",".join(auth["groups"])
