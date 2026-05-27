@@ -80,6 +80,9 @@ def invoke_lambda(payload):
             "--function-name", "javabin-team-provisioner",
             "--payload", f"fileb://{payload_file}",
             "--cli-binary-format", "raw-in-base64-out",
+            # Lambda timeout is 300s; default CLI read timeout (60s) is too low.
+            # Disable client-side read timeout so the CLI waits for the Lambda response.
+            "--cli-read-timeout", "0",
             "/tmp/lambda-response.json",
         ],
         capture_output=True,

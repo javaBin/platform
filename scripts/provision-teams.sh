@@ -45,6 +45,7 @@ aws lambda invoke \
   --function-name javabin-team-provisioner \
   --payload "$PAYLOAD" \
   --cli-binary-format raw-in-base64-out \
+  --cli-read-timeout 0 \
   /tmp/lambda-response.json
 
 cat /tmp/lambda-response.json
