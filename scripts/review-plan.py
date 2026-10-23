@@ -13,11 +13,28 @@ its own boto3-based `converse` to review_plan().
 
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 
 MODEL_ID = "eu.anthropic.claude-haiku-5-5"
 REGION = os.environ.get("AWS_REGION", "eu-central-1")
+
+# Plan characters sent to the model. Haiku 5.5 has a 1M-token context; 400k
+# characters is roughly 100-130k tokens, so a whole plan fits with plenty of
+# room. Plans larger than this get a complete change list plus as much of the
+# diff as fits (see build_plan_section) - never a silent cut.
+MAX_PLAN_CHARS = int(os.environ.get("REVIEW_MAX_PLAN_CHARS", "400000"))
+
+# State refresh / data source read lines: noise for review purposes. Resource
+# addresses start in column 0; diff content is always indented.
+REFRESH_LINE = re.compile(r"^\S.*: (Refreshing state\.\.\.|Reading\.\.\.|Still reading\.\.\.|Read complete after )")
+
+# Resource change headers, e.g. "  # aws_iam_role.x will be updated in-place".
+CHANGE_HEADER = re.compile(
+    r"^\s{0,2}# ([^\s(].*?)(?: \(deposed object \w+\))?(?: is tainted, so)? "
+    r"(will be .+|will no longer be managed by Terraform|must be replaced|has moved to .+)$")
 
 REVIEW_TOOL_CONFIG = {
     "tools": [
@@ -71,30 +88,126 @@ CATEGORY_EMOJI = {"security": "\U0001f512", "cost": "\U0001f4b0", "destruction":
 
 
 def cli_converse(messages, tool_config):
-    """Bedrock Converse via the AWS CLI. Returns the response dict or None."""
-    result = subprocess.run(
-        [
-            "aws", "bedrock-runtime", "converse",
-            "--model-id", MODEL_ID,
-            "--messages", json.dumps(messages),
-            "--tool-config", json.dumps(tool_config),
-            "--region", REGION,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    """Bedrock Converse via the AWS CLI. Returns the response dict or None.
+
+    Arguments go through files: a whole plan is far larger than the kernel's
+    per-argument limit (128 KiB on Linux).
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        msg_path = os.path.join(tmp, "messages.json")
+        tools_path = os.path.join(tmp, "tool-config.json")
+        with open(msg_path, "w") as f:
+            json.dump(messages, f)
+        with open(tools_path, "w") as f:
+            json.dump(tool_config, f)
+        result = subprocess.run(
+            [
+                "aws", "bedrock-runtime", "converse",
+                "--model-id", MODEL_ID,
+                "--messages", f"file://{msg_path}",
+                "--tool-config", f"file://{tools_path}",
+                "--region", REGION,
+                "--cli-read-timeout", "300",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=320,
+        )
     if result.returncode != 0:
         print(f"AWS CLI error: {result.stderr}", file=sys.stderr)
         return None
     return json.loads(result.stdout)
 
 
+def strip_refresh_noise(plan_text):
+    """Drop state refresh / data source read lines; keep everything else."""
+    return "\n".join(line for line in plan_text.splitlines() if not REFRESH_LINE.match(line))
+
+
+def resource_changes(plan_text):
+    """Every resource change header in the plan, as (line_index, address, action)."""
+    changes = []
+    for i, line in enumerate(plan_text.splitlines()):
+        m = CHANGE_HEADER.match(line)
+        if m:
+            changes.append((i, m.group(1), m.group(2)))
+    return changes
+
+
+INSTANCE_KEY = re.compile(r"\[[^\]]*\]")
+
+
+def _grouped_section(clean, changes, totals, limit):
+    """For plans whose change list alone is too large: group changes by
+    address with instance keys removed (aws_x.y[*]: will be created ×25)."""
+    groups = {}
+    for _, addr, action in changes:
+        key = (INSTANCE_KEY.sub("[*]", addr), action)
+        groups[key] = groups.get(key, 0) + 1
+    lines = [f"- {addr}: {action}" + (f" ×{n}" if n > 1 else "") for (addr, action), n in groups.items()]
+    shown, size = [], 0
+    for line in lines:
+        if size + len(line) + 1 > limit - 2_000:
+            break
+        shown.append(line)
+        size += len(line) + 1
+    dropped = len(lines) - len(shown)
+    notice = (f"NOTE: this plan has {len(changes)} resource changes and {len(clean):,} characters, too large "
+              f"to show its diff within the {limit:,}-character review limit. No diff is shown. The list "
+              f"below groups the changes by address (instance keys replaced by [*], counts shown as ×N)"
+              + (f"; {dropped} groups did not fit and are not listed" if dropped else "")
+              + ". Judge the plan from addresses and actions only, and say in your summary that the diff "
+              "was not reviewed.")
+    return (f"{notice}\n\n{totals[0] if totals else ''}\n" + "\n".join(shown))
+
+
+def build_plan_section(plan_text, limit=MAX_PLAN_CHARS):
+    """The plan as the model sees it: the whole noise-free plan when it fits,
+    otherwise a complete change list, the diff cut at a resource boundary,
+    and an exact statement of what was left out."""
+    clean = strip_refresh_noise(plan_text)
+    if len(clean) <= limit:
+        return f"Terraform plan output (complete):\n```\n{clean}\n```"
+
+    lines = clean.splitlines()
+    changes = resource_changes(clean)
+    totals = [line.strip() for line in lines if line.startswith("Plan:")]
+    omitted_mark = " [diff not shown]"
+
+    # Budget for the diff: what's left after the change list (sized as if
+    # every entry carried the omitted marker) and ~1k chars of notice.
+    list_size = sum(len(f"- {addr}: {action}{omitted_mark}\n") for _, addr, action in changes)
+    if list_size > limit // 2:
+        return _grouped_section(clean, changes, totals, limit)
+    budget = max(limit - list_size - 1_000, 0)
+    used, cut = 0, 0
+    for i, line in enumerate(lines):
+        if used + len(line) + 1 > budget:
+            break
+        used += len(line) + 1
+        cut = i + 1
+    # Back off to the last resource header so no resource's diff is shown half-way.
+    boundary = max((i for i, _, _ in changes if i <= cut), default=0)
+    if boundary > 0:
+        cut = boundary
+    omitted = sum(1 for i, _, _ in changes if i >= cut)
+    change_list = "\n".join(f"- {addr}: {action}{omitted_mark if i >= cut else ''}"
+                             for i, addr, action in changes) or "- (no resource change headers found)"
+
+    notice = (f"NOTE: this plan is {len(clean):,} characters (after removing refresh lines), more than the "
+              f"{limit:,}-character review limit. The list below names every one of the {len(changes)} "
+              f"resource changes, but the diff after it covers only the first {len(changes) - omitted} "
+              f"and stops at line {cut} of {len(lines)}. The diff of the {omitted} changes marked "
+              f"'{omitted_mark.strip()}' is not shown, nor any plan output after them (warnings, outputs). "
+              "Judge those from their address and action only, and say in your summary that part of the "
+              "diff was not reviewed.")
+    return (f"{notice}\n\nAll {len(changes)} resource changes"
+            f"{' (' + totals[0] + ')' if totals else ''}:\n{change_list}\n\n"
+            f"Terraform plan output (partial, first {cut} lines):\n```\n" + "\n".join(lines[:cut]) + "\n```")
+
+
 def review_plan(plan_text, converse=cli_converse):
     """Send plan to Bedrock for LLM review, return structured dict (or None)."""
-    if len(plan_text) > 80000:
-        plan_text = plan_text[:80000] + "\n\n... (truncated)"
-
     prompt = f"""You are a Terraform infrastructure reviewer for Javabin (Norwegian Java User Group).
 Analyze this plan and submit your review.
 
@@ -108,10 +221,14 @@ Rate HIGH only for genuinely dangerous changes: destroying databases, opening se
 to the internet, removing permission boundaries, or deleting critical infrastructure.
 Routine changes (Lambda updates, tag changes, scaling) should be LOW.
 
-Terraform plan output:
-```
-{plan_text}
-```"""
+Reading the diff: Terraform shows only changed attributes and hides unchanged
+ones ("# (N unchanged attributes hidden)"). In a changed IAM policy statement an
+unchanged `Effect` is usually not shown, so do not assume an added action is an
+Allow - it may be a Deny. A Sid such as "Deny*" or "Block*" is a strong hint the
+statement denies. Only call out a permission grant when the plan shows
+`Effect = "Allow"` or the statement is new.
+
+{build_plan_section(plan_text)}"""
 
     messages = [{"role": "user", "content": [{"text": prompt}]}]
 
