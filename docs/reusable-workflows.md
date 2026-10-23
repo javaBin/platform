@@ -79,7 +79,7 @@ Docker BuildKit build + ECR push. Uses GitHub Actions cache (zero ECR storage fo
 
 Generates `terraform/` from `app.yaml` if present (via `generate-terraform.sh`), runs plan, uploads to S3 with SHA256. Posts plan to PR.
 
-LLM review is now performed inline within this workflow (no separate `plan-review.yml`). After planning, it downloads the plan text and runs `scripts/review-plan.py` via Bedrock Claude Haiku for risk analysis.
+LLM review is now performed inline within this workflow (no separate `plan-review.yml`). After planning, it downloads the plan text and runs `scripts/review-plan.py` via Bedrock Claude Haiku 5.5 for risk analysis.
 
 **OIDC role:** `javabin-ci-app-{repo}`
 **Outputs:** `has_changes`, `plan_key`, `plan_sha256`, `risk_level`

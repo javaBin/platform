@@ -111,7 +111,7 @@ _CONSOLE_OVERRIDES = {
 # LLM analysis via Bedrock — structured output
 # ---------------------------------------------------------------------------
 DEPLOY_REGION = os.environ.get("DEPLOY_REGION", "eu-central-1")
-LLM_MODEL_ID = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+LLM_MODEL_ID = "eu.anthropic.claude-haiku-5-5"
 
 _SECURITY_TOOL = {
     "tools": [{
