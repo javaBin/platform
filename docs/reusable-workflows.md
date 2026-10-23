@@ -85,7 +85,7 @@ pnpm install + `build` + `test`. `build` and `test` are skipped when `package.js
 
 ### expand-terraform.yml
 
-Runs `scripts/generate-modules.py`: validates `app.yaml` (unknown or unsupported fields fail with a message), writes `terraform/` and commits it back to the branch with `scripts/commit-generated-tf.sh`. The push uses the caller's `GITHUB_TOKEN`, so it never triggers another run. On PRs from forks the push is skipped.
+Runs `scripts/generate-modules.py`: validates `app.yaml` (unknown or unsupported fields fail with a message), writes `terraform/` and commits it back to the branch with `scripts/commit-generated-tf.sh`. The push uses the caller's `GITHUB_TOKEN`, so it never triggers another run. The commit message (`chore(terraform): update generated Terraform from app.yaml`) deliberately has no skip-CI marker: squash merges copy commit messages, and the marker would skip the merged PR's deploy. On PRs from forks the push is skipped.
 
 ### docker-build.yml
 
