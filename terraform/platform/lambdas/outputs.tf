@@ -67,3 +67,8 @@ output "budget_enforcement_topic_arn" {
   description = "ARN of the budget-enforcement SNS topic"
   value       = aws_sns_topic.budget_enforcement.arn
 }
+
+output "plan_review_function_arn" {
+  description = "ARN of the plan review Lambda (invoked by app tf-plan via the broker OIDC role)"
+  value       = aws_lambda_function.plan_review.arn
+}

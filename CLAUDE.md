@@ -96,7 +96,7 @@ terraform/platform/
   iam/             GitHub OIDC, CI roles, permission boundary
   compute/         ECS cluster, ECR base config
   monitoring/      SNS, EventBridge, Config, GuardDuty, Security Hub
-  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, resource-tagger, budget-enforcer, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set, ci-broker, app-auth-sync
+  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, resource-tagger, budget-enforcer, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set, ci-broker, app-auth-sync, plan-review
   identity/        Cognito user pools (internal + external). Identity Center is in terraform/org/
 ```
 
@@ -170,6 +170,7 @@ terraform/state/
 | `resource-tagger` | EventBridge-triggered, auto-tags created-by + commit on new resources |
 | `ci-broker` | Verifies the job's GitHub OIDC token (repo from signed claims), checks repo ∈ app.yaml team, vends short-lived team role credentials |
 | `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` (SSM request → client + credentials) |
+| `plan-review` | LLM review of app Terraform plans with platform credentials; writes `risk.json` (invoked by app tf-plan) |
 
 ### Scripts
 | Script | What |
@@ -183,7 +184,8 @@ terraform/state/
 | `scripts/provision-teams.py` | CI: fetch team YAMLs from registry, invoke team-provisioner Lambda |
 | `scripts/provision-groups.py` | CI: resolve members.yaml + access.yaml, invoke team-provisioner Lambda |
 | `scripts/sync-members.py` | CI: sync approved heroes from Google Sheets into members.yaml |
-| `scripts/review-plan.py` | CI: LLM plan review via Bedrock |
+| `scripts/review-plan.py` | CI: LLM plan review via Bedrock (platform CI; also bundled into the plan-review Lambda) |
+| `scripts/invoke-plan-review.sh` | CI: app tf-plan → plan-review Lambda |
 | `scripts/notify-slack.py` | CI: generic Slack webhook notification |
 | `scripts/invoke-apply-gate.sh` | CI: invoke gate Lambda for apply credentials |
 | `scripts/run-plan.sh` | CI: terraform plan with exit code handling |

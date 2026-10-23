@@ -1727,3 +1727,133 @@ resource "aws_lambda_permission" "app_auth_sync_reconcile" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.app_auth_sync_reconcile.arn
 }
+
+################################################################################
+# Plan Review — LLM risk review of app Terraform plans (javabin-plan-review)
+#
+# App tf-plan jobs run with team CI roles, which the developer boundary keeps
+# away from Bedrock. tf-plan invokes this Lambda (via the broker OIDC role)
+# with its GitHub OIDC token; the Lambda reviews the plan text in the plan
+# bucket and writes risk.json, which team roles cannot write themselves.
+################################################################################
+
+locals {
+  plan_bucket = "${var.project}-ci-plan-artifacts-${var.aws_account_id}"
+}
+
+data "archive_file" "plan_review" {
+  type             = "zip"
+  output_path      = "${path.module}/builds/plan_review.zip"
+  output_file_mode = "0644"
+
+  source {
+    content  = file("${local.lambda_src_path}/plan_review/handler.py")
+    filename = "handler.py"
+  }
+  # Same prompt and schema as platform CI's own review
+  source {
+    content  = file("${path.module}/../../../scripts/review-plan.py")
+    filename = "review_plan.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/__init__.py")
+    filename = "shared/__init__.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/github_oidc.py")
+    filename = "shared/github_oidc.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/slack.py")
+    filename = "shared/slack.py"
+  }
+}
+
+resource "aws_iam_role" "plan_review" {
+  name = "${var.project}-plan-review"
+  # The org boundary denies creating any role without one
+  permissions_boundary = var.org_boundary_arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "plan_review" {
+  name = "${var.project}-plan-review"
+  role = aws_iam_role.plan_review.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ReadPlanText"
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "arn:aws:s3:::${local.plan_bucket}/plans/*/plan-output.txt"
+      },
+      {
+        Sid    = "WriteReview"
+        Effect = "Allow"
+        Action = "s3:PutObject"
+        Resource = [
+          "arn:aws:s3:::${local.plan_bucket}/plans/*/risk.json",
+          "arn:aws:s3:::${local.plan_bucket}/plans/*/review.json",
+        ]
+      },
+      {
+        Sid      = "BedrockInferenceProfile"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:Converse"]
+        Resource = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
+      },
+      {
+        # Cross-region inference profiles route to EU foundation models;
+        # the condition only allows them via our inference profiles.
+        Sid      = "BedrockFoundationModels"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:Converse"]
+        Resource = "arn:aws:bedrock:eu-*::foundation-model/anthropic.*"
+        Condition = {
+          StringLike = {
+            "bedrock:InferenceProfileArn" = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
+          }
+        }
+      },
+      {
+        Sid      = "SlackWebhook"
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/slack/platform-override-alerts-webhook"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "plan_review_logs" {
+  role       = aws_iam_role.plan_review.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_function" "plan_review" {
+  function_name    = "${var.project}-plan-review"
+  role             = aws_iam_role.plan_review.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 300
+  memory_size      = 256
+  filename         = data.archive_file.plan_review.output_path
+  source_code_hash = data.archive_file.plan_review.output_base64sha256
+
+  environment {
+    variables = {
+      PROJECT     = var.project
+      PLAN_BUCKET = local.plan_bucket
+    }
+  }
+}
