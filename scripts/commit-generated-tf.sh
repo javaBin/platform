@@ -28,6 +28,6 @@ if [ "${FORK_PR:-false}" = "true" ]; then
   exit 0
 fi
 
-git commit -m "[skip ci] Update generated Terraform from app.yaml"
+git commit -m "chore(terraform): update generated Terraform from app.yaml [skip ci]"
 git push origin "HEAD:${BRANCH}"
 echo "Committed generated Terraform files."
