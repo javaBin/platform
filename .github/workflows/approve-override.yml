@@ -48,25 +48,26 @@ jobs:
           role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-override-approver
           aws-region: ${{ env.AWS_REGION }}
 
+      # The gate verifies this job's GitHub OIDC token (workflow, repo and
+      # override-approval environment) and records its actor as approver.
+      # Inputs go through env, never into the script text.
       - name: Sign override via gate Lambda
-        run: |
-          aws lambda invoke \
-            --function-name javabin-apply-gate \
-            --payload "$(jq -n \
-              --arg action sign \
-              --arg plan_key "${{ inputs.plan_key }}" \
-              --arg approved_by "${{ github.actor }}" \
-              --arg reason "${{ inputs.reason }}" \
-              '{action: $action, plan_key: $plan_key, approved_by: $approved_by, reason: $reason}')" \
-            --cli-binary-format raw-in-base64-out \
-            /dev/stdout
+        env:
+          PLAN_KEY: ${{ inputs.plan_key }}
+          REASON: ${{ inputs.reason }}
+        run: sh scripts/invoke-override-sign.sh
 
       - name: Notify Slack
         env:
           SSM_WEBHOOK_PARAM: /javabin/slack/platform-override-alerts-webhook
-        run: sh scripts/notify-slack.sh "Risk Override Approved" "*Repo:* ${{ inputs.repo }}\n*Plan:* \`${{ inputs.plan_key }}\`\n*By:* ${{ github.actor }}\n*Reason:* ${{ inputs.reason }}"
+          REPO: ${{ inputs.repo }}
+          PLAN_KEY: ${{ inputs.plan_key }}
+          REASON: ${{ inputs.reason }}
+        run: sh scripts/notify-slack.sh "Risk Override Approved" "*Repo:* ${REPO}\n*Plan:* \`${PLAN_KEY}\`\n*By:* ${GITHUB_ACTOR}\n*Reason:* ${REASON}"
 
       - name: Retrigger failed apply
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run rerun ${{ inputs.run_id }} --repo ${{ inputs.repo }} --failed
+          RUN_ID: ${{ inputs.run_id }}
+          REPO: ${{ inputs.repo }}
+        run: gh run rerun "$RUN_ID" --repo "$REPO" --failed

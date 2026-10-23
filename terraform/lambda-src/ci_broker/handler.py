@@ -16,6 +16,7 @@ import os
 
 import boto3
 from shared.github import resolve_team
+from shared.github_oidc import TokenError, repo_name, verify
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -57,13 +58,20 @@ def _assume_role(role_arn, session_name, duration):
     }
 
 
+OIDC_AUDIENCE = os.environ.get("OIDC_AUDIENCE", f"{PROJECT}-ci-broker")
+
+
 def handler(event, context):
-    repo = event.get("repo", "")
     action = event.get("action", "plan")
     requested_team = event.get("team") or None
 
-    if not repo:
-        return {"error": "repo is required", "approved": False}
+    # The repo comes from a GitHub OIDC token, never from the payload: code
+    # running inside an app job can invoke this Lambda and name any repo.
+    try:
+        repo = repo_name(verify(event.get("id_token"), OIDC_AUDIENCE))
+    except TokenError as e:
+        logger.warning("Rejected broker call: %s", e)
+        return {"error": f"Invalid GitHub OIDC token: {e}", "approved": False}
 
     if action not in ROLE_MAP:
         return {"error": f"Invalid action: {action}. Must be plan or deploy", "approved": False}

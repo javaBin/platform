@@ -26,13 +26,16 @@ echo "Requesting apply credentials from gate Lambda..."
 # Build session name from GitHub context for alert attribution
 GATE_SESSION="${GITHUB_ACTOR:-unknown}-$(echo "${GITHUB_SHA:-00000000}" | cut -c1-8)-${GITHUB_RUN_ID:-0}"
 
+ID_TOKEN=$(sh "$(dirname "$0")/github-oidc-token.sh" "${PROJECT:-javabin}-apply-gate")
+
 PAYLOAD=$(jq -n \
   --arg action "check" \
   --arg plan_key "$PLAN_KEY" \
   --arg repo_name "$REPO_NAME" \
   --arg session_name "$GATE_SESSION" \
   --arg team "$TEAM" \
-  '{action: $action, plan_key: $plan_key, repo_name: $repo_name, session_name: $session_name, team: $team}')
+  --arg id_token "$ID_TOKEN" \
+  '{action: $action, plan_key: $plan_key, repo_name: $repo_name, session_name: $session_name, team: $team, id_token: $id_token}')
 
 RESPONSE=$(aws lambda invoke \
   --function-name "$LAMBDA_NAME" \

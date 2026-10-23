@@ -271,6 +271,7 @@ def generate(app, account_id, region, platform_ref):
     blocks.append(module_block("platform", src("platform-data"), {
         "project": PROJECT,
         "domain": DOMAIN,
+        "team": team,
     }))
 
     # ECR (always)

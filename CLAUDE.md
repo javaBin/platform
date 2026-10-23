@@ -168,7 +168,7 @@ terraform/state/
 | `password-set` | Self-service password-set for new hero accounts (Function URL) |
 | `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget |
 | `resource-tagger` | EventBridge-triggered, auto-tags created-by + commit on new resources |
-| `ci-broker` | Validates repo ∈ app.yaml team, vends short-lived team role credentials |
+| `ci-broker` | Verifies the job's GitHub OIDC token (repo from signed claims), checks repo ∈ app.yaml team, vends short-lived team role credentials |
 | `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` (SSM request → client + credentials) |
 
 ### Scripts
@@ -179,6 +179,7 @@ terraform/state/
 | `scripts/registry.py` | Module sources + boilerplate templates for generate-modules.py |
 | `scripts/resolve-tool-version.sh` | CI: resolve node/java version from the app repo's version files |
 | `scripts/sync-registered-teams.py` | CI: GitHub org teams → `registered-teams.auto.tfvars` (needs App token) |
+| `scripts/github-oidc-token.sh` | CI: mint a GitHub OIDC token for the broker / apply gate |
 | `scripts/provision-teams.py` | CI: fetch team YAMLs from registry, invoke team-provisioner Lambda |
 | `scripts/provision-groups.py` | CI: resolve members.yaml + access.yaml, invoke team-provisioner Lambda |
 | `scripts/sync-members.py` | CI: sync approved heroes from Google Sheets into members.yaml |
@@ -202,6 +203,7 @@ terraform/state/
 | SSM params (platform) | `/javabin/{namespace}/{name}` |
 | SSM params (app) | `/javabin/apps/{team}/{service}/{name}` |
 | ECS cluster | `javabin-platform` |
+| ECS execution roles | `javabin-ecs-exec-{team}` (platform-owned, reads only `/javabin/apps/{team}/*`) |
 | ECR repos | `{team}-{service}` |
 | SNS topics | `javabin-{alerts,security,budget-enforcement}` |
 | Log groups | `/ecs/{team}/{service}` |
@@ -287,7 +289,7 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 ### Known Issues
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
 - **Cognito**: pools deployed; internal pool's `GoogleSAML` IdP was created outside Terraform
-- **CI broker trusts the payload repo name**: code running inside an app job (e.g. a Terraform `external` data source in tf-plan) can mint a new OIDC token for the broker role and name another repo. Fix: verify a GitHub OIDC token in the Lambda instead of a payload field
+- **App databases share one network path**: service-rds allows ingress from the shared ECS tasks SG, so every team's tasks can reach every team's DB port (password still required). Fix: per-app security groups
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
 - **`registered_app_repos` manually managed**: Being replaced with team-scoped IAM roles (repo→team resolved via GitHub API at runtime)
 - **Cost allocation tags pending activation**: `repo`, `created-by`, `commit` tags need activation in Billing console (requires billing data to appear first)
