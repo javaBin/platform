@@ -36,25 +36,43 @@ variable "external_pool_custom_domain" {
   default     = ""
 }
 
-variable "callback_urls" {
-  description = "Allowed OAuth callback URLs (https only)"
-  type        = list(string)
+variable "client_type" {
+  description = "confidential (server-side, with secret), public (browser/PKCE, no secret) or none (validate tokens only, no client)"
+  type        = string
+  default     = "confidential"
 
   validation {
-    condition     = length(var.callback_urls) > 0 && alltrue([for u in var.callback_urls : startswith(u, "https://")])
-    error_message = "callback_urls must be a non-empty list of https:// URLs."
+    condition     = contains(["confidential", "public", "none"], var.client_type)
+    error_message = "client_type must be confidential, public or none."
   }
 }
 
-variable "logout_urls" {
-  description = "Allowed logout URLs (https only)"
+variable "callback_urls" {
+  description = "Allowed OAuth callback URLs (https, or http://localhost for local development)"
   type        = list(string)
   default     = []
 
   validation {
-    condition     = alltrue([for u in var.logout_urls : startswith(u, "https://")])
-    error_message = "logout_urls must be https:// URLs."
+    condition     = alltrue([for u in var.callback_urls : can(regex("^(https://|http://(localhost|127\\.0\\.0\\.1)(:[0-9]+)?(/|$))", u))])
+    error_message = "callback_urls must be https:// URLs or http://localhost URLs."
   }
+}
+
+variable "logout_urls" {
+  description = "Allowed logout URLs (https, or http://localhost for local development)"
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for u in var.logout_urls : can(regex("^(https://|http://(localhost|127\\.0\\.0\\.1)(:[0-9]+)?(/|$))", u))])
+    error_message = "logout_urls must be https:// URLs or http://localhost URLs."
+  }
+}
+
+variable "allowed_groups" {
+  description = "Only users in at least one of these groups can sign in to this client (empty = any pool user)"
+  type        = list(string)
+  default     = []
 }
 
 variable "allowed_oauth_scopes" {

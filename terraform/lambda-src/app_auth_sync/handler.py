@@ -11,7 +11,12 @@ requested pool, removes it from the other pool, and writes the credentials to
   /{project}/apps/{team}/{app}/cognito-client-id       (String)
   /{project}/apps/{team}/{app}/cognito-client-secret   (SecureString)
 
-where the app's ECS task picks them up via the shared execution role.
+where the app's ECS task picks them up via its team's execution role.
+Public clients (browser apps using PKCE) get no secret and no secret parameter.
+
+The request's allowed groups are written to the auth memberships table as
+{pk: "client#<client_id>", allowed_groups: [...]}; the auth-claims trigger
+refuses tokens for users in none of them.
 
 Triggers:
   - EventBridge "Parameter Store Change" for */auth under /{project}/apps/
@@ -35,7 +40,11 @@ POOL_NAMES = {
     "internal": os.environ.get("INTERNAL_POOL_NAME", f"{PROJECT}-internal"),
     "external": os.environ.get("EXTERNAL_POOL_NAME", f"{PROJECT}-external"),
 }
+MEMBERSHIPS_TABLE = os.environ.get("MEMBERSHIPS_TABLE", "")
 DEFAULT_SCOPES = ["openid", "email", "profile"]
+CLIENT_TYPES = ("confidential", "public")
+# Cognito allows plain http only for localhost, for local development
+LOCAL_URL = re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?(/.*)?$")
 ALLOWED_SCOPES = {"openid", "email", "profile", "phone", "aws.cognito.signin.user.admin"}
 
 APPS_PREFIX = f"/{PROJECT}/apps/"
@@ -43,6 +52,7 @@ REQUEST_RE = re.compile(rf"^/{re.escape(PROJECT)}/apps/(?P<team>[a-z]{{1,12}})/(
 
 ssm = boto3.client("ssm")
 cognito = boto3.client("cognito-idp")
+dynamodb = boto3.client("dynamodb")
 
 
 class InvalidRequest(ValueError):
@@ -74,8 +84,10 @@ def parse_request(raw):
 
     def urls(key, required):
         value = req.get(key) or []
-        if not isinstance(value, list) or not all(isinstance(u, str) and u.startswith("https://") for u in value):
-            raise InvalidRequest(f"{key} must be a list of https:// URLs")
+        if not isinstance(value, list) or not all(
+            isinstance(u, str) and (u.startswith("https://") or LOCAL_URL.match(u)) for u in value
+        ):
+            raise InvalidRequest(f"{key} must be a list of https:// (or http://localhost) URLs")
         if required and not value:
             raise InvalidRequest(f"{key} must not be empty")
         return value
@@ -84,11 +96,21 @@ def parse_request(raw):
     if not isinstance(scopes, list) or not set(scopes) <= ALLOWED_SCOPES:
         raise InvalidRequest(f"scopes must be a subset of {sorted(ALLOWED_SCOPES)}")
 
+    client_type = req.get("client_type") or "confidential"
+    if client_type not in CLIENT_TYPES:
+        raise InvalidRequest(f"client_type must be one of {list(CLIENT_TYPES)}, got {client_type!r}")
+
+    groups = req.get("allowed_groups") or []
+    if not isinstance(groups, list) or not all(isinstance(g, str) and g for g in groups):
+        raise InvalidRequest("allowed_groups must be a list of group names")
+
     return {
         "pool": pool,
+        "client_type": client_type,
         "callback_urls": urls("callback_urls", required=True),
         "logout_urls": urls("logout_urls", required=False),
         "scopes": scopes,
+        "allowed_groups": sorted(set(groups)),
     }
 
 
@@ -181,23 +203,56 @@ def sync(team, app, req):
             stale = find_client(other_id, client_name)
             if stale:
                 cognito.delete_user_pool_client(UserPoolId=other_id, ClientId=stale)
+                _delete_client_groups(stale)
                 logger.info("Removed %s from %s pool", client_name, other)
 
     upid = pool_id(req["pool"])
     settings = client_settings(upid, client_name, req)
+    want_secret = req["client_type"] == "confidential"
     client_id = find_client(upid, client_name)
+    if client_id:
+        has_secret = bool(cognito.describe_user_pool_client(UserPoolId=upid, ClientId=client_id)
+                          ["UserPoolClient"].get("ClientSecret"))
+        if has_secret != want_secret:
+            # A client's secret setting is immutable; switching type means a new client
+            cognito.delete_user_pool_client(UserPoolId=upid, ClientId=client_id)
+            _delete_client_groups(client_id)
+            logger.info("Replacing %s: client_type changed to %s", client_name, req["client_type"])
+            client_id = None
     if client_id:
         cognito.update_user_pool_client(ClientId=client_id, **settings)
         logger.info("Updated client %s (%s) in %s pool", client_name, client_id, req["pool"])
     else:
-        client_id = cognito.create_user_pool_client(GenerateSecret=True, **settings)["UserPoolClient"]["ClientId"]
-        logger.info("Created client %s (%s) in %s pool", client_name, client_id, req["pool"])
+        client_id = cognito.create_user_pool_client(GenerateSecret=want_secret, **settings)["UserPoolClient"]["ClientId"]
+        logger.info("Created %s client %s (%s) in %s pool", req["client_type"], client_name, client_id, req["pool"])
 
-    secret = cognito.describe_user_pool_client(UserPoolId=upid, ClientId=client_id)["UserPoolClient"]["ClientSecret"]
     id_param, secret_param = _cred_names(team, app)
     _put_param(id_param, client_id, False, team, app)
-    _put_param(secret_param, secret, True, team, app)
+    if want_secret:
+        secret = cognito.describe_user_pool_client(UserPoolId=upid, ClientId=client_id)["UserPoolClient"]["ClientSecret"]
+        _put_param(secret_param, secret, True, team, app)
+    else:
+        ssm.delete_parameters(Names=[secret_param])
+    _put_client_groups(client_id, req["allowed_groups"], team, app)
     return client_id
+
+
+def _put_client_groups(client_id, groups, team, app):
+    if not MEMBERSHIPS_TABLE:
+        return
+    dynamodb.put_item(
+        TableName=MEMBERSHIPS_TABLE,
+        Item={
+            "pk": {"S": f"client#{client_id}"},
+            "allowed_groups": {"L": [{"S": g} for g in groups]},
+            "app": {"S": f"{team}-{app}"},
+        },
+    )
+
+
+def _delete_client_groups(client_id):
+    if MEMBERSHIPS_TABLE:
+        dynamodb.delete_item(TableName=MEMBERSHIPS_TABLE, Key={"pk": {"S": f"client#{client_id}"}})
 
 
 def remove(team, app):
@@ -208,6 +263,7 @@ def remove(team, app):
         client_id = find_client(upid, client_name)
         if client_id:
             cognito.delete_user_pool_client(UserPoolId=upid, ClientId=client_id)
+            _delete_client_groups(client_id)
             logger.info("Deleted client %s from %s pool", client_name, pool)
     ssm.delete_parameters(Names=list(_cred_names(team, app)))
 

@@ -13,6 +13,11 @@ output "issuer_url" {
   value       = "https://cognito-idp.${local.region}.amazonaws.com/${local.pool_id}"
 }
 
+output "well_known_url" {
+  description = "OIDC discovery document URL"
+  value       = "https://cognito-idp.${local.region}.amazonaws.com/${local.pool_id}/.well-known/openid-configuration"
+}
+
 output "client_id_arn" {
   description = "ARN of the SSM parameter the platform writes the client ID to"
   value       = "${local.param_arn}/cognito-client-id"
@@ -24,6 +29,6 @@ output "client_secret_arn" {
 }
 
 output "request_parameter_name" {
-  description = "SSM parameter holding the client request"
-  value       = aws_ssm_parameter.auth_request.name
+  description = "SSM parameter holding the client request (empty for client_type = none)"
+  value       = one(aws_ssm_parameter.auth_request[*].name)
 }

@@ -110,11 +110,20 @@ Idempotent: skips resources that already have a `created-by` tag (preserves orig
 **Trigger:** EventBridge "Parameter Store Change" for `/javabin/apps/*/*/auth` (Create/Update/Delete), plus a daily `{"action": "reconcile"}` at 03:30 UTC
 **Purpose:** Creates, updates and deletes the Cognito app clients requested by `app.yaml` `auth:`. The request parameter's path identifies the team (only that team can write there), so no caller-supplied identity is trusted.
 
-**Flow:** Re-read the request → validate (pool, https URLs, scopes) → upsert client `{team}-{app}` in the requested pool with every pool IdP + `COGNITO` → remove it from the other pool → write `/javabin/apps/{team}/{app}/cognito-client-id` (String) and `cognito-client-secret` (SecureString), tagged `team={team}`. A missing request deletes the client and both parameters. Reconcile also removes clients whose credential parameter exists but whose request is gone; clients created by other means are never touched.
+**Flow:** Re-read the request → validate (pool, client_type, https/localhost URLs, scopes, allowed_groups) → upsert client `{team}-{app}` in the requested pool with every pool IdP + `COGNITO` (a client_type change replaces the client, since the secret setting is immutable) → remove it from the other pool → write `/javabin/apps/{team}/{app}/cognito-client-id` (String) and, for confidential clients, `cognito-client-secret` (SecureString), tagged `team={team}` → record `allowed_groups` in `javabin-auth-memberships`. A missing request deletes the client and both parameters. Reconcile also removes clients whose credential parameter exists but whose request is gone; clients created by other means are never touched.
 
 **Concurrency:** reserved concurrency 1, so two changes to one app cannot race into duplicate clients.
 
 **Manual run:** `aws lambda invoke --function-name javabin-app-auth-sync --payload '{"action":"reconcile"}' --cli-binary-format raw-in-base64-out /dev/stdout`
+
+## auth-claims
+
+**Trigger:** Cognito pre-token-generation (V2) on the internal pool (`javabin-internal`), every sign-in and token refresh
+**Purpose:** Puts the user's registry groups into `cognito:groups` (ID and access token), and refuses sign-in when the app client has `allowed_groups` and the user is in none of them.
+
+**Data:** `javabin-auth-memberships` (DynamoDB). `group#<name>` items (members' emails) are written by team-provisioner on registry merges; `client#<client_id>` items (`allowed_groups`) by app-auth-sync. Memberships are cached for 60 s per container.
+
+**Lives in:** `terraform/platform/identity/` (the pool references it, so it can't sit in `lambdas/` without a module cycle).
 
 ## Shared Module: pricing
 
