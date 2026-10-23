@@ -39,3 +39,8 @@ variable "ci_broker_function_arn" {
   description = "ARN of the CI broker Lambda function (for OIDC broker role invoke permission)"
   type        = string
 }
+
+variable "plan_review_function_arn" {
+  description = "ARN of the plan review Lambda (broker role may invoke it)"
+  type        = string
+}

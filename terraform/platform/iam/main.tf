@@ -306,12 +306,14 @@ resource "aws_iam_role_policy" "ci_app_broker" {
   name = "invoke-ci-broker-only"
   role = aws_iam_role.ci_app_broker.id
 
+  # The broker vends team credentials; plan-review reviews app plans with
+  # platform credentials (team roles have no Bedrock access).
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
       Action   = "lambda:InvokeFunction"
-      Resource = var.ci_broker_function_arn
+      Resource = [var.ci_broker_function_arn, var.plan_review_function_arn]
     }]
   })
 }
@@ -377,6 +379,18 @@ resource "aws_iam_role_policy" "ci_team_allow" {
         Effect   = "Allow"
         Action   = "*"
         Resource = "*"
+      },
+      {
+        # Review verdicts and overrides come only from the plan-review and
+        # apply-gate Lambdas; a plan job must not mark its own plan LOW.
+        Sid    = "DenyWriteReviewVerdicts"
+        Effect = "Deny"
+        Action = ["s3:PutObject", "s3:DeleteObject"]
+        Resource = [
+          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*/risk.json",
+          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*/review.json",
+          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*/override.json",
+        ]
       },
       {
         # Terraform state: S3 scoped to team's key prefix.

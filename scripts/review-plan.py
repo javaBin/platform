@@ -6,6 +6,9 @@ Usage:
 
 Uses AWS CLI for Bedrock Converse (no boto3 version dependency).
 Writes structured JSON to REVIEW_RESULT_PATH (default: review-result.json).
+
+Also bundled into the javabin-plan-review Lambda (app plans), which passes
+its own boto3-based `converse` to review_plan().
 """
 
 import json
@@ -67,8 +70,28 @@ RISK_EMOJI = {"LOW": "\U0001f7e2", "MEDIUM": "\U0001f7e1", "HIGH": "\U0001f534"}
 CATEGORY_EMOJI = {"security": "\U0001f512", "cost": "\U0001f4b0", "destruction": "\U0001f4a5", "routine": "\u2705"}
 
 
-def review_plan(plan_text):
-    """Send plan to Bedrock via AWS CLI for LLM review, return structured dict."""
+def cli_converse(messages, tool_config):
+    """Bedrock Converse via the AWS CLI. Returns the response dict or None."""
+    result = subprocess.run(
+        [
+            "aws", "bedrock-runtime", "converse",
+            "--model-id", MODEL_ID,
+            "--messages", json.dumps(messages),
+            "--tool-config", json.dumps(tool_config),
+            "--region", REGION,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        print(f"AWS CLI error: {result.stderr}", file=sys.stderr)
+        return None
+    return json.loads(result.stdout)
+
+
+def review_plan(plan_text, converse=cli_converse):
+    """Send plan to Bedrock for LLM review, return structured dict (or None)."""
     if len(plan_text) > 80000:
         plan_text = plan_text[:80000] + "\n\n... (truncated)"
 
@@ -92,24 +115,9 @@ Terraform plan output:
 
     messages = [{"role": "user", "content": [{"text": prompt}]}]
 
-    result = subprocess.run(
-        [
-            "aws", "bedrock-runtime", "converse",
-            "--model-id", MODEL_ID,
-            "--messages", json.dumps(messages),
-            "--tool-config", json.dumps(REVIEW_TOOL_CONFIG),
-            "--region", REGION,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-
-    if result.returncode != 0:
-        print(f"AWS CLI error: {result.stderr}", file=sys.stderr)
+    response = converse(messages, REVIEW_TOOL_CONFIG)
+    if not response:
         return None
-
-    response = json.loads(result.stdout)
 
     for content in response.get("output", {}).get("message", {}).get("content", []):
         if "toolUse" in content and content["toolUse"]["name"] == "submit_review":
