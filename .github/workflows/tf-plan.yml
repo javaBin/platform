@@ -55,7 +55,8 @@ jobs:
       PLAN_BUCKET: javabin-ci-plan-artifacts-${{ inputs.aws_account_id }}
     steps:
       - name: Set session name
-        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | head -c 64)" >> "$GITHUB_ENV"
+        # Bot actors (renovate[bot]) contain characters STS rejects in session names
+        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | tr -c 'A-Za-z0-9+=,.@_\n-' '-' | head -c 64)" >> "$GITHUB_ENV"
 
       # Branch head, not github.sha: expand may have just committed generated
       # Terraform on top of the triggering commit.
