@@ -2,13 +2,20 @@
 
 Every app repo has an `app.yaml` at the repo root. It declares what infrastructure the app needs. The platform CI pipeline reads it, generates Terraform, and applies it automatically.
 
+`app.yaml` is validated strictly: an unknown field, a typo, or a field listed under [Not supported](#not-supported) fails the `expand` step with a message naming the field. Nothing is silently ignored.
+
 ## Quick Start
 
 Minimal `app.yaml` for a web service:
 ```yaml
 name: moresleep
 team: core
+routing:
+  host: moresleep.javazone.no
+  priority: 120
 ```
+
+Without `routing:` the service runs with no load balancer (a worker).
 
 Full example:
 ```yaml
@@ -38,8 +45,6 @@ resources:
     - name: notifications
       env: NOTIFICATIONS_QUEUE_URL
 auth: internal
-domain: cake-redux.javazone.no
-budget_alert_nok: 500
 environment:
   LOG_LEVEL: info
   JAVA_OPTS: -Xmx768m
@@ -53,7 +58,7 @@ alarms:
 
 ### name (required)
 
-Service name. Lowercase letters, digits, and hyphens. Max 20 characters.
+Service name. Starts with a letter; lowercase letters, digits, and hyphens. Max 20 characters. Defaults to the repo name.
 
 ```yaml
 name: moresleep
@@ -83,8 +88,13 @@ compute:
   memory: 1024        # default: 1024 (1 GB)
   port: 8080          # default: 8000
   desired_count: 1    # default: 1
-  health_check: /health  # default: /health
+  health_check: /health  # default: /health — ALB target group health check path
+  health_check_matcher: "200"      # default: "200"
+  user: "1000"                     # default: "1000" — container user (non-root)
+  readonly_root_filesystem: true   # default: true — only /tmp is writable
 ```
+
+Images that write outside `/tmp` (caches, uploads to local disk) need `readonly_root_filesystem: false`, or their tasks crash on start; the deployment circuit breaker then rolls the deploy back.
 
 Valid CPU/memory combinations follow [Fargate task size constraints](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html).
 
@@ -96,6 +106,7 @@ ALB routing configuration.
 routing:
   host: moresleep.javazone.no  # required if routing is specified
   priority: 100                # required, unique 1-50000
+  deregistration_delay: 30     # default: 30 (seconds)
 ```
 
 - `host` creates a Route53 A record pointing to the platform ALB and an ALB listener rule matching the Host header.
@@ -112,7 +123,7 @@ S3 buckets with versioning and encryption.
 ```yaml
 resources:
   buckets:
-    - name: data          # bucket: javabin-{name}-{account_id}
+    - name: data          # bucket: {team}-{name}-{account_id}
       env: DATA_BUCKET    # env var injected into container
 ```
 
@@ -167,7 +178,7 @@ resources:
 
 ### auth
 
-Registers the app as a Cognito client in the platform's internal or external user pool, stores the credentials in SSM, and injects them into the container as environment variables.
+Registers the app as an OAuth client in the platform's internal or external Cognito user pool and injects the client credentials into the container.
 
 Shorthand:
 
@@ -179,10 +190,10 @@ Full form:
 
 ```yaml
 auth:
-  pool: internal              # 'internal' or 'external' (see "pool: both" below)
-  callback_urls:              # optional
+  pool: internal              # 'internal' (default) or 'external'
+  callback_urls:              # optional, https only
     - https://app.javazone.no/auth/callback
-  logout_urls:                # optional
+  logout_urls:                # optional, https only
     - https://app.javazone.no/
   scopes:                     # optional, default ['openid', 'email', 'profile']
     - openid
@@ -193,12 +204,11 @@ auth:
     - editors
 ```
 
-A client secret is always generated — every app on this platform is a
-server-side container.
+Both forms are supported and produce the same wiring.
 
-- `internal` — Javabin members (Google Workspace SSO via SAML)
-- `external` — public users (Google OAuth, self-registration)
-- `none` or omitted — no Cognito integration
+- `internal` — Javabin heroes. Sign-in offers every identity provider on the pool (Google Workspace SAML) plus Cognito users.
+- `external` — public users.
+- `none` or omitted — no Cognito integration.
 
 `auth:` requires `routing.host` — callback and logout URL defaults are derived from it.
 
@@ -207,46 +217,44 @@ server-side container.
 If `callback_urls` is omitted, defaults to `[https://{routing.host}/, https://{routing.host}/auth/callback]`.
 If `logout_urls` is omitted, defaults to `[https://{routing.host}/]`.
 
-#### Injected environment variables
+#### How the client is created
 
-When `auth:` is set, these env vars are injected into the container automatically:
+App CI cannot create Cognito clients: the pools belong to the platform, and a grant on a pool would let any team rewrite every other team's client. So the app only *requests* one:
+
+1. The generated Terraform writes the client config to SSM `/javabin/apps/{team}/{name}/auth`. The permission boundary lets a team write only under its own prefix, so the path proves ownership.
+2. The platform Lambda `javabin-app-auth-sync` reacts to the change (EventBridge), creates or updates the client `{team}-{name}` in the requested pool, and writes `/javabin/apps/{team}/{name}/cognito-client-id` and `cognito-client-secret`.
+3. Deleting `auth:` deletes the request parameter, and the Lambda deletes the client and its credentials. A daily reconcile repairs anything an event missed.
+
+On the very first deploy with `auth:`, the first task can start a few seconds before the credentials exist; ECS retries it.
+
+#### Injected environment variables
 
 | Var | Source | Notes |
 |---|---|---|
-| `COGNITO_USER_POOL_ID` | Looked up from the platform pool | Used to construct the issuer URL on the backend |
-| `COGNITO_DOMAIN` | Hosted-UI FQDN of the pool | e.g. `javabin-internal.auth.eu-central-1.amazoncognito.com` (internal); empty for external when no custom domain is configured |
-| `COGNITO_ISSUER_URL` | `https://cognito-idp.{region}.amazonaws.com/{pool_id}` | OIDC issuer for JWT validation |
-| `COGNITO_CLIENT_ID` | SSM SecureString (via ECS task `secrets`) | The OAuth client ID |
-| `COGNITO_CLIENT_SECRET` | SSM SecureString (via ECS task `secrets`) | Always generated — server-side apps only |
-| `COGNITO_GROUPS` | Comma-joined list from `auth.groups` | Optional; for app-level authorization on `cognito:groups` JWT claim |
-
-The credentials live in SSM at `/{project}/platform-apps/{name}/cognito-{pool}-client-{id,secret}`. The shared ECS execution role has read access to that path.
+| `COGNITO_USER_POOL_ID` | Pool looked up by name | Used to construct the issuer URL on the backend |
+| `COGNITO_DOMAIN` | Hosted-UI FQDN of the pool | e.g. `javabin-internal.auth.eu-central-1.amazoncognito.com`; empty for external when no custom domain is configured |
+| `COGNITO_ISSUER_URL` | `https://cognito-idp.{region}.amazonaws.com/{pool_id}` | OIDC issuer for JWT validation (`{issuer}/.well-known/openid-configuration`) |
+| `COGNITO_CLIENT_ID` | SSM (ECS task `secrets`) | The OAuth client ID |
+| `COGNITO_CLIENT_SECRET` | SSM SecureString (ECS task `secrets`) | Always generated — server-side apps only |
+| `COGNITO_GROUPS` | Comma-joined list from `auth.groups` | Optional; for app-level authorization on the `cognito:groups` JWT claim |
 
 #### Groups are reference-only
 
-`auth.groups` is a list of group names that the app *expects* to see on the `cognito:groups` JWT claim. **No Cognito groups are created or modified from `app.yaml`.** Groups themselves are managed by the team-provisioner Lambda (e.g. `team-{team}` groups synced from the registry). If you need a new group, add it via the registry or Cognito console out-of-band, then list it here so the app can read `COGNITO_GROUPS` for authorization checks.
+`auth.groups` is a list of group names that the app *expects* to see on the `cognito:groups` JWT claim. **No Cognito groups are created or modified from `app.yaml`.** Groups are managed by the team-provisioner Lambda (e.g. `team-{team}` groups synced from the registry).
 
-#### `pool: both` is not yet supported
+#### `pool: both` is not supported
 
-The generator rejects `auth.pool: both`. Apps that need to accept users from both pools should split into two clients with explicit env-var naming — defer this until a concrete need lands.
+Apps that need users from both pools should run two services for now.
 
 ### domain
 
-Convenience alias for `routing.host`. If both are set, `routing.host` takes precedence.
+Convenience alias for `routing.host`. If both are set, `routing.host` takes precedence. `routing.priority` is still required.
 
 ```yaml
 domain: cake-redux.javazone.no
+routing:
+  priority: 110
 ```
-
-### budget_alert_nok
-
-Monthly budget alert threshold in Norwegian Kroner. Default: 1000.
-
-```yaml
-budget_alert_nok: 500
-```
-
-Creates a Cost Anomaly Detection monitor and budget alert. Notifications go to the team's Slack channel.
 
 ### environment
 
@@ -258,7 +266,7 @@ environment:
   JAVA_OPTS: -Xmx768m
 ```
 
-Resource env vars (`env` fields on buckets/databases/queues) are auto-wired separately. This section is for custom application config.
+Resource env vars (`env` fields on buckets/databases/queues) are auto-wired separately. This section is for custom application config. Numbers and booleans are passed as strings (`"4"`, `"true"`).
 
 ### alarms
 
@@ -269,149 +277,29 @@ alarms:
   enabled: true        # default: true
   cpu_threshold: 80    # default: 80 (percent)
   memory_threshold: 80 # default: 80 (percent)
+  error_5xx_threshold: 10 # default: 10
 ```
 
-### environments
+Alarms are created only for services with `routing:`.
 
-Multi-environment configuration. If omitted, a single production environment is created (backwards compatible). When present, each key defines a separate environment with its own ECS service, ALB target group, DNS record, IAM role, and Terraform state.
+## Not supported
 
-```yaml
-environments:
-  prod:
-    routing:
-      host: submit.javazone.no
-      priority: 100
-  dev:
-    routing:
-      host: dev.submit.javazone.no
-      priority: 101
-    auto_deploy: true
-```
+These fields were documented earlier but are not implemented. Using them fails `expand` with an explanation.
 
-Each environment inherits all top-level defaults and can override: `compute`, `routing`, `domain`, `resources`, `environment`, `budget_alert_nok`, `alarms`.
-
-#### Environment defaults
-
-The `dev` environment gets smaller defaults automatically:
-
-| Field | dev default | other envs default |
-|-------|-------------|-------------------|
-| `compute.cpu` | 256 | 512 |
-| `compute.memory` | 512 | 1024 |
-
-All other fields (port, desired_count, health_check, etc.) use the same defaults regardless of environment.
-
-#### Full example
-
-```yaml
-name: submittheforce
-team: pkom
-compute:
-  cpu: 512
-  memory: 1024
-  port: 8080
-resources:
-  databases:
-    - name: submissions
-      hash_key: id
-      env: SUBMISSIONS_TABLE
-environment:
-  LOG_LEVEL: info
-environments:
-  prod:
-    routing:
-      host: submit.javazone.no
-      priority: 100
-    compute:
-      desired_count: 2
-    environment:
-      LOG_LEVEL: warn
-  dev:
-    routing:
-      host: dev.submit.javazone.no
-      priority: 101
-    auto_deploy: true
-```
-
-This creates two environments:
-
-| | prod | dev |
-|---|---|---|
-| CPU / Memory | 512 / 1024 (from top-level) | 256 / 512 (dev defaults) |
-| Desired count | 2 (override) | 1 (default) |
-| Domain | submit.javazone.no | dev.submit.javazone.no |
-| DynamoDB table | `javabin-submittheforce-prod-submissions` | `javabin-submittheforce-dev-submissions` |
-| ECS service | `submittheforce-prod` | `submittheforce-dev` |
-| LOG_LEVEL | warn (override) | info (from top-level) |
-| State key | `apps/submittheforce-prod/terraform.tfstate` | `apps/submittheforce-dev/terraform.tfstate` |
-
-#### Override behavior
-
-- **compute, routing, alarms**: Per-field override. Unspecified fields fall back to top-level, then to defaults.
-- **resources**: Per-type replacement. Each resource type (buckets, databases, secrets, queues) is independently replaced — if the environment defines `resources.databases`, it gets only those databases (not merged with top-level). Resource types not defined in the environment inherit from top-level.
-- **environment** (env vars): Merged. Top-level env vars are applied first, then environment-specific ones override on conflict.
-
-#### auto_deploy
-
-```yaml
-environments:
-  dev:
-    auto_deploy: true
-```
-
-When `true`, merges to main automatically deploy to this environment without manual approval. Default: `false`. This is read by CI workflows, not by Terraform.
-
-#### ECR repository
-
-All environments share a single ECR repository named after the base app name. The same container image is deployed to all environments. The prod environment (or the first environment if no prod exists) creates the ECR repository; other environments reference it via data source.
-
-**Important:** When first setting up multi-env, apply the environment that creates ECR (prod) before other environments.
-
-#### Naming
-
-Environment name must be lowercase alphanumeric, max 4 characters (e.g. `dev`, `prod`, `test`, `stag`). Multi-env apps should keep their name under ~19 characters to allow room for the environment suffix in ALB target group names (32-char AWS limit). Resources are named with an environment suffix:
-
-| Resource | Single-env | Multi-env (dev) |
-|----------|-----------|-----------------|
-| ECS service | `moresleep` | `moresleep-dev` |
-| IAM task role | `javabin-moresleep` | `javabin-moresleep-dev` |
-| ALB target group | `javabin-moresleep` | `javabin-moresleep-dev` |
-| DynamoDB table | `javabin-moresleep-sessions` | `javabin-moresleep-dev-sessions` |
-| S3 bucket | `moresleep-data-{account}` | `moresleep-dev-data-{account}` |
-| Log group | `/ecs/javabin/moresleep` | `/ecs/javabin/moresleep-dev` |
-| ECR repo | `moresleep` | `moresleep` (shared) |
-
-#### Generated directory structure
-
-Single-env:
-```
-terraform/
-  backend.tf
-  providers.tf
-  main.tf
-```
-
-Multi-env:
-```
-terraform/
-  prod/
-    backend.tf    # state key: apps/{name}-prod/terraform.tfstate
-    providers.tf
-    main.tf       # environment_name = "prod", create_ecr = true
-  dev/
-    backend.tf    # state key: apps/{name}-dev/terraform.tfstate
-    providers.tf
-    main.tf       # environment_name = "dev", create_ecr = false
-```
+| Field | Instead |
+|---|---|
+| `environments` | One environment per app.yaml. For a dev environment, deploy a second app (e.g. `name: myapp-dev`) from its own repo. |
+| `budget_alert_nok` | Budgets are per team: set `budget_nok` in `javaBin/registry` `teams/<team>.yaml`. |
+| `auth.pool: both` | Two services, one per pool. |
 
 ## How It Works
 
 1. Developer creates/updates `app.yaml`
-2. CI runs `scripts/generate-terraform.sh` which produces `terraform/backend.tf`, `providers.tf`, `main.tf`
-3. Generated files call the `app-stack` module which reads `app.yaml` and creates all resources
-4. CI runs `terraform plan` → LLM review → `terraform apply`
+2. The `expand` job runs `scripts/generate-modules.py`, which validates `app.yaml` and writes `terraform/backend.tf`, `providers.tf`, `main.tf`, `outputs.tf` (module blocks sourced from `javaBin/platform//terraform/modules/*`), then commits them to the branch
+3. `tf-plan` plans the committed files → LLM review → `tf-apply` on main
+4. `docker-build` pushes `{team}-{name}` to ECR, `ecs-deploy` rolls the service
 
-Generated files have a `# GENERATED FROM app.yaml` marker. The script only overwrites files with this marker. Developers can add custom `.tf` files alongside the generated ones.
+Generated files carry a `# GENERATED FROM app.yaml` marker and are overwritten on every run. Developers can add their own `.tf` files alongside them.
 
 ## Naming Conventions
 
@@ -430,6 +318,4 @@ All app resources are prefixed with the team name for ABAC enforcement.
 | IAM task role | `{team}-{name}` |
 | CloudWatch logs | `/ecs/{team}/{name}` |
 | DNS record | `{routing.host}` |
-| SSM (Cognito) | `/javabin/platform-apps/{name}/cognito-*` |
-
-> In multi-env mode, `{name}` becomes `{name}-{env}` in all resource names except ECR. See [environments naming](#naming) for details.
+| SSM (Cognito) | `/javabin/apps/{team}/{name}/cognito-client-{id,secret}` |

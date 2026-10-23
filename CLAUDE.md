@@ -43,6 +43,7 @@ Migration happens later per-app at developer's pace — apps move from old ALB/E
 - LLM review can block auto-apply on HIGH risk
 - No-change plans skip review and apply automatically
 - Run `terraform fmt -recursive` and `terraform validate` before committing
+- Run tests: `python3 -m unittest discover -s scripts/tests` and `python3 -m unittest discover -s terraform/lambda-src/tests`
 - Commit with descriptive messages
 
 ## Working Rules
@@ -95,7 +96,7 @@ terraform/platform/
   iam/             GitHub OIDC, CI roles, permission boundary
   compute/         ECS cluster, ECR base config
   monitoring/      SNS, EventBridge, Config, GuardDuty, Security Hub
-  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, resource-tagger, budget-enforcer, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set, ci-broker
+  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, resource-tagger, budget-enforcer, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set, ci-broker, app-auth-sync
   identity/        Cognito user pools (internal + external). Identity Center is in terraform/org/
 ```
 
@@ -132,8 +133,7 @@ terraform/state/
 | `terraform/modules/service-secret/` | SSM Parameter Store SecureString with IAM policy output |
 | `terraform/modules/service-queue/` | SQS queue + DLQ with IAM policy output |
 | `terraform/modules/service-alarm/` | CloudWatch alarms for ECS service |
-| ~~`terraform/modules/app-stack/`~~ | Removed — replaced by `scripts/expand-modules.py` + `scripts/registry.py` |
-| `terraform/modules/cognito-app-client/` | Cognito app client registration (code exists, no pools deployed yet) |
+| `terraform/modules/cognito-app-client/` | Requests a Cognito app client via SSM; the `app-auth-sync` Lambda creates it |
 
 ### GitHub Actions Workflows
 ```
@@ -141,7 +141,7 @@ terraform/state/
   platform-ci.yml      Platform's own CI: plan → review → apply
   javabin.yml          Unified entrypoint (app repos call this)
   detect.yml           Detect repo contents
-  build-jvm.yml        Maven build + test
+  build-jvm.yml        Maven or Gradle build + test
   build-ts.yml         pnpm install + build
   docker-build.yml     Docker BuildKit build + ECR push
   tf-plan.yml          Terraform plan + S3 artifact upload
@@ -149,7 +149,7 @@ terraform/state/
   eb-deploy.yml        Elastic Beanstalk deploy (transition)
   ecs-deploy.yml       ECS task definition update
   approve-override.yml Risk gate override (board members)
-  provision-app.yml    Team provisioning triggered from registry dispatch
+  expand-terraform.yml Validate app.yaml, generate terraform/, commit it
 ```
 
 > **Note:** Plan + LLM review are combined inline in `platform-ci.yml` for the platform repo
@@ -168,14 +168,17 @@ terraform/state/
 | `password-set` | Self-service password-set for new hero accounts (Function URL) |
 | `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget |
 | `resource-tagger` | EventBridge-triggered, auto-tags created-by + commit on new resources |
-| `ci-broker` | Validates team membership, vends short-lived team role credentials |
+| `ci-broker` | Validates repo ∈ app.yaml team, vends short-lived team role credentials |
+| `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` (SSM request → client + credentials) |
 
 ### Scripts
 | Script | What |
 |--------|------|
 | `scripts/bootstrap.sh` | One-time: create state bucket + lock tables |
-| `scripts/expand-modules.py` | CI: reads app.yaml + module sources, generates expanded .tf files |
-| `scripts/registry.py` | Module registry — maps app.yaml sections to platform modules |
+| `scripts/generate-modules.py` | CI: validates app.yaml, generates fmt-clean module blocks into terraform/ (tests: `scripts/tests/`) |
+| `scripts/registry.py` | Module sources + boilerplate templates for generate-modules.py |
+| `scripts/resolve-tool-version.sh` | CI: resolve node/java version from the app repo's version files |
+| `scripts/sync-registered-teams.py` | CI: GitHub org teams → `registered-teams.auto.tfvars` (needs App token) |
 | `scripts/provision-teams.py` | CI: fetch team YAMLs from registry, invoke team-provisioner Lambda |
 | `scripts/provision-groups.py` | CI: resolve members.yaml + access.yaml, invoke team-provisioner Lambda |
 | `scripts/sync-members.py` | CI: sync approved heroes from Google Sheets into members.yaml |
@@ -240,7 +243,8 @@ All parameters are in `eu-central-1`. Use `--profile javabin --region eu-central
 | `/javabin/platform/github-app-key` | SecureString | team-provisioner (GitHub App private key) |
 | `/javabin/platform/github-app-client-secret` | SecureString | team-provisioner (GitHub App client secret) |
 | `/javabin/platform-overrides/{repo}/{sha}` | SecureString | Risk gate override tokens (single-use) |
-| `/javabin/platform-apps/{name}/*` | varies | Per-app secrets (Cognito clients, etc. — future) |
+| `/javabin/apps/{team}/{app}/auth` | String | app.yaml `auth:` request (written by app TF, read by app-auth-sync) |
+| `/javabin/apps/{team}/{app}/cognito-client-{id,secret}` | String / SecureString | Written by app-auth-sync, read by ECS execution role |
 
 ## GCP Connection
 
@@ -273,7 +277,7 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 | 2g | Platform CI | **Done** — plan → LLM review → apply pipeline working |
 | 3a | Reusable Terraform Modules | **Code done** — 12 modules in repo |
 | 3b | GitHub Actions Workflows | **Code done** — 14 reusable workflows |
-| 3c | app.yaml Schema + Generation | **Done** — expand-modules.py + registry.py (expanded raw resources) |
+| 3c | app.yaml Schema + Generation | **Done** — generate-modules.py (strict schema validation, module blocks) + registry.py |
 | 3d | Registry Repo | **Working** — repo exists, dispatch uses GitHub App token, team provisioner invoked |
 | 3e | javabin CLI | **Code done** — 4 commands (register, init, status, whoami) in javaBin/javabin-cli |
 | 3f | CI Images + Supporting Repos | Not started |
@@ -282,7 +286,8 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 
 ### Known Issues
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
-- **Cognito pools not yet applied**: TF exists but needs Google OAuth client credentials
+- **Cognito**: pools deployed; internal pool's `GoogleSAML` IdP was created outside Terraform
+- **CI broker trusts the payload repo name**: code running inside an app job (e.g. a Terraform `external` data source in tf-plan) can mint a new OIDC token for the broker role and name another repo. Fix: verify a GitHub OIDC token in the Lambda instead of a payload field
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
 - **`registered_app_repos` manually managed**: Being replaced with team-scoped IAM roles (repo→team resolved via GitHub API at runtime)
 - **Cost allocation tags pending activation**: `repo`, `created-by`, `commit` tags need activation in Billing console (requires billing data to appear first)
