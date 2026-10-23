@@ -34,6 +34,7 @@ logger.setLevel(logging.INFO)
 ssm = boto3.client("ssm")
 budgets_client = boto3.client("budgets")
 cognito_client = boto3.client("cognito-idp")
+dynamodb_client = boto3.client("dynamodb")
 identitystore_client = boto3.client("identitystore")
 
 GOOGLE_SA_PARAM = os.environ.get(
@@ -835,6 +836,27 @@ def sync_budget(team):
 # Cognito + Identity Center — stubs with clear extension points
 # ---------------------------------------------------------------------------
 
+MEMBERSHIPS_TABLE = os.environ.get("MEMBERSHIPS_TABLE", "")
+
+
+def _write_membership(group_name, emails):
+    """Record a group's registry members for the auth-claims trigger.
+
+    Cognito has no membership for federated users until they sign in, so the
+    pre-token trigger puts groups into tokens from this table instead.
+    """
+    if not MEMBERSHIPS_TABLE:
+        return
+    dynamodb_client.put_item(
+        TableName=MEMBERSHIPS_TABLE,
+        Item={
+            "pk": {"S": f"group#{group_name}"},
+            "members": {"L": [{"S": e.lower()} for e in sorted(set(emails)) if e]},
+            "source": {"S": "registry"},
+        },
+    )
+
+
 def sync_cognito_group(team):
     """Create or update a Cognito group in the internal user pool and sync membership.
 
@@ -925,6 +947,7 @@ def sync_cognito_group(team):
             )
             logger.info("Removed %s from Cognito group %s", email, group_name)
 
+    _write_membership(group_name, desired_emails)
     return {"synced": True, "group": group_name, "member_count": len(desired_emails)}
 
 
@@ -1075,13 +1098,18 @@ def _get_google_group_members(group_email):
 
 
 def sync_group_to_cognito(group):
-    """Ensure a Cognito group exists. No member sync — JIT handles it at sign-in."""
+    """Ensure a Cognito group exists and record its registry members.
+
+    Members reach tokens through the auth-claims pre-token trigger, which
+    reads the memberships table — Cognito group membership is not synced.
+    """
     if not COGNITO_INTERNAL_POOL_ID:
         return {"skipped": True, "reason": "cognito_pool_not_configured"}
     if not group.get("cognito"):
         return {"skipped": True, "reason": "cognito_not_enabled"}
 
     group_name = group["name"]
+    _write_membership(group_name, group.get("members") or [])
     google_email = group["google"]
     pool_id = COGNITO_INTERNAL_POOL_ID
 

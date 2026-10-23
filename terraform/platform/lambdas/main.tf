@@ -609,6 +609,12 @@ resource "aws_iam_role_policy" "team_provisioner" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid      = "WriteAuthMemberships"
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem"]
+        Resource = var.auth_memberships_table_arn
+      },
+      {
         Sid    = "SSMRead"
         Effect = "Allow"
         Action = "ssm:GetParameter"
@@ -903,6 +909,7 @@ resource "aws_lambda_function" "team_provisioner" {
       GITHUB_ORG                   = "javaBin"
       ALERTS_TOPIC_ARN             = var.alerts_topic_arn
       COGNITO_INTERNAL_POOL_ID     = var.internal_user_pool_id
+      MEMBERSHIPS_TABLE            = var.auth_memberships_table_name
       IDENTITY_STORE_ID            = var.identity_store_id
       SSO_INSTANCE_ARN             = var.sso_instance_arn
       PROJECT                      = var.project
@@ -1634,6 +1641,12 @@ resource "aws_iam_role_policy" "app_auth_sync" {
         ]
       },
       {
+        Sid      = "WriteClientAllowedGroups"
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem", "dynamodb:DeleteItem"]
+        Resource = var.auth_memberships_table_arn
+      },
+      {
         Sid    = "WriteClientCredentials"
         Effect = "Allow"
         Action = [
@@ -1672,7 +1685,8 @@ resource "aws_lambda_function" "app_auth_sync" {
 
   environment {
     variables = {
-      PROJECT = var.project
+      PROJECT           = var.project
+      MEMBERSHIPS_TABLE = var.auth_memberships_table_name
     }
   }
 }
