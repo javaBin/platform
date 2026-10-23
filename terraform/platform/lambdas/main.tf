@@ -1557,3 +1557,163 @@ resource "aws_lambda_function" "ci_broker" {
     }
   }
 }
+
+################################################################################
+# App Auth Sync — creates Cognito app clients requested via app.yaml `auth:`
+#
+# App Terraform writes /<project>/apps/<team>/<app>/auth (cognito-app-client
+# module). The developer boundary only lets a team write under its own path,
+# so the parameter name proves ownership; this Lambda never trusts a
+# caller-supplied team. See terraform/lambda-src/app_auth_sync/handler.py.
+################################################################################
+
+data "archive_file" "app_auth_sync" {
+  type             = "zip"
+  output_path      = "${path.module}/builds/app_auth_sync.zip"
+  output_file_mode = "0644"
+  source_dir       = "${local.lambda_src_path}/app_auth_sync"
+}
+
+resource "aws_iam_role" "app_auth_sync" {
+  name = "${var.project}-app-auth-sync"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "app_auth_sync" {
+  name = "${var.project}-app-auth-sync"
+  role = aws_iam_role.app_auth_sync.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ManageAppClients"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:CreateUserPoolClient",
+          "cognito-idp:UpdateUserPoolClient",
+          "cognito-idp:DeleteUserPoolClient",
+          "cognito-idp:DescribeUserPoolClient",
+          "cognito-idp:ListUserPoolClients",
+          "cognito-idp:ListIdentityProviders",
+        ]
+        Resource = [var.internal_user_pool_arn, var.external_user_pool_arn]
+      },
+      {
+        # ListUserPools does not support resource-level permissions
+        Sid      = "FindPools"
+        Effect   = "Allow"
+        Action   = "cognito-idp:ListUserPools"
+        Resource = "*"
+      },
+      {
+        Sid    = "ReadAuthRequests"
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:GetParametersByPath"]
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*",
+        ]
+      },
+      {
+        Sid    = "WriteClientCredentials"
+        Effect = "Allow"
+        Action = [
+          "ssm:PutParameter",
+          "ssm:DeleteParameter",
+          "ssm:DeleteParameters",
+          "ssm:AddTagsToResource",
+        ]
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/cognito-client-id",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/cognito-client-secret",
+        ]
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "app_auth_sync_logs" {
+  role       = aws_iam_role.app_auth_sync.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_function" "app_auth_sync" {
+  function_name    = "${var.project}-app-auth-sync"
+  role             = aws_iam_role.app_auth_sync.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 60
+  memory_size      = 128
+  filename         = data.archive_file.app_auth_sync.output_path
+  source_code_hash = data.archive_file.app_auth_sync.output_base64sha256
+
+  # One sync at a time, so concurrent changes to the same app cannot race
+  # into two clients with the same name.
+  reserved_concurrent_executions = 1
+
+  environment {
+    variables = {
+      PROJECT = var.project
+    }
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "app_auth_sync_trigger" {
+  name        = "${var.project}-app-auth-sync-trigger"
+  description = "app.yaml auth: request created, changed or deleted"
+
+  event_pattern = jsonencode({
+    source      = ["aws.ssm"]
+    detail-type = ["Parameter Store Change"]
+    detail = {
+      name      = [{ wildcard = "/${var.project}/apps/*/*/auth" }]
+      operation = ["Create", "Update", "Delete"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "app_auth_sync" {
+  rule      = aws_cloudwatch_event_rule.app_auth_sync_trigger.name
+  target_id = "invoke-app-auth-sync"
+  arn       = aws_lambda_function.app_auth_sync.arn
+}
+
+resource "aws_lambda_permission" "app_auth_sync_eventbridge" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.app_auth_sync.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.app_auth_sync_trigger.arn
+}
+
+# Daily safety net: re-sync every request and clean up orphaned clients, in
+# case an EventBridge delivery was missed.
+resource "aws_cloudwatch_event_rule" "app_auth_sync_reconcile" {
+  name                = "${var.project}-app-auth-sync-reconcile"
+  description         = "Daily reconcile of app Cognito clients"
+  schedule_expression = "cron(30 3 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "app_auth_sync_reconcile" {
+  rule      = aws_cloudwatch_event_rule.app_auth_sync_reconcile.name
+  target_id = "reconcile-app-auth-sync"
+  arn       = aws_lambda_function.app_auth_sync.arn
+  input     = jsonencode({ action = "reconcile" })
+}
+
+resource "aws_lambda_permission" "app_auth_sync_reconcile" {
+  statement_id  = "AllowEventBridgeReconcile"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.app_auth_sync.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.app_auth_sync_reconcile.arn
+}

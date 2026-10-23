@@ -785,10 +785,9 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
   name = "secrets-read"
   role = aws_iam_role.ecs_execution.id
 
-  # Covers both:
-  #   /<project>/apps/<team>/<service>/...   — service-secret SSM params
-  #   /<project>/platform-apps/<app>/...     — cognito-app-client SSM params
-  # The execution role fetches both at task launch via the ECS `secrets` block.
+  # /<project>/apps/<team>/<service>/... holds service-secret params and the
+  # Cognito client credentials written by app-auth-sync. The execution role
+  # fetches them at task launch via the ECS `secrets` block.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -800,7 +799,6 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
         ]
         Resource = [
           "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*",
-          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/platform-apps/*",
         ]
       }
     ]

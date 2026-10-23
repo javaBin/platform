@@ -4,17 +4,17 @@ variable "app_name" {
 }
 
 variable "team" {
-  description = "Team that owns the app — used as a prefix on the Cognito client name to avoid cross-team collisions"
+  description = "Owning team — the client is named <team>-<app_name>"
   type        = string
 }
 
 variable "pool" {
-  description = "Which Cognito pool(s) to register with: 'internal', 'external', or 'both'"
+  description = "Which Cognito pool to register with: 'internal' or 'external'"
   type        = string
 
   validation {
-    condition     = contains(["internal", "external", "both"], var.pool)
-    error_message = "Pool must be 'internal', 'external', or 'both'."
+    condition     = contains(["internal", "external"], var.pool)
+    error_message = "Pool must be 'internal' or 'external'."
   }
 }
 
@@ -31,38 +31,36 @@ variable "external_pool_name" {
 }
 
 variable "external_pool_custom_domain" {
-  description = "Custom domain registered on the external pool (e.g. auth-external.javazone.no). Empty if no custom domain is configured — COGNITO_DOMAIN will be empty for external apps."
+  description = "Custom domain registered on the external pool (e.g. auth-external.javazone.no). Empty if none — COGNITO_DOMAIN is then empty for external apps."
   type        = string
   default     = ""
 }
 
 variable "callback_urls" {
-  description = "Allowed OAuth callback URLs"
+  description = "Allowed OAuth callback URLs (https only)"
   type        = list(string)
+
+  validation {
+    condition     = length(var.callback_urls) > 0 && alltrue([for u in var.callback_urls : startswith(u, "https://")])
+    error_message = "callback_urls must be a non-empty list of https:// URLs."
+  }
 }
 
 variable "logout_urls" {
-  description = "Allowed logout URLs"
+  description = "Allowed logout URLs (https only)"
   type        = list(string)
   default     = []
-}
 
-variable "allowed_oauth_flows" {
-  description = "Allowed OAuth flows"
-  type        = list(string)
-  default     = ["code"]
+  validation {
+    condition     = alltrue([for u in var.logout_urls : startswith(u, "https://")])
+    error_message = "logout_urls must be https:// URLs."
+  }
 }
 
 variable "allowed_oauth_scopes" {
   description = "Allowed OAuth scopes"
   type        = list(string)
   default     = ["openid", "email", "profile"]
-}
-
-variable "generate_secret" {
-  description = "Generate a client secret (true for server-side apps, false for SPAs)"
-  type        = bool
-  default     = true
 }
 
 variable "project" {
