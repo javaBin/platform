@@ -123,7 +123,7 @@ Idempotent: skips resources that already have a `created-by` tag (preserves orig
 
 **Flow:** Verify the job's GitHub OIDC token (aud `javabin-plan-review`) → plan must be under `plans/javaBin/<repo>/` → read `plan-output.txt` → review with Bedrock using `scripts/review-plan.py` (bundled as `review_plan.py`), up to 3 attempts with backoff → write `risk.json` (read by apply-gate) and `review.json` → on HIGH/FAILED for pushes to main, post to the override Slack channel → return risk + markdown for the PR comment.
 
-Team roles are denied writing `risk.json`, `review.json` and `override.json` in the plan bucket, so a plan job cannot set its own verdict.
+Team roles are denied writing `risk.json`, `review.json` and `override.json` in the plan bucket. `risk.json` is written as FAILED before the review starts, so a crash or timeout still leaves a verdict the gate (and a board override) can act on. The plan text is uploaded by the plan job itself, so the review catches mistakes; it is not a control against code in the job forging its own plan text.
 
 | SSM Parameter | Use |
 |---------------|-----|

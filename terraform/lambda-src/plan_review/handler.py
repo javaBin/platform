@@ -10,7 +10,9 @@ So app plans are reviewed here instead:
   3. Review it with Bedrock (review_plan.py, shared with platform CI),
      retrying transient failures.
   4. Write risk.json (read by the apply gate) and review.json. Team roles
-     cannot write these objects, so a job cannot mark its own plan LOW.
+     cannot write these objects. (The plan text itself is uploaded by the
+     plan job, so the review guards against mistakes, not against code in
+     the job forging its own plan text.)
   5. For HIGH or FAILED on main, post the override request to Slack.
 
 Input:  {plan_key, id_token, notify?}
@@ -23,6 +25,7 @@ import os
 import time
 
 import boto3
+from botocore.config import Config
 
 import review_plan
 from shared.github_oidc import TokenError, repo_name, verify
@@ -41,15 +44,22 @@ ATTEMPTS = int(os.environ.get("REVIEW_ATTEMPTS", "3"))
 
 s3 = boto3.client("s3")
 ssm = boto3.client("ssm")
-bedrock = boto3.client("bedrock-runtime")
+# Bounded per call, so retries fit inside the Lambda timeout; the handler
+# does its own retrying.
+bedrock = boto3.client("bedrock-runtime", config=Config(read_timeout=90, connect_timeout=10,
+                                                         retries={"max_attempts": 1, "mode": "standard"}))
+CALL_BUDGET_MS = 100_000
 
 
 def converse(messages, tool_config):
     return bedrock.converse(modelId=review_plan.MODEL_ID, messages=messages, toolConfig=tool_config)
 
 
-def review_with_retries(plan_text):
+def review_with_retries(plan_text, context=None):
     for attempt in range(1, ATTEMPTS + 1):
+        if context and context.get_remaining_time_in_millis() < CALL_BUDGET_MS:
+            logger.warning("Stopping after %d attempts: not enough time left for another", attempt - 1)
+            return None
         try:
             review = review_plan.review_plan(plan_text, converse=converse)
             if review:
@@ -89,11 +99,15 @@ def handler(event, context):
         return {"error": f"Plan {plan_key!r} does not belong to {repo}"}
     plan_dir = plan_key.rsplit("/", 1)[0]
 
+    # Record FAILED first: if anything below crashes or times out, the gate
+    # still finds a verdict (and a board override can unblock it).
+    put_json(f"{plan_dir}/risk.json", {"level": "FAILED", "reviewed_at": None, "reviewer": f"{PROJECT}-plan-review"})
+
     plan_text = s3.get_object(Bucket=PLAN_BUCKET, Key=f"{plan_dir}/plan-output.txt")["Body"].read().decode()
     if not plan_text.strip():
         review = {"risk": "LOW", "summary": "Empty plan", "findings": []}
     else:
-        review = review_with_retries(plan_text)
+        review = review_with_retries(plan_text, context)
 
     risk = review["risk"] if review else "FAILED"
     reviewed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

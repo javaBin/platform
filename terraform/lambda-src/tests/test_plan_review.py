@@ -49,8 +49,11 @@ def load(s3, bedrock, repo="frosting"):
     os.environ["PLAN_BUCKET"] = "bucket"
     os.environ["REVIEW_ATTEMPTS"] = "3"
     boto3 = types.ModuleType("boto3")
-    boto3.client = lambda svc: {"s3": s3, "bedrock-runtime": bedrock, "ssm": mock.MagicMock()}[svc]
+    boto3.client = lambda svc, **kw: {"s3": s3, "bedrock-runtime": bedrock, "ssm": mock.MagicMock()}[svc]
     sys.modules["boto3"] = boto3
+    botocore = types.ModuleType("botocore"); config = types.ModuleType("botocore.config")
+    config.Config = lambda **kw: None
+    sys.modules["botocore"] = botocore; sys.modules["botocore.config"] = config
     rp = importlib.util.spec_from_file_location("review_plan", os.path.join(SRC, "..", "..", "scripts", "review-plan.py"))
     review_plan = importlib.util.module_from_spec(rp)
     rp.loader.exec_module(review_plan)
@@ -87,6 +90,20 @@ class PlanReviewTest(unittest.TestCase):
         self.assertEqual(result["risk"], "FAILED")
         self.assertIn("could not run", result["markdown"])
         self.assertEqual(json.loads(self.s3.objects["plans/javaBin/frosting/123/risk.json"])["level"], "FAILED")
+
+    def test_failed_is_recorded_before_review_so_a_crash_leaves_a_verdict(self):
+        s3 = FakeS3({})  # plan text missing: get_object raises
+        h = load(s3, FakeBedrock([]))
+        with self.assertRaises(KeyError):
+            h.handler({"plan_key": PLAN, "id_token": "good"}, None)
+        self.assertEqual(json.loads(s3.objects["plans/javaBin/frosting/123/risk.json"])["level"], "FAILED")
+
+    def test_stops_retrying_when_time_runs_out(self):
+        bedrock = FakeBedrock([RuntimeError("slow")] * 3)
+        h = load(self.s3, bedrock)
+        ctx = types.SimpleNamespace(get_remaining_time_in_millis=lambda: 50_000)
+        self.assertEqual(h.handler({"plan_key": PLAN, "id_token": "good"}, ctx)["risk"], "FAILED")
+        self.assertEqual(bedrock.calls, 0)
 
     def test_another_repos_plan_is_refused(self):
         h = load(self.s3, FakeBedrock([]), repo="cupcake")

@@ -16,15 +16,18 @@ set -e
 PLAN_KEY="${1:?Usage: invoke-plan-review.sh <plan_key>}"
 ID_TOKEN=$(sh "$(dirname "$0")/github-oidc-token.sh" "${PROJECT:-javabin}-plan-review")
 
+# A failed invoke is a FAILED review, not a failed job: the PR still gets a
+# comment and the gate still blocks.
+echo '{}' > /tmp/plan-review.json
 aws lambda invoke \
   --function-name "${PROJECT:-javabin}-plan-review" \
   --cli-read-timeout 310 \
   --payload "$(jq -nc --arg plan_key "$PLAN_KEY" --arg id_token "$ID_TOKEN" --argjson notify "${NOTIFY:-false}" \
     '{plan_key: $plan_key, id_token: $id_token, notify: $notify}')" \
   --cli-binary-format raw-in-base64-out \
-  /tmp/plan-review.json >/dev/null
+  /tmp/plan-review.json >/dev/null || echo '{"error": "could not invoke the plan-review Lambda"}' > /tmp/plan-review.json
 
-ERROR=$(jq -r '.error // .errorMessage // empty' /tmp/plan-review.json)
+ERROR=$(jq -r '.error // .errorMessage // (if .risk then empty else "empty response" end)' /tmp/plan-review.json)
 if [ -n "$ERROR" ]; then
   echo "::error::Plan review failed: $ERROR"
   RISK=FAILED
