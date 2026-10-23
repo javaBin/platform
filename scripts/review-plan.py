@@ -98,7 +98,6 @@ Terraform plan output:
             "--model-id", MODEL_ID,
             "--messages", json.dumps(messages),
             "--tool-config", json.dumps(REVIEW_TOOL_CONFIG),
-            "--inference-config", json.dumps({"temperature": 0.1}),
             "--region", REGION,
         ],
         capture_output=True,

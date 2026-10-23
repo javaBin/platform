@@ -308,7 +308,6 @@ def _llm_structured(prompt, tool_config):
             modelId=LLM_MODEL_ID,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             toolConfig=tool_config,
-            inferenceConfig={"temperature": 0.2},
         )
         for content in response["output"]["message"]["content"]:
             if "toolUse" in content:
