@@ -8,7 +8,15 @@ on:
         type: string
         default: ""
       service_name:
-        description: "ECS service name (defaults to repo name)"
+        description: "ECS service name (defaults to {team}-{app_name})"
+        type: string
+        default: ""
+      app_name:
+        description: "App name from app.yaml (ECR repo / ECS service are {team}-{app_name}); defaults to repo name"
+        type: string
+        default: ""
+      team:
+        description: "Team from app.yaml (the broker verifies the repo belongs to it)"
         type: string
         default: ""
       cluster_name:
@@ -36,22 +44,16 @@ jobs:
       - name: Set session name
         run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | head -c 64)" >> "$GITHUB_ENV"
 
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.PLATFORM_APP_ID }}
-          private-key: ${{ secrets.PLATFORM_APP_PRIVATE_KEY }}
-          owner: javaBin
-
+      # javaBin/platform is public: the caller's own GITHUB_TOKEN can read it,
+      # so app repos need no GitHub App credentials for any pipeline step.
       - name: Checkout platform scripts
         uses: actions/checkout@v6
         with:
           repository: javaBin/platform
-          token: ${{ steps.app-token.outputs.token }}
           ref: main
-          sparse-checkout: scripts
           path: .platform
+          sparse-checkout: scripts
+          persist-credentials: false
 
       - name: Assume broker role via OIDC
         uses: aws-actions/configure-aws-credentials@v6
@@ -64,10 +66,11 @@ jobs:
         id: broker
         env:
           PROJECT: javabin
+          APP_TEAM: ${{ inputs.team }}
         run: sh .platform/scripts/invoke-ci-broker.sh deploy
 
       - name: Deploy to ECS
         env:
-          SERVICE: ${{ inputs.service_name || format('{0}-{1}', steps.broker.outputs.team, github.event.repository.name) }}
+          SERVICE: ${{ inputs.service_name || format('{0}-{1}', steps.broker.outputs.team, inputs.app_name || github.event.repository.name) }}
           CLUSTER: ${{ inputs.cluster_name }}
         run: sh .platform/scripts/ecs-deploy.sh

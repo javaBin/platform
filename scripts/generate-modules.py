@@ -4,6 +4,12 @@
 Reads app.yaml and produces .tf files with module {} blocks. Terraform handles
 variable resolution, cross-module references, and output wiring natively.
 
+app.yaml is validated first: unknown or unsupported fields are an error, so a
+typo or a not-yet-implemented feature fails the pipeline with a clear message
+instead of being silently ignored.
+
+The output is `terraform fmt`-clean, because tf-plan runs `terraform fmt -check`.
+
 Usage:
   python3 generate-modules.py
 
@@ -13,6 +19,7 @@ Optional env vars: PLATFORM_REF (git ref for module source, default: main)
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -40,56 +47,176 @@ def load_yaml(path):
     return json.loads(result.stdout)
 
 
-def yaml_get(data, dot_path, default=None):
-    keys = dot_path.split(".")
-    val = data
-    for k in keys:
-        if isinstance(val, dict) and k in val:
-            val = val[k]
-        else:
-            return default
-    return val
+# ---------------------------------------------------------------------------
+# Schema validation
+# ---------------------------------------------------------------------------
+
+class AppYamlError(ValueError):
+    """app.yaml is invalid; the message is shown to the developer as-is."""
+
+
+SCHEMA = {
+    "name": None,
+    "team": None,
+    "compute": {"cpu", "memory", "port", "desired_count", "health_check",
+                "health_check_matcher", "user", "readonly_root_filesystem"},
+    "routing": {"host", "priority", "deregistration_delay"},
+    "domain": None,
+    "resources": {"buckets", "databases", "secrets", "queues"},
+    "auth": {"pool", "callback_urls", "logout_urls", "scopes", "groups"},
+    "environment": None,
+    "alarms": {"enabled", "cpu_threshold", "memory_threshold", "error_5xx_threshold"},
+}
+
+RESOURCE_SCHEMA = {
+    "buckets": {"name", "env", "versioning", "expire_days"},
+    "databases": {"name", "env", "engine", "hash_key", "hash_key_type", "range_key",
+                  "range_key_type", "ttl_attribute", "instance_class", "allocated_storage",
+                  "engine_version", "backup_retention_period", "multi_az", "deletion_protection"},
+    "secrets": {"name", "env", "description"},
+    "queues": {"name", "env", "visibility_timeout", "retention_seconds", "max_receive_count"},
+}
+
+# Documented at some point but not implemented. Named here so the error says
+# what to do instead of "unknown field".
+UNSUPPORTED = {
+    "environments": "multi-environment apps are not supported yet; deploy one environment per app.yaml",
+    "budget_alert_nok": "budgets are per team — set budget_nok in javaBin/registry teams/<team>.yaml",
+}
+
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
+TEAM_RE = re.compile(r"^[a-z]{1,12}$")
+RESOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _check_keys(section, data, allowed):
+    if not isinstance(data, dict):
+        raise AppYamlError(f"{section}: expected a mapping, got {type(data).__name__}")
+    unknown = sorted(set(data) - set(allowed))
+    if unknown:
+        raise AppYamlError(
+            f"{section}: unknown field(s) {', '.join(unknown)} "
+            f"(supported: {', '.join(sorted(allowed))})"
+        )
+
+
+def validate(app):
+    """Raise AppYamlError if app.yaml uses unknown fields or invalid values."""
+    if not isinstance(app, dict):
+        raise AppYamlError("app.yaml must be a mapping")
+
+    for key, reason in UNSUPPORTED.items():
+        if key in app:
+            raise AppYamlError(f"{key}: not supported — {reason}")
+    _check_keys("app.yaml", app, SCHEMA)
+    for section, allowed in SCHEMA.items():
+        if allowed is not None and section in app and not (section == "auth" and isinstance(app[section], str)):
+            _check_keys(section, app[section], allowed)
+
+    if not NAME_RE.match(str(app.get("name", ""))):
+        raise AppYamlError(f"name: {app.get('name')!r} must be lowercase letters, digits and hyphens, max 20 chars")
+    if not TEAM_RE.match(str(app.get("team", ""))):
+        raise AppYamlError(f"team: {app.get('team')!r} must be lowercase letters only, max 12 chars")
+
+    routing = app.get("routing") or {}
+    if routing:
+        if not routing.get("host") and not app.get("domain"):
+            raise AppYamlError("routing.host is required when routing is set")
+        if not isinstance(routing.get("priority"), int) or not 1 <= routing["priority"] <= 50000:
+            raise AppYamlError("routing.priority is required: a unique integer 1-50000")
+
+    for rtype, items in (app.get("resources") or {}).items():
+        if not isinstance(items, list):
+            raise AppYamlError(f"resources.{rtype}: expected a list")
+        for i, item in enumerate(items):
+            _check_keys(f"resources.{rtype}[{i}]", item, RESOURCE_SCHEMA[rtype])
+            if not RESOURCE_NAME_RE.match(str(item.get("name", ""))):
+                raise AppYamlError(f"resources.{rtype}[{i}].name: {item.get('name')!r} is not a valid name")
+            if item.get("env") and not ENV_RE.match(item["env"]):
+                raise AppYamlError(f"resources.{rtype}[{i}].env: {item['env']!r} is not a valid variable name")
+
+    env = app.get("environment")
+    if env is not None:
+        if not isinstance(env, dict):
+            raise AppYamlError("environment: expected a mapping of NAME: value")
+        for k, v in env.items():
+            if not ENV_RE.match(str(k)):
+                raise AppYamlError(f"environment: {k!r} is not a valid variable name")
+            if isinstance(v, (dict, list)):
+                raise AppYamlError(f"environment.{k}: values must be strings, numbers or booleans")
 
 
 # ---------------------------------------------------------------------------
 # HCL generation helpers
 # ---------------------------------------------------------------------------
 
+class Ref(str):
+    """A Terraform expression (module.x.y, [module.a], data.z) — emitted unquoted."""
+
+
 def _safe_key(k):
     """Make a string safe for use as an HCL map key (quote if needed)."""
-    if all(c.isalnum() or c == "_" for c in k):
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_-]*$", k):
         return k
-    return f'"{k}"'
+    return hcl_string(k)
 
 
-def hcl_value(v):
-    """Format a Python value as HCL."""
+def hcl_string(s):
+    """Quote a string literal, escaping quotes and template sequences."""
+    s = s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    s = s.replace("${", "$${").replace("%{", "%%{")
+    return f'"{s}"'
+
+
+def hcl_value(v, indent=2):
+    """Format a Python value as HCL. Maps render multi-line at `indent`."""
+    if isinstance(v, Ref):
+        return str(v)
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, (int, float)):
         return str(v)
     if isinstance(v, str):
-        if v.startswith("module.") or v.startswith("data.") or v.startswith("["):
-            return v  # reference or list — no quoting
-        return f'"{v}"'
+        return hcl_string(v)
     if isinstance(v, list):
-        items = ", ".join(hcl_value(i) for i in v)
-        return f"[{items}]"
+        return "[" + ", ".join(hcl_value(i, indent) for i in v) + "]"
     if isinstance(v, dict):
         if not v:
             return "{}"
-        lines = []
-        for k, val in v.items():
-            lines.append(f'    {_safe_key(k)} = {hcl_value(val)}')
-        return "{\n" + "\n".join(lines) + "\n  }"
-    return str(v)
+        inner = attr_lines({_safe_key(k): val for k, val in v.items()}, indent + 2)
+        return "{\n" + "\n".join(inner) + "\n" + " " * indent + "}"
+    raise TypeError(f"cannot render {type(v).__name__} as HCL")
+
+
+def attr_lines(attrs, indent):
+    """Render `key = value` lines aligned the way `terraform fmt` aligns them.
+
+    fmt aligns `=` within runs of consecutive single-line attributes; a
+    multi-line value ends the run and keeps a single space before `=`.
+    """
+    rendered = [(k, hcl_value(v, indent)) for k, v in attrs.items()]
+    lines, run = [], []
+
+    def flush():
+        width = max((len(k) for k, _ in run), default=0)
+        lines.extend(f"{' ' * indent}{k.ljust(width)} = {val}" for k, val in run)
+        run.clear()
+
+    for k, val in rendered:
+        if "\n" in val:
+            flush()
+            lines.append(f"{' ' * indent}{k} = {val}")
+        else:
+            run.append((k, val))
+    flush()
+    return lines
 
 
 def module_block(name, source, attrs):
     """Generate a module {} block."""
-    lines = [f'module "{name}" {{', f'  source = "{source}"', ""]
-    for k, v in attrs.items():
-        lines.append(f"  {k:30s} = {hcl_value(v)}")
+    lines = [f'module "{name}" {{', f"  source = {hcl_string(source)}", ""]
+    lines.extend(attr_lines(attrs, 2))
     lines.append("}")
     return "\n".join(lines)
 
@@ -100,15 +227,22 @@ def module_block(name, source, attrs):
 
 def generate(app, account_id, region, platform_ref):
     """Generate all .tf file contents from app.yaml data."""
+    validate(app)
+
     name = app["name"]
     team = app["team"]
-    full_name = f"{team}-{name}"
     repo = os.environ.get("GITHUB_REPOSITORY", f"javaBin/{name}")
 
-    compute = app.get("compute", {})
-    routing = app.get("routing", {})
-    resources = app.get("resources", {})
-    alarms_cfg = app.get("alarms", {})
+    compute = app.get("compute") or {}
+    routing = dict(app.get("routing") or {})
+    resources = app.get("resources") or {}
+    alarms_cfg = app.get("alarms") or {}
+
+    # `domain:` is shorthand for routing.host; routing.host wins.
+    if app.get("domain") and not routing.get("host"):
+        if not routing.get("priority"):
+            raise AppYamlError("domain: requires routing.priority (unique 1-50000) to create the ALB rule")
+        routing["host"] = app["domain"]
 
     def src(mod):
         path = MODULE_SOURCES[mod]
@@ -150,16 +284,16 @@ def generate(app, account_id, region, platform_ref):
         blocks.append(module_block("routing", src("service-routing"), {
             "name": name,
             "team": team,
-            "vpc_id": "module.platform.vpc_id",
+            "vpc_id": Ref("module.platform.vpc_id"),
             "port": compute.get("port", 8000),
             "health_check_path": compute.get("health_check", "/health"),
-            "health_check_matcher": compute.get("health_check_matcher", "200"),
-            "https_listener_arn": "module.platform.https_listener_arn",
+            "health_check_matcher": str(compute.get("health_check_matcher", "200")),
+            "https_listener_arn": Ref("module.platform.https_listener_arn"),
             "listener_rule_priority": routing["priority"],
             "host_header": routing["host"],
-            "route53_zone_id": "module.platform.route53_zone_id",
-            "alb_dns_name": "module.platform.alb_dns_name",
-            "alb_zone_id": "module.platform.alb_zone_id",
+            "route53_zone_id": Ref("module.platform.route53_zone_id"),
+            "alb_dns_name": Ref("module.platform.alb_dns_name"),
+            "alb_zone_id": Ref("module.platform.alb_zone_id"),
             "deregistration_delay": routing.get("deregistration_delay", 30),
         }))
 
@@ -179,9 +313,9 @@ def generate(app, account_id, region, platform_ref):
             "versioning": bucket.get("versioning", True),
             "expire_days": bucket.get("expire_days", 0),
         }))
-        policy_map[mod_name] = f"module.{mod_name}.access_policy_json"
+        policy_map[mod_name] = Ref(f"module.{mod_name}.access_policy_json")
         if bucket.get("env"):
-            env_map[bucket["env"]] = f"module.{mod_name}.bucket_name"
+            env_map[bucket["env"]] = Ref(f"module.{mod_name}.bucket_name")
 
     for db in resources.get("databases", []):
         dname = db["name"]
@@ -192,20 +326,20 @@ def generate(app, account_id, region, platform_ref):
                 "name": dname,
                 "team": team,
                 "project": PROJECT,
-                "engine_version": db.get("engine_version", "16"),
+                "engine_version": str(db.get("engine_version", "16")),
                 "instance_class": db.get("instance_class", "db.t3.micro"),
                 "allocated_storage": db.get("allocated_storage", 20),
-                "subnet_ids": "module.platform.private_subnet_ids",
-                "vpc_id": "module.platform.vpc_id",
-                "allowed_security_group_ids": "[module.platform.ecs_tasks_security_group_id]",
+                "subnet_ids": Ref("module.platform.private_subnet_ids"),
+                "vpc_id": Ref("module.platform.vpc_id"),
+                "allowed_security_group_ids": Ref("[module.platform.ecs_tasks_security_group_id]"),
                 "backup_retention_period": db.get("backup_retention_period", 7),
                 "multi_az": db.get("multi_az", False),
                 "deletion_protection": db.get("deletion_protection", True),
             }))
-            policy_map[mod_name] = f"module.{mod_name}.access_policy_json"
+            policy_map[mod_name] = Ref(f"module.{mod_name}.access_policy_json")
             if db.get("env"):
-                env_map[db["env"]] = f"module.{mod_name}.endpoint"
-        else:
+                env_map[db["env"]] = Ref(f"module.{mod_name}.endpoint")
+        elif engine == "dynamodb":
             mod_name = f"database_{dname}"
             attrs = {
                 "name": dname,
@@ -220,9 +354,11 @@ def generate(app, account_id, region, platform_ref):
             if db.get("ttl_attribute"):
                 attrs["ttl_attribute"] = db["ttl_attribute"]
             blocks.append(module_block(mod_name, src("service-database"), attrs))
-            policy_map[mod_name] = f"module.{mod_name}.access_policy_json"
+            policy_map[mod_name] = Ref(f"module.{mod_name}.access_policy_json")
             if db.get("env"):
-                env_map[db["env"]] = f"module.{mod_name}.table_name"
+                env_map[db["env"]] = Ref(f"module.{mod_name}.table_name")
+        else:
+            raise AppYamlError(f"resources.databases {dname}: engine must be dynamodb or postgres (got {engine!r})")
 
     for secret in resources.get("secrets", []):
         sname = secret["name"]
@@ -234,9 +370,9 @@ def generate(app, account_id, region, platform_ref):
             "service": name,
             "description": secret.get("description", ""),
         }))
-        policy_map[mod_name] = f"module.{mod_name}.access_policy_json"
+        policy_map[mod_name] = Ref(f"module.{mod_name}.access_policy_json")
         if secret.get("env"):
-            secret_map[secret["env"]] = f"module.{mod_name}.parameter_arn"
+            secret_map[secret["env"]] = Ref(f"module.{mod_name}.parameter_arn")
 
     for queue in resources.get("queues", []):
         qname = queue["name"]
@@ -249,27 +385,27 @@ def generate(app, account_id, region, platform_ref):
             "retention_seconds": queue.get("retention_seconds", 345600),
             "max_receive_count": queue.get("max_receive_count", 3),
         }))
-        policy_map[mod_name] = f"module.{mod_name}.access_policy_json"
+        policy_map[mod_name] = Ref(f"module.{mod_name}.access_policy_json")
         if queue.get("env"):
-            env_map[queue["env"]] = f"module.{mod_name}.queue_url"
+            env_map[queue["env"]] = Ref(f"module.{mod_name}.queue_url")
 
-    # Auth (Cognito app client) — optional
+    # Auth (Cognito app client) — optional. The module only *requests* the
+    # client; the platform app-auth-sync Lambda creates it (see module docs).
     auth_raw = app.get("auth")
     if auth_raw and auth_raw != "none":
         # Accept shorthand: auth: internal -> {pool: internal}
         auth = {"pool": auth_raw} if isinstance(auth_raw, str) else auth_raw
-        pool = auth.get("pool")
+        pool = auth.get("pool", "internal")
         if pool == "both":
-            raise NotImplementedError(
-                "auth.pool: 'both' is not yet supported — pick 'internal' or 'external'. "
-                "When the first concrete need lands, decide on COGNITO_INTERNAL_*/COGNITO_EXTERNAL_* env-var conventions."
+            raise AppYamlError(
+                "auth.pool: 'both' is not supported yet — pick 'internal' or 'external'."
             )
         if pool not in ("internal", "external"):
-            raise ValueError(f"auth.pool must be 'internal' or 'external' (got {pool!r})")
+            raise AppYamlError(f"auth.pool must be 'internal' or 'external' (got {pool!r})")
 
         host = routing.get("host")
         if not host:
-            raise ValueError("auth: requires routing.host (callback URLs default to it)")
+            raise AppYamlError("auth: requires routing.host (callback URLs default to it)")
 
         callback_urls = auth.get("callback_urls") or [
             f"https://{host}/",
@@ -287,17 +423,14 @@ def generate(app, account_id, region, platform_ref):
         }
         if auth.get("scopes"):
             auth_attrs["allowed_oauth_scopes"] = auth["scopes"]
-        if auth.get("external_pool_custom_domain"):
-            auth_attrs["external_pool_custom_domain"] = auth["external_pool_custom_domain"]
 
         blocks.append(module_block("auth", src("cognito-app-client"), auth_attrs))
-        policy_map["auth"] = "module.auth.access_policy_json"
 
-        env_map["COGNITO_USER_POOL_ID"] = f"module.auth.{pool}_user_pool_id"
-        env_map["COGNITO_DOMAIN"] = f"module.auth.{pool}_user_pool_domain"
-        env_map["COGNITO_ISSUER_URL"] = f"module.auth.{pool}_issuer_url"
-        secret_map["COGNITO_CLIENT_ID"] = f"module.auth.{pool}_client_id_arn"
-        secret_map["COGNITO_CLIENT_SECRET"] = f"module.auth.{pool}_client_secret_arn"
+        env_map["COGNITO_USER_POOL_ID"] = Ref("module.auth.user_pool_id")
+        env_map["COGNITO_DOMAIN"] = Ref("module.auth.user_pool_domain")
+        env_map["COGNITO_ISSUER_URL"] = Ref("module.auth.issuer_url")
+        secret_map["COGNITO_CLIENT_ID"] = Ref("module.auth.client_id_arn")
+        secret_map["COGNITO_CLIENT_SECRET"] = Ref("module.auth.client_secret_arn")
 
         if auth.get("groups"):
             env_map["COGNITO_GROUPS"] = ",".join(auth["groups"])
@@ -308,35 +441,37 @@ def generate(app, account_id, region, platform_ref):
         "team": team,
         "region": region,
         "aws_account_id": account_id,
-        "permissions_boundary_arn": "module.platform.developer_boundary_arn",
-        "additional_policy_jsons": policy_map if policy_map else {},
+        "permissions_boundary_arn": Ref("module.platform.developer_boundary_arn"),
+        "additional_policy_jsons": policy_map,
     }))
 
-    # Merge static env vars with resource-derived env vars
-    static_env = app.get("environment", {}) or {}
-    all_env = {**static_env}
-    for k, v in env_map.items():
-        all_env[k] = v
+    # Merge static env vars with resource-derived env vars. ECS env values
+    # are strings, so YAML numbers/booleans are stringified.
+    all_env = {}
+    for k, v in (app.get("environment") or {}).items():
+        all_env[k] = ("true" if v else "false") if isinstance(v, bool) else ("" if v is None else str(v))
+    all_env.update(env_map)
 
     # ECS service (always)
     service_attrs = {
         "name": name,
         "team": team,
-        "cluster_id": "module.platform.ecs_cluster_id",
-        "image": 'module.ecr.repository_url',
+        "cluster_id": Ref("module.platform.ecs_cluster_id"),
+        "image": Ref("module.ecr.repository_url"),
         "cpu": compute.get("cpu", 512),
         "memory": compute.get("memory", 1024),
         "port": compute.get("port", 8000),
         "desired_count": compute.get("desired_count", 1),
-        "execution_role_arn": "module.platform.execution_role_arn",
-        "task_role_arn": "module.task_role.role_arn",
-        "subnet_ids": "module.platform.private_subnet_ids",
-        "security_group_ids": "[module.platform.ecs_tasks_security_group_id]",
+        "execution_role_arn": Ref("module.platform.execution_role_arn"),
+        "task_role_arn": Ref("module.task_role.role_arn"),
+        "subnet_ids": Ref("module.platform.private_subnet_ids"),
+        "security_group_ids": Ref("[module.platform.ecs_tasks_security_group_id]"),
         "region": region,
         "container_user": str(compute.get("user", "1000")),
+        "readonly_root_filesystem": compute.get("readonly_root_filesystem", True),
     }
     if routing.get("host"):
-        service_attrs["target_group_arn"] = "module.routing.target_group_arn"
+        service_attrs["target_group_arn"] = Ref("module.routing.target_group_arn")
     if all_env:
         service_attrs["environment"] = all_env
     if secret_map:
@@ -345,31 +480,28 @@ def generate(app, account_id, region, platform_ref):
     blocks.append(module_block("service", src("ecs-service"), service_attrs))
 
     # Alarms (conditional)
-    alarms_enabled = alarms_cfg.get("enabled", True) if alarms_cfg else True
-    if alarms_enabled and routing.get("host"):
+    if alarms_cfg.get("enabled", True) and routing.get("host"):
         blocks.append(module_block("alarms", src("service-alarm"), {
             "name": name,
             "team": team,
             "service": name,
-            "cluster_name": "module.platform.ecs_cluster_name",
-            "sns_topic_arns": f'[data.aws_sns_topic.alerts.arn]',
+            "cluster_name": Ref("module.platform.ecs_cluster_name"),
+            "sns_topic_arns": Ref("[data.aws_sns_topic.alerts.arn]"),
             "cpu_threshold": alarms_cfg.get("cpu_threshold", 80),
             "memory_threshold": alarms_cfg.get("memory_threshold", 80),
             "error_5xx_threshold": alarms_cfg.get("error_5xx_threshold", 10),
-            "target_group_arn_suffix": "module.routing.target_group_arn_suffix",
-            "alb_arn_suffix": "module.platform.alb_arn_suffix",
+            "target_group_arn_suffix": Ref("module.routing.target_group_arn_suffix"),
+            "alb_arn_suffix": Ref("module.platform.alb_arn_suffix"),
         }))
-        # Add the data source for SNS topic
-        blocks.append(f"""
-data "aws_sns_topic" "alerts" {{
+        blocks.append(f"""data "aws_sns_topic" "alerts" {{
   name = "{PROJECT}-alerts"
 }}""")
 
     files["main.tf"] = GENERATED + "\n\n".join(blocks) + "\n"
 
     # -- outputs.tf --
-    host = routing.get("host", f"{name}.{DOMAIN}")
-    files["outputs.tf"] = OUTPUTS_TEMPLATE.format(host=host)
+    service_url = f"https://{routing['host']}" if routing.get("host") else ""
+    files["outputs.tf"] = OUTPUTS_TEMPLATE.format(service_url=service_url)
 
     return files
 
@@ -386,14 +518,17 @@ def main():
         print(f"No app.yaml found at {app_yaml_path}")
         sys.exit(1)
 
-    app = load_yaml(app_yaml_path)
-    if not app.get("name"):
+    app = load_yaml(app_yaml_path) or {}
+    if isinstance(app, dict) and not app.get("name"):
         app["name"] = service
-    if not app.get("team"):
-        print("ERROR: app.yaml must have a 'team' field")
-        sys.exit(1)
 
-    files = generate(app, account_id, region, platform_ref)
+    try:
+        files = generate(app, account_id, region, platform_ref)
+    except AppYamlError as e:
+        # GitHub annotation so the error shows on the run summary
+        print(f"::error file=app.yaml::{e}")
+        print(f"ERROR: app.yaml: {e}", file=sys.stderr)
+        sys.exit(1)
 
     os.makedirs(tf_root, exist_ok=True)
     for filename, content in files.items():

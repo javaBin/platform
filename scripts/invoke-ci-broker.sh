@@ -5,6 +5,8 @@
 #   action: "plan" or "deploy"
 #
 # Env: GITHUB_REPOSITORY (org/repo)
+#      APP_TEAM (optional) — team from app.yaml; the broker verifies the repo
+#      belongs to it instead of picking the repo's first GitHub team
 # Output: Exports AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
 #         Sets team={slug} in GITHUB_OUTPUT
 
@@ -17,7 +19,8 @@ echo "Requesting ${ACTION} credentials for ${REPO}..."
 
 RESPONSE=$(aws lambda invoke \
   --function-name "${PROJECT:-javabin}-ci-broker" \
-  --payload "$(printf '{"repo":"%s","action":"%s","session_name":"%s"}' "$REPO" "$ACTION" "${SESSION_NAME:-}")" \
+  --payload "$(jq -nc --arg repo "$REPO" --arg action "$ACTION" --arg session_name "${SESSION_NAME:-}" --arg team "${APP_TEAM:-}" \
+    '{repo: $repo, action: $action, session_name: $session_name, team: $team}')" \
   --cli-binary-format raw-in-base64-out \
   /tmp/broker-response.json 2>&1)
 

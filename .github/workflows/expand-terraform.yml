@@ -35,21 +35,16 @@ jobs:
         with:
           ref: ${{ github.head_ref || github.ref }}
 
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.PLATFORM_APP_ID }}
-          private-key: ${{ secrets.PLATFORM_APP_PRIVATE_KEY }}
-          owner: javaBin
-
+      # javaBin/platform is public: the caller's own GITHUB_TOKEN can read it,
+      # so app repos need no GitHub App credentials for any pipeline step.
       - name: Checkout platform scripts
         uses: actions/checkout@v6
         with:
           repository: javaBin/platform
-          token: ${{ steps.app-token.outputs.token }}
+          ref: main
           path: .platform
           sparse-checkout: scripts
+          persist-credentials: false
 
       - name: Generate modules from app.yaml
         env:
@@ -61,8 +56,12 @@ jobs:
           PLATFORM_ROOT: .platform
         run: python3 .platform/scripts/generate-modules.py
 
+      # Pushed with the caller's GITHUB_TOKEN (needs `contents: write` in the
+      # app's deploy.yml). Pushes made with GITHUB_TOKEN never start another
+      # workflow run, so this cannot loop.
       - name: Commit and push generated files
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
           TF_ROOT: ${{ inputs.tf_root }}
+          FORK_PR: ${{ github.event.pull_request.head.repo.full_name != '' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: sh .platform/scripts/commit-generated-tf.sh "$TF_ROOT" "$BRANCH"

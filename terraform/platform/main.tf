@@ -82,6 +82,7 @@ module "lambdas" {
   compliance_reporter_identities = var.auto_tagger_identities
   internal_user_pool_id          = module.identity.internal_user_pool_id
   internal_user_pool_arn         = module.identity.internal_user_pool_arn
+  external_user_pool_arn         = module.identity.external_user_pool_arn
   identity_store_id              = var.identity_store_id
   sso_instance_arn               = var.sso_instance_arn
   alert_dedup_table_name         = module.monitoring.alert_dedup_table_name

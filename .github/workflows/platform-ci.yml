@@ -14,6 +14,10 @@ on:
     - cron: '0 6 * * 1'
   workflow_dispatch:
     # Manual trigger — useful for syncing new repos immediately
+  repository_dispatch:
+    # Sent by javaBin/registry after a team is provisioned, so the team's
+    # CI roles (javabin-ci-team-*, javabin-ci-deploy-*) exist before its first deploy.
+    types: [teams-changed]
 
 permissions:
   id-token: write
@@ -31,6 +35,27 @@ env:
   PLAN_BUCKET: javabin-ci-plan-artifacts-553637109631
 
 jobs:
+  # --------------------------------------------------------------------------
+  # Unit tests — app.yaml generator and Lambda handlers (stdlib unittest)
+  # --------------------------------------------------------------------------
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.7"
+          terraform_wrapper: false
+
+      - name: Generator tests
+        run: python3 -m unittest discover -s scripts/tests -v
+
+      - name: Lambda tests
+        run: python3 -m unittest discover -s terraform/lambda-src/tests -v
+
   # --------------------------------------------------------------------------
   # Plan — terraform init, validate, fmt, plan
   # --------------------------------------------------------------------------
@@ -55,7 +80,10 @@ jobs:
         id: changes
         run: |
           BASE="${{ github.event.pull_request.base.sha || github.event.before || 'HEAD~1' }}"
-          if git diff --name-only "$BASE" HEAD | grep -qE '^(terraform/|scripts/|\.github/workflows/)'; then
+          # Dispatch runs exist to pick up new GitHub teams — always plan.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "has_infra_changes=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "$BASE" HEAD | grep -qE '^(terraform/|scripts/|\.github/workflows/)'; then
             echo "has_infra_changes=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_infra_changes=false" >> "$GITHUB_OUTPUT"
@@ -76,11 +104,23 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: ${{ env.SESSION_NAME }}
 
+      # Listing org teams needs org `members: read`, which GITHUB_TOKEN never
+      # has — the platform App token does. Fail loudly: silently falling back
+      # to the committed tfvars is how new teams ended up without CI roles.
+      - name: Generate GitHub App token
+        if: steps.changes.outputs.has_infra_changes == 'true' && github.ref == 'refs/heads/main'
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PLATFORM_APP_ID }}
+          private-key: ${{ secrets.PLATFORM_APP_PRIVATE_KEY }}
+          owner: javaBin
+
       - name: Sync registered teams from GitHub org
         if: steps.changes.outputs.has_infra_changes == 'true' && github.ref == 'refs/heads/main'
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/sync-registered-teams.py "${{ env.TF_ROOT }}/registered-teams.auto.tfvars" || echo "Sync skipped — will use existing tfvars"
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: python3 scripts/sync-registered-teams.py "${{ env.TF_ROOT }}/registered-teams.auto.tfvars"
 
       - name: Terraform Init
         if: steps.changes.outputs.has_infra_changes == 'true'
@@ -145,7 +185,7 @@ jobs:
     needs: plan
     if: >-
       github.ref == 'refs/heads/main' &&
-      github.event_name == 'push' &&
+      contains(fromJSON('["push", "workflow_dispatch", "repository_dispatch"]'), github.event_name) &&
       needs.plan.outputs.has_changes == 'true'
     environment: production
     steps:

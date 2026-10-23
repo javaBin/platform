@@ -105,6 +105,17 @@ Idempotent: skips resources that already have a `created-by` tag (preserves orig
 
 **Environment vars:** `AWS_ACCOUNT_ID`
 
+## app-auth-sync
+
+**Trigger:** EventBridge "Parameter Store Change" for `/javabin/apps/*/*/auth` (Create/Update/Delete), plus a daily `{"action": "reconcile"}` at 03:30 UTC
+**Purpose:** Creates, updates and deletes the Cognito app clients requested by `app.yaml` `auth:`. The request parameter's path identifies the team (only that team can write there), so no caller-supplied identity is trusted.
+
+**Flow:** Re-read the request → validate (pool, https URLs, scopes) → upsert client `{team}-{app}` in the requested pool with every pool IdP + `COGNITO` → remove it from the other pool → write `/javabin/apps/{team}/{app}/cognito-client-id` (String) and `cognito-client-secret` (SecureString), tagged `team={team}`. A missing request deletes the client and both parameters. Reconcile also removes clients whose credential parameter exists but whose request is gone; clients created by other means are never touched.
+
+**Concurrency:** reserved concurrency 1, so two changes to one app cannot race into duplicate clients.
+
+**Manual run:** `aws lambda invoke --function-name javabin-app-auth-sync --payload '{"action":"reconcile"}' --cli-binary-format raw-in-base64-out /dev/stdout`
+
 ## Shared Module: pricing
 
 `terraform/lambda-src/shared/pricing.py` — provides `estimate_cost()` for enriching alerts with cost impact. Uses AWS Pricing API (us-east-1 endpoint). Caches pricing data across Lambda invocations.

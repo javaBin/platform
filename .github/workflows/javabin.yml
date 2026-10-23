@@ -1,19 +1,41 @@
 name: Javabin CI
 
-# Unified entrypoint — app repos call this with a single 5-line deploy.yml:
+# Unified entrypoint — app repos call this with a short deploy.yml:
 #
 #   name: Deploy
 #   on:
 #     push:
-#       branches: [main, master]
+#       branches: [main]
 #     pull_request:
+#     workflow_dispatch:
+#   permissions:
+#     id-token: write       # AWS OIDC
+#     contents: write       # expand commits generated Terraform
+#     pull-requests: write  # plan comments
 #   jobs:
 #     javabin:
 #       uses: javaBin/platform/.github/workflows/javabin.yml@main
-#       secrets: inherit
+#
+# No repository or organization secrets are required: AWS access is OIDC,
+# and platform scripts are read from this public repo with the caller's
+# GITHUB_TOKEN. Onboarding prerequisites are listed in
+# docs/reusable-workflows.md.
 
 on:
   workflow_call:
+    inputs:
+      node_version:
+        description: "Node.js version override (default: read from the repo's version files)"
+        type: string
+        default: ""
+      pnpm_version:
+        description: "pnpm version override (default: packageManager in package.json)"
+        type: string
+        default: ""
+      java_version:
+        description: "Java version override (default: read from the repo's version files)"
+        type: string
+        default: ""
 
 permissions:
   id-token: write
@@ -32,13 +54,19 @@ jobs:
   # --------------------------------------------------------------------------
   build-jvm:
     needs: detect
-    if: needs.detect.outputs.has_maven == 'true'
+    if: needs.detect.outputs.has_maven == 'true' || needs.detect.outputs.has_gradle == 'true'
     uses: javaBin/platform/.github/workflows/build-jvm.yml@main
+    with:
+      build_tool: ${{ needs.detect.outputs.has_maven == 'true' && 'maven' || 'gradle' }}
+      java_version: ${{ inputs.java_version }}
 
   build-ts:
     needs: detect
     if: needs.detect.outputs.has_pnpm == 'true'
     uses: javaBin/platform/.github/workflows/build-ts.yml@main
+    with:
+      node_version: ${{ inputs.node_version }}
+      pnpm_version: ${{ inputs.pnpm_version }}
 
   # --------------------------------------------------------------------------
   # 3. Docker build + ECR push (main only, after builds pass)
@@ -54,7 +82,9 @@ jobs:
       needs.tf-plan.result != 'failure' &&
       (needs.tf-apply.result == 'success' || needs.tf-apply.result == 'skipped')
     uses: javaBin/platform/.github/workflows/docker-build.yml@main
-    secrets: inherit
+    with:
+      app_name: ${{ needs.detect.outputs.app_name }}
+      team: ${{ needs.detect.outputs.app_team }}
 
   # --------------------------------------------------------------------------
   # 4. Expand app.yaml → Terraform files (commit to repo, run once)
@@ -63,7 +93,6 @@ jobs:
     needs: detect
     if: needs.detect.outputs.has_yaml == 'true'
     uses: javaBin/platform/.github/workflows/expand-terraform.yml@main
-    secrets: inherit
 
   # --------------------------------------------------------------------------
   # 5. Terraform plan (after expand commits TF files, or if terraform/ already exists)
@@ -75,13 +104,14 @@ jobs:
       (needs.detect.outputs.has_tf == 'true' || needs.detect.outputs.has_yaml == 'true') &&
       (needs.expand.result == 'success' || needs.expand.result == 'skipped')
     uses: javaBin/platform/.github/workflows/tf-plan.yml@main
-    secrets: inherit
+    with:
+      team: ${{ needs.detect.outputs.app_team }}
 
   # --------------------------------------------------------------------------
   # 6. Terraform apply (main only, after plan + review — blocked on HIGH risk)
   # --------------------------------------------------------------------------
   tf-apply:
-    needs: tf-plan
+    needs: [detect, tf-plan]
     if: >-
       github.ref == 'refs/heads/main' &&
       needs.tf-plan.outputs.has_changes == 'true'
@@ -89,7 +119,8 @@ jobs:
     with:
       plan_key: ${{ needs.tf-plan.outputs.plan_key }}
       plan_sha256: ${{ needs.tf-plan.outputs.plan_sha256 }}
-    secrets: inherit
+      planned_sha: ${{ needs.tf-plan.outputs.planned_sha }}
+      team: ${{ needs.detect.outputs.app_team }}
 
   # --------------------------------------------------------------------------
   # 7. ECS deploy (main only, after docker build + TF apply)
@@ -104,7 +135,8 @@ jobs:
     uses: javaBin/platform/.github/workflows/ecs-deploy.yml@main
     with:
       image_tag: ${{ needs.docker-build.outputs.image_tag }}
-    secrets: inherit
+      app_name: ${{ needs.detect.outputs.app_name }}
+      team: ${{ needs.detect.outputs.app_team }}
 
   # (commit-terraform removed — expand-terraform.yml handles it)
 

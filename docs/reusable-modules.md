@@ -148,20 +148,18 @@ Auto-wires: resource env vars (bucket names, table names, queue URLs), secret AR
 
 ## cognito-app-client
 
-**New module** — registers an app with Cognito user pools (internal, external, or both).
+Requests a Cognito OAuth client for the app. It does **not** create the client: it writes the request to SSM `/{project}/apps/{team}/{app_name}/auth`, and the platform `app-auth-sync` Lambda creates the client `{team}-{app_name}` and writes its credentials next to the request (`cognito-client-id`, `cognito-client-secret`). See [app-yaml-reference.md#auth](app-yaml-reference.md#auth) for why.
 
-Creates Cognito user pool clients and stores credentials in SSM at `/{project}/platform-apps/{app_name}/cognito-{pool}-client-{id,secret}`.
-
-**Inputs:** `app_name`, `pool` (internal/external/both), `internal_user_pool_id`, `external_user_pool_id`, `callback_urls`
-**Outputs:** `internal_client_id`, `external_client_id`, `ssm_parameter_arns`
+**Inputs:** `app_name`, `team`, `pool` (internal/external), `callback_urls`, `logout_urls`, `allowed_oauth_scopes`, `external_pool_custom_domain`
+**Outputs:** `user_pool_id`, `user_pool_domain`, `issuer_url`, `client_id_arn`, `client_secret_arn` (SSM ARNs for ECS `secrets`), `request_parameter_name`
 
 ## Policy Composition Pattern
 
-Resource modules export `access_policy_json`. The `service-role` module accepts a map of these. The `app-stack` module auto-composes all policies from declared resources.
+Resource modules export `access_policy_json`. The `service-role` module accepts a map of these. `scripts/generate-modules.py` composes all policies from declared resources.
 
 ```
 app.yaml declares bucket "data" + database "sessions"
-  → app-stack creates both resources
+  → generate-modules.py emits both resource modules
   → collects access_policy_json from each
   → passes merged map to service-role
   → ECS task role gets exactly the permissions it needs
@@ -169,40 +167,4 @@ app.yaml declares bucket "data" + database "sessions"
 
 ## app.yaml Schema
 
-```yaml
-name: moresleep            # required, lowercase + hyphens, max 20 chars
-port: 8080                 # default: 8000
-health_check: /health      # default: /health
-
-compute:
-  cpu: 512                 # default: 512
-  memory: 1024             # default: 1024
-  desired_count: 1         # default: 1
-
-routing:
-  host: moresleep.javazone.no  # required
-  priority: 100                # required, unique 1-50000
-
-resources:
-  buckets:
-    - name: data
-      env: DATA_BUCKET     # auto-wired to container env
-  databases:
-    - name: sessions
-      hash_key: id
-      env: SESSIONS_TABLE
-  secrets:
-    - name: api-key
-      env: API_KEY          # auto-wired to ECS secrets
-  queues:
-    - name: tasks
-      env: TASKS_QUEUE_URL
-
-environment:               # additional env vars
-  LOG_LEVEL: info
-
-alarms:
-  enabled: true
-  cpu_threshold: 80
-  memory_threshold: 80
-```
+See [app-yaml-reference.md](app-yaml-reference.md) — the single source of truth for fields and defaults.

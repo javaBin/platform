@@ -60,6 +60,7 @@ def _assume_role(role_arn, session_name, duration):
 def handler(event, context):
     repo = event.get("repo", "")
     action = event.get("action", "plan")
+    requested_team = event.get("team") or None
 
     if not repo:
         return {"error": "repo is required", "approved": False}
@@ -68,14 +69,17 @@ def handler(event, context):
         return {"error": f"Invalid action: {action}. Must be plan or deploy", "approved": False}
 
     # Resolve team from GitHub
-    team = resolve_team(repo)
+    team = resolve_team(repo, requested_team)
     if not team:
-        logger.warning("Repo %s does not belong to any team", repo)
-        return {
-            "approved": False,
-            "error": f"Repo '{repo}' is not in any GitHub team. "
-                     f"Add it at https://github.com/orgs/{GITHUB_ORG}/teams",
-        }
+        if requested_team:
+            logger.warning("Repo %s is not in team %s", repo, requested_team)
+            error = (f"Repo '{repo}' is not in GitHub team '{requested_team}' (app.yaml team). "
+                     f"Add it at https://github.com/orgs/{GITHUB_ORG}/teams/{requested_team}/repositories")
+        else:
+            logger.warning("Repo %s does not belong to any team", repo)
+            error = (f"Repo '{repo}' is not in any GitHub team. "
+                     f"Add it at https://github.com/orgs/{GITHUB_ORG}/teams")
+        return {"approved": False, "error": error}
 
     # Assume the team-scoped role
     role_prefix = ROLE_MAP[action]

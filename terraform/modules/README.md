@@ -25,7 +25,7 @@ module "app" {
 | [service-queue](service-queue/) | SQS queue + DLQ | `queue_url`, `access_policy_json` |
 | [service-alarm](service-alarm/) | CloudWatch alarms for ECS | `cpu_alarm_arn` |
 | [app-stack](app-stack/) | Golden path — reads `app.yaml`, creates everything | All of the above |
-| [cognito-app-client](cognito-app-client/) | Cognito user pool client + SSM credentials | `client_id`, `ssm_parameter_arns` |
+| [cognito-app-client](cognito-app-client/) | Requests a Cognito client (created by the app-auth-sync Lambda) | `issuer_url`, `client_id_arn`, `client_secret_arn` |
 
 ## Golden Path
 
@@ -33,4 +33,4 @@ Most apps should use `app-stack` only. It reads `app.yaml` from the repo root an
 
 ## Policy Composition
 
-Resource modules (`service-bucket`, `service-database`, `service-secret`, `service-queue`) export `access_policy_json`. Pass these to `service-role` via `additional_policy_jsons` to compose least-privilege IAM. The expand-modules pipeline does this automatically.
+Resource modules (`service-bucket`, `service-database`, `service-secret`, `service-queue`) export `access_policy_json`. Pass these to `service-role` via `additional_policy_jsons` to compose least-privilege IAM. `scripts/generate-modules.py` does this automatically.

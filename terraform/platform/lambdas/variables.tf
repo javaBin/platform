@@ -38,6 +38,11 @@ variable "internal_user_pool_arn" {
   type        = string
 }
 
+variable "external_user_pool_arn" {
+  description = "Cognito external user pool ARN (app-auth-sync registers clients here)"
+  type        = string
+}
+
 variable "identity_store_id" {
   description = "IAM Identity Center identity store ID"
   type        = string

@@ -4,13 +4,13 @@ on:
   workflow_call:
     inputs:
       node_version:
-        description: "Node.js version"
+        description: "Node.js version. Empty = read from .nvmrc/.node-version/.tool-versions/mise.toml, else 22"
         type: string
-        default: "22"
+        default: ""
       pnpm_version:
-        description: "pnpm version"
+        description: "pnpm version. Empty = read packageManager from package.json (recommended)"
         type: string
-        default: "9"
+        default: ""
 
 jobs:
   build:
@@ -19,20 +19,35 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Checkout platform scripts
+        uses: actions/checkout@v6
+        with:
+          repository: javaBin/platform
+          ref: main
+          path: .platform
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Resolve Node.js version
+        id: node
+        run: sh .platform/scripts/resolve-tool-version.sh node "${{ inputs.node_version }}" 22
+
+      # Without `version`, pnpm/action-setup reads packageManager from
+      # package.json — the app's own pin is the single source of truth.
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ inputs.pnpm_version }}
 
       - uses: actions/setup-node@v6
         with:
-          node-version: ${{ inputs.node_version }}
+          node-version: ${{ steps.node.outputs.version }}
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Build
-        run: pnpm build
+        run: pnpm run --if-present build
 
       - name: Test
-        run: pnpm test
+        run: pnpm run --if-present test
