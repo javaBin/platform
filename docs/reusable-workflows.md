@@ -103,7 +103,7 @@ Docker BuildKit build + push to ECR repo `{team}-{app_name}`. Uses GitHub Action
 
 ### tf-plan.yml
 
-Plans the committed `terraform/` at the branch head (after expand), uploads the plan to S3 with its SHA256, runs the LLM review (`scripts/review-plan.py`, Bedrock) and posts plan + review to the PR.
+Plans the committed `terraform/` at the branch head (after expand), uploads the plan to S3 with its SHA256, runs the LLM review (`scripts/review-plan.py`, Bedrock Claude Haiku 5.5) and posts plan + review to the PR.
 
 **AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-team-{team}`
 **Outputs:** `has_changes`, `plan_key`, `plan_sha256`, `risk_level`, `planned_sha`
