@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Review a Terraform plan using LLM (eu.anthropic.claude-haiku-4-5-20251001-v1:0 on Bedrock).
+"""Review a Terraform plan using LLM (eu.anthropic.claude-haiku-5-5 on Bedrock).
 
 Usage:
     python3 scripts/review-plan.py plan-output.txt
@@ -13,7 +13,7 @@ import os
 import subprocess
 import sys
 
-MODEL_ID = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+MODEL_ID = "eu.anthropic.claude-haiku-5-5"
 REGION = os.environ.get("AWS_REGION", "eu-central-1")
 
 REVIEW_TOOL_CONFIG = {
@@ -98,7 +98,6 @@ Terraform plan output:
             "--model-id", MODEL_ID,
             "--messages", json.dumps(messages),
             "--tool-config", json.dumps(REVIEW_TOOL_CONFIG),
-            "--inference-config", json.dumps({"temperature": 0.1}),
             "--region", REGION,
         ],
         capture_output=True,

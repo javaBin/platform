@@ -140,7 +140,7 @@ def cost_explorer_url(start, end):
     })
     return f"{base}?{params}"
 
-LLM_MODEL_ID = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+LLM_MODEL_ID = "eu.anthropic.claude-haiku-5-5"
 LLM_REGION = os.environ.get("DEPLOY_REGION", "eu-central-1")
 
 MAX_SERVICES_PER_CATEGORY = 8
@@ -308,7 +308,6 @@ def _llm_structured(prompt, tool_config):
             modelId=LLM_MODEL_ID,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             toolConfig=tool_config,
-            inferenceConfig={"temperature": 0.2},
         )
         for content in response["output"]["message"]["content"]:
             if "toolUse" in content:

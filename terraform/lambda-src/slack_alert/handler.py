@@ -111,7 +111,7 @@ _CONSOLE_OVERRIDES = {
 # LLM analysis via Bedrock — structured output
 # ---------------------------------------------------------------------------
 DEPLOY_REGION = os.environ.get("DEPLOY_REGION", "eu-central-1")
-LLM_MODEL_ID = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+LLM_MODEL_ID = "eu.anthropic.claude-haiku-5-5"
 
 _SECURITY_TOOL = {
     "tools": [{
@@ -156,7 +156,6 @@ def _llm_structured(prompt):
             modelId=LLM_MODEL_ID,
             messages=[{"role": "user", "content": [{"text": prompt}]}],
             toolConfig=_SECURITY_TOOL,
-            inferenceConfig={"temperature": 0.2},
         )
         for content in response["output"]["message"]["content"]:
             if "toolUse" in content:

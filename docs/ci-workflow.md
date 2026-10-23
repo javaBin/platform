@@ -18,7 +18,7 @@ Monday 08:00   ──► securityhub-summary Lambda ──► #javabin-infra-ale
 - `terraform init`, `validate`, `fmt -check`, `plan`
 - Uploads `tfplan` + `plan-output.txt` to S3 with SHA256 hash
 - Posts plan output as PR comment on pull requests
-- Runs `scripts/review-plan.py` inline — calls Bedrock (Claude Haiku) for risk analysis
+- Runs `scripts/review-plan.py` inline — calls Bedrock (Claude Haiku 5.5) for risk analysis
 - Structured output via Bedrock Converse tool use: `{risk: LOW|MEDIUM|HIGH, summary: ..., findings: [...]}`
 - Posts review as PR comment
 - HIGH risk on main → sends Slack notification
