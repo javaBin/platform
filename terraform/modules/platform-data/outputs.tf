@@ -54,7 +54,7 @@ output "ecs_cluster_name" {
 }
 
 output "execution_role_arn" {
-  description = "ECS execution role ARN (shared across all services)"
+  description = "The team's ECS execution role ARN (reads only that team's secrets)"
   value       = data.aws_iam_role.ecs_execution.arn
 }
 
