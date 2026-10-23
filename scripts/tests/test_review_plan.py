@@ -114,5 +114,23 @@ class ReviewPlanTest(unittest.TestCase):
         self.assertIn("Deny", prompt)
 
 
+
+class ReviewFeedbackTest(unittest.TestCase):
+    def test_tainted_and_removed_headers_parse_cleanly(self):
+        plan = ("  # aws_instance.a is tainted, so must be replaced\n"
+                "  # aws_s3_bucket.old will no longer be managed by Terraform\n")
+        self.assertEqual([(a, act) for _, a, act in rp.resource_changes(plan)],
+                         [("aws_instance.a", "must be replaced"),
+                          ("aws_s3_bucket.old", "will no longer be managed by Terraform")])
+
+    def test_huge_change_list_is_grouped_and_stays_under_the_limit(self):
+        headers = "".join(f'  # module.m{i % 3}.aws_iam_role.r["team{i}"] will be created\n  + resource {{}}\n'
+                          for i in range(6000))
+        section = rp.build_plan_section(headers + "Plan: 6000 to add, 0 to change, 0 to destroy.\n", limit=50_000)
+        self.assertLessEqual(len(section), 50_000)
+        self.assertIn('module.m0.aws_iam_role.r[*]: will be created ×2000', section)
+        self.assertIn("No diff is shown", section)
+
+
 if __name__ == "__main__":
     unittest.main()

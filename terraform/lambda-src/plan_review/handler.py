@@ -46,9 +46,9 @@ s3 = boto3.client("s3")
 ssm = boto3.client("ssm")
 # Bounded per call, so retries fit inside the Lambda timeout; the handler
 # does its own retrying.
-bedrock = boto3.client("bedrock-runtime", config=Config(read_timeout=90, connect_timeout=10,
+bedrock = boto3.client("bedrock-runtime", config=Config(read_timeout=150, connect_timeout=10,
                                                          retries={"max_attempts": 1, "mode": "standard"}))
-CALL_BUDGET_MS = 100_000
+CALL_BUDGET_MS = 160_000
 
 
 def converse(messages, tool_config):

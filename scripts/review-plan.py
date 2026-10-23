@@ -33,7 +33,8 @@ REFRESH_LINE = re.compile(r"^\S.*: (Refreshing state\.\.\.|Reading\.\.\.|Still r
 
 # Resource change headers, e.g. "  # aws_iam_role.x will be updated in-place".
 CHANGE_HEADER = re.compile(
-    r"^\s{0,2}# ([^\s(].*?)(?: \(deposed object \w+\))? (will be .+|must be replaced|has moved to .+)$")
+    r"^\s{0,2}# ([^\s(].*?)(?: \(deposed object \w+\))?(?: is tainted, so)? "
+    r"(will be .+|will no longer be managed by Terraform|must be replaced|has moved to .+)$")
 
 REVIEW_TOOL_CONFIG = {
     "tools": [
@@ -133,6 +134,33 @@ def resource_changes(plan_text):
     return changes
 
 
+INSTANCE_KEY = re.compile(r"\[[^\]]*\]")
+
+
+def _grouped_section(clean, changes, totals, limit):
+    """For plans whose change list alone is too large: group changes by
+    address with instance keys removed (aws_x.y[*]: will be created ×25)."""
+    groups = {}
+    for _, addr, action in changes:
+        key = (INSTANCE_KEY.sub("[*]", addr), action)
+        groups[key] = groups.get(key, 0) + 1
+    lines = [f"- {addr}: {action}" + (f" ×{n}" if n > 1 else "") for (addr, action), n in groups.items()]
+    shown, size = [], 0
+    for line in lines:
+        if size + len(line) + 1 > limit - 2_000:
+            break
+        shown.append(line)
+        size += len(line) + 1
+    dropped = len(lines) - len(shown)
+    notice = (f"NOTE: this plan has {len(changes)} resource changes and {len(clean):,} characters, too large "
+              f"to show its diff within the {limit:,}-character review limit. No diff is shown. The list "
+              f"below groups the changes by address (instance keys replaced by [*], counts shown as ×N)"
+              + (f"; {dropped} groups did not fit and are not listed" if dropped else "")
+              + ". Judge the plan from addresses and actions only, and say in your summary that the diff "
+              "was not reviewed.")
+    return (f"{notice}\n\n{totals[0] if totals else ''}\n" + "\n".join(shown))
+
+
 def build_plan_section(plan_text, limit=MAX_PLAN_CHARS):
     """The plan as the model sees it: the whole noise-free plan when it fits,
     otherwise a complete change list, the diff cut at a resource boundary,
@@ -149,6 +177,8 @@ def build_plan_section(plan_text, limit=MAX_PLAN_CHARS):
     # Budget for the diff: what's left after the change list (sized as if
     # every entry carried the omitted marker) and ~1k chars of notice.
     list_size = sum(len(f"- {addr}: {action}{omitted_mark}\n") for _, addr, action in changes)
+    if list_size > limit // 2:
+        return _grouped_section(clean, changes, totals, limit)
     budget = max(limit - list_size - 1_000, 0)
     used, cut = 0, 0
     for i, line in enumerate(lines):
