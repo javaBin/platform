@@ -154,7 +154,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: lambda-zips
-          path: ${{ env.TF_ROOT }}/lambdas/builds/
+          # Every module's archive_file output (lambdas/, identity/, ...).
+          # Paths are kept relative to TF_ROOT, the part before the wildcard.
+          path: ${{ env.TF_ROOT }}/*/builds/*.zip
+          if-no-files-found: error
           retention-days: 1
 
       # ----------------------------------------------------------------
@@ -216,7 +219,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: lambda-zips
-          path: ${{ env.TF_ROOT }}/lambdas/builds/
+          path: ${{ env.TF_ROOT }}/
 
       - name: Download plan from S3
         working-directory: ${{ env.TF_ROOT }}
