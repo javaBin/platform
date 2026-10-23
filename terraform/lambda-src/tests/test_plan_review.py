@@ -78,6 +78,23 @@ class PlanReviewTest(unittest.TestCase):
         self.assertIn("Adds an ECS service", result["markdown"])
         self.assertEqual(json.loads(self.s3.objects["plans/javaBin/frosting/123/risk.json"])["level"], "LOW")
 
+    def test_large_plan_reaches_bedrock_whole_without_refresh_noise(self):
+        diff = "".join(f'  # aws_iam_role_policy.p{i} will be updated in-place\n      ~ policy = "a" -> "b"\n'
+                       for i in range(3000))
+        refresh = "module.x.aws_s3_bucket.b: Refreshing state... [id=b]\n" * 2000
+        self.s3.objects["plans/javaBin/frosting/123/plan-output.txt"] = refresh + diff + "Plan: 0 to add, 3000 to change, 0 to destroy."
+        self.assertGreater(len(diff), 80_000)
+        bedrock = FakeBedrock([tool_response("LOW")])
+        h = load(self.s3, bedrock)
+        prompts = []
+        orig = h.converse
+        h.converse = lambda messages, tool_config: (prompts.append(messages[0]["content"][0]["text"]), orig(messages, tool_config))[1]
+        self.assertEqual(h.handler({"plan_key": PLAN, "id_token": "good"}, None)["risk"], "LOW")
+        self.assertIn(diff.rstrip("\n"), prompts[0])
+        self.assertIn("aws_iam_role_policy.p2999", prompts[0])
+        self.assertNotIn("Refreshing state", prompts[0])
+        self.assertNotIn("NOTE: this plan is", prompts[0])
+
     def test_transient_failures_are_retried(self):
         bedrock = FakeBedrock([RuntimeError("ThrottlingException"), tool_response("MEDIUM")])
         h = load(self.s3, bedrock)
