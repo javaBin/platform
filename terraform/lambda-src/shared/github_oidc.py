@@ -7,15 +7,15 @@ must not come from the request payload: the caller sends a GitHub OIDC token
 minted for this audience, and the repo is read from its signed `repository`
 claim, which the job cannot forge.
 
-RS256 is verified with the openssl CLI (in the Lambda runtime), so no
-third-party packages are needed.
+RS256 is verified in plain Python (modular exponentiation + an exact
+PKCS#1 v1.5 comparison), so no third-party packages or binaries are needed.
 """
 
 import base64
+import hashlib
+import hmac
 import json
 import os
-import subprocess
-import tempfile
 import time
 import urllib.request
 
@@ -26,6 +26,7 @@ PLATFORM_WORKFLOW_PREFIX = f"{GITHUB_ORG}/platform/.github/workflows/"
 CLOCK_SKEW = 60
 
 _jwks_cache = {"keys": None, "fetched_at": 0}
+REFETCH_MIN_SECONDS = 60
 
 
 class TokenError(ValueError):
@@ -36,33 +37,28 @@ def _b64url_decode(s):
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-def _der_len(n):
-    if n < 0x80:
-        return bytes([n])
-    b = n.to_bytes((n.bit_length() + 7) // 8, "big")
-    return bytes([0x80 | len(b)]) + b
+# DigestInfo prefix for SHA-256 in an EMSA-PKCS1-v1_5 block (RFC 8017 §9.2)
+_SHA256_DIGEST_INFO = bytes.fromhex("3031300d060960864801650304020105000420")
 
 
-def _der_int(b):
-    if b[0] & 0x80:
-        b = b"\x00" + b
-    return b"\x02" + _der_len(len(b)) + b
+def _verify_rs256(signing_input, signature, jwk):
+    """RSASSA-PKCS1-v1_5 / SHA-256 verification in plain Python.
 
-
-def _der_seq(*parts):
-    body = b"".join(parts)
-    return b"\x30" + _der_len(len(body)) + body
-
-
-def jwk_to_pem(jwk):
-    """Encode an RSA JWK (n, e) as a SubjectPublicKeyInfo PEM."""
-    rsa_key = _der_seq(_der_int(_b64url_decode(jwk["n"])), _der_int(_b64url_decode(jwk["e"])))
-    algorithm = _der_seq(b"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x01\x01", b"\x05\x00")  # rsaEncryption, NULL
-    bit_string = b"\x03" + _der_len(len(rsa_key) + 1) + b"\x00" + rsa_key
-    der = _der_seq(algorithm, bit_string)
-    b64 = base64.b64encode(der).decode()
-    lines = [b64[i:i + 64] for i in range(0, len(b64), 64)]
-    return "-----BEGIN PUBLIC KEY-----\n" + "\n".join(lines) + "\n-----END PUBLIC KEY-----\n"
+    Rebuilds the exact expected encoded message and compares it in constant
+    time; no parsing of the decrypted block, so no padding-oracle style
+    leniency.
+    """
+    n = int.from_bytes(_b64url_decode(jwk["n"]), "big")
+    e = int.from_bytes(_b64url_decode(jwk["e"]), "big")
+    k = (n.bit_length() + 7) // 8
+    if len(signature) != k:
+        return False
+    em = pow(int.from_bytes(signature, "big"), e, n).to_bytes(k, "big")
+    t = _SHA256_DIGEST_INFO + hashlib.sha256(signing_input).digest()
+    if k < len(t) + 11:
+        return False
+    expected = b"\x00\x01" + b"\xff" * (k - len(t) - 3) + b"\x00" + t
+    return hmac.compare_digest(em, expected)
 
 
 def _jwks(force=False):
@@ -71,22 +67,6 @@ def _jwks(force=False):
             _jwks_cache["keys"] = {k["kid"]: k for k in json.loads(resp.read())["keys"]}
         _jwks_cache["fetched_at"] = time.time()
     return _jwks_cache["keys"]
-
-
-def _verify_rs256(signing_input, signature, jwk):
-    with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as k, \
-         tempfile.NamedTemporaryFile("wb", suffix=".sig", delete=False) as sig:
-        k.write(jwk_to_pem(jwk))
-        sig.write(signature)
-    try:
-        r = subprocess.run(
-            ["openssl", "dgst", "-sha256", "-verify", k.name, "-signature", sig.name],
-            input=signing_input, capture_output=True,
-        )
-        return r.returncode == 0
-    finally:
-        os.unlink(k.name)
-        os.unlink(sig.name)
 
 
 def verify(token, audience, now=None, keys=None):
@@ -104,13 +84,15 @@ def verify(token, audience, now=None, keys=None):
         signature = _b64url_decode(sig_b64)
     except ValueError as e:
         raise TokenError(f"undecodable token: {e}")
+    if not isinstance(header, dict) or not isinstance(claims, dict):
+        raise TokenError("token header and claims must be JSON objects")
 
     if header.get("alg") != "RS256":
         raise TokenError(f"unsupported alg {header.get('alg')!r}")
     jwks = keys if keys is not None else _jwks()
     jwk = jwks.get(header.get("kid"))
-    if jwk is None and keys is None:
-        jwk = _jwks(force=True).get(header.get("kid"))  # key rotation
+    if jwk is None and keys is None and time.time() - _jwks_cache["fetched_at"] > REFETCH_MIN_SECONDS:
+        jwk = _jwks(force=True).get(header.get("kid"))  # key rotation (rate-limited)
     if jwk is None:
         raise TokenError("unknown signing key")
     if not _verify_rs256(f"{header_b64}.{payload_b64}".encode(), signature, jwk):
