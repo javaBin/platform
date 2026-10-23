@@ -20,7 +20,10 @@ tf-plan     → uploads plan + plan-output.txt to S3
 plan-review → LLM reviews plan → uploads risk.json to S3
 tf-apply    → assumes javabin-ci-apply-gate (lightweight OIDC role)
             → downloads plan from S3, verifies SHA256
-            → invokes gate Lambda: check(plan_key, repo_name)
+            → invokes gate Lambda: check(plan_key, team, id_token)
+            → Lambda verifies the GitHub OIDC token (aud javabin-apply-gate,
+              a javaBin/platform workflow on main) and takes the repo from its
+              signed `repository` claim; plan_key must be under plans/javaBin/<repo>/
             → Lambda reads risk.json from S3
               → LOW/MEDIUM: assumes app CI role via STS, returns temp credentials
               → HIGH: checks for override.json, verifies HMAC signature
@@ -28,6 +31,23 @@ tf-apply    → assumes javabin-ci-apply-gate (lightweight OIDC role)
                 → no override: returns 403, apply fails
             → tf-apply uses temp credentials for terraform init + apply
 ```
+
+## Caller identity
+
+The gate and broker roles can be assumed from any javaBin repo's platform
+workflow job, and code inside that job (e.g. a Terraform `external` data
+source) can invoke the Lambdas directly. So nothing identity-related is taken
+from the payload:
+
+- `check` — repo comes from the job's GitHub OIDC token, the team must be the
+  app.yaml team the repo belongs to, and the plan must be the repo's own.
+- `sign` — only a token from `approve-override.yml` in javaBin/platform,
+  running in the board-reviewed `override-approval` environment, is accepted.
+  The approver is the token's `actor`. Without this, any app's tf-apply job
+  could sign its own HIGH-risk override.
+
+Tokens are minted with `scripts/github-oidc-token.sh <audience>` and verified
+in `terraform/lambda-src/shared/github_oidc.py` (RS256 against GitHub's JWKS).
 
 ## IAM Roles
 

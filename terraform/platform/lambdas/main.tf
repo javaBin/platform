@@ -1383,6 +1383,10 @@ data "archive_file" "apply_gate" {
     content  = file("${local.lambda_src_path}/shared/github.py")
     filename = "shared/github.py"
   }
+  source {
+    content  = file("${local.lambda_src_path}/shared/github_oidc.py")
+    filename = "shared/github_oidc.py"
+  }
 }
 
 resource "aws_iam_role" "apply_gate" {
@@ -1486,6 +1490,10 @@ data "archive_file" "ci_broker" {
   source {
     content  = file("${local.lambda_src_path}/shared/github.py")
     filename = "shared/github.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/github_oidc.py")
+    filename = "shared/github_oidc.py"
   }
 }
 

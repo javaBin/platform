@@ -19,6 +19,9 @@ import time
 
 import boto3
 from shared.github import resolve_team
+from shared.github_oidc import TokenError, require_workflow
+from shared.github_oidc import repo_name as oidc_repo_name
+from shared.github_oidc import verify as verify_oidc
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -32,6 +35,8 @@ SIGNING_KEY_PARAM = os.environ.get(
 )
 PLAN_BUCKET = os.environ.get("PLAN_BUCKET", "")
 PROJECT = os.environ.get("PROJECT", "javabin")
+GITHUB_ORG = os.environ.get("GITHUB_ORG", "javaBin")
+OIDC_AUDIENCE = os.environ.get("OIDC_AUDIENCE", f"{PROJECT}-apply-gate")
 CREDENTIAL_DURATION = int(os.environ.get("CREDENTIAL_DURATION", "900"))  # 15 min
 
 # Cache signing key across invocations
@@ -87,8 +92,17 @@ def action_check(event):
     Output: {approved, risk_level, credentials?, reason?}
     """
     plan_key = event["plan_key"]
-    repo_name = event["repo_name"]
     team = event.get("team") or None
+    # Repo from the signed GitHub OIDC token, not the payload (see ci_broker)
+    try:
+        repo_name = oidc_repo_name(verify_oidc(event.get("id_token"), OIDC_AUDIENCE))
+    except TokenError as e:
+        logger.warning("Rejected gate call: %s", e)
+        return {"approved": False, "reason": f"Invalid GitHub OIDC token: {e}"}
+    # Plans are stored under plans/<org>/<repo>/...; never apply another
+    # repo's (possibly LOW-risk or overridden) plan.
+    if not plan_key.startswith(f"plans/{GITHUB_ORG}/{repo_name}/"):
+        return {"approved": False, "reason": f"Plan {plan_key} does not belong to {repo_name}"}
     session_name = event.get("session_name")
     prefix = _plan_prefix(plan_key)
 
@@ -153,11 +167,26 @@ def action_check(event):
 def action_sign(event):
     """Create a signed override token and write it to S3.
 
-    Input: {plan_key, approved_by, reason}
+    Input: {plan_key, reason, id_token}
     Output: {signed: true, plan_key}
+
+    Only the approve-override workflow in javaBin/platform, running behind
+    the board-reviewed override-approval environment, may sign. Without this
+    check any app's tf-apply job could invoke the gate and approve its own
+    HIGH-risk plan. The approver is the token's actor, not a payload field.
     """
     plan_key = event["plan_key"]
-    approved_by = event["approved_by"]
+    try:
+        claims = require_workflow(
+            verify_oidc(event.get("id_token"), OIDC_AUDIENCE),
+            "approve-override.yml",
+            repository=f"{GITHUB_ORG}/platform",
+            environment="override-approval",
+        )
+    except TokenError as e:
+        logger.warning("Rejected override signing: %s", e)
+        return {"signed": False, "error": f"Invalid GitHub OIDC token: {e}"}
+    approved_by = claims["actor"]
     reason = event.get("reason", "")
     prefix = _plan_prefix(plan_key)
 
