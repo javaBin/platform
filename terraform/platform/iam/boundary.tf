@@ -146,7 +146,7 @@ resource "aws_iam_policy" "developer_boundary" {
           "ec2:Delete*", "ec2:Modify*",
           "elasticloadbalancing:Delete*", "elasticloadbalancing:Modify*",
           "ecs:DeleteCluster", "ecs:UpdateCluster", "ecs:UpdateClusterSettings",
-          "iam:DeleteRole", "iam:UpdateRole", "iam:DeleteRolePolicy",
+          "iam:DeleteRole", "iam:UpdateRole", "iam:DeleteRolePolicy", "iam:UpdateAssumeRolePolicy",
           "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy",
           "route53:DeleteHostedZone", "sns:DeleteTopic", "sns:SetTopicAttributes",
           # Shared SGs (ECS tasks, ALB): a team rule here opens or cuts every app

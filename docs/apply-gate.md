@@ -43,7 +43,7 @@ from the payload:
   app.yaml team the repo belongs to, and the plan must be the repo's own.
 - `sign` — only a token from `approve-override.yml` in javaBin/platform,
   running in the board-reviewed `override-approval` environment, is accepted.
-  The approver is the token's `actor`. Without this, any app's tf-apply job
+  The recorded approver is the token's `actor`: whoever dispatched the workflow (a board member must still approve the environment for it to run). Without this, any app's tf-apply job
   could sign its own HIGH-risk override.
 
 Tokens are minted with `scripts/github-oidc-token.sh <audience>` and verified

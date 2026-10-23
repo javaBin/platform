@@ -274,7 +274,8 @@ def _issue_credentials(repo_name, requested_team=None, session_name=None):
 
 
 def handler(event, context):
-    logger.info("Apply gate invoked: %s", json.dumps(event, default=str)[:500])
+    logged = {k: v for k, v in event.items() if k != "id_token"}
+    logger.info("Apply gate invoked: %s", json.dumps(logged, default=str)[:500])
 
     action = event.get("action", "check")
 
