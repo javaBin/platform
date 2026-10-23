@@ -1576,6 +1576,8 @@ data "archive_file" "app_auth_sync" {
 
 resource "aws_iam_role" "app_auth_sync" {
   name = "${var.project}-app-auth-sync"
+  # The org boundary denies creating any role without one
+  permissions_boundary = var.org_boundary_arn
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
