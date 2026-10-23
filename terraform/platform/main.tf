@@ -84,6 +84,8 @@ module "lambdas" {
   internal_user_pool_id          = module.identity.internal_user_pool_id
   internal_user_pool_arn         = module.identity.internal_user_pool_arn
   external_user_pool_arn         = module.identity.external_user_pool_arn
+  auth_memberships_table_name    = module.identity.auth_memberships_table_name
+  auth_memberships_table_arn     = module.identity.auth_memberships_table_arn
   identity_store_id              = var.identity_store_id
   sso_instance_arn               = var.sso_instance_arn
   alert_dedup_table_name         = module.monitoring.alert_dedup_table_name
@@ -109,6 +111,7 @@ module "identity" {
   google_client_id     = var.google_client_id
   google_client_secret = var.google_client_secret
   certificate_arn      = var.certificate_arn
+  org_boundary_arn     = module.iam.org_boundary_arn
 }
 
 module "dns" {

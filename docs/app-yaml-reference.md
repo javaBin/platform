@@ -191,18 +191,36 @@ Full form:
 ```yaml
 auth:
   pool: internal              # 'internal' (default) or 'external'
-  callback_urls:              # optional, https only
+  client: confidential        # confidential (default) | public | none — see below
+  callback_urls:              # optional; https, or http://localhost for local dev
     - https://app.javazone.no/auth/callback
-  logout_urls:                # optional, https only
+    - http://localhost:3000/auth/callback
+  logout_urls:                # optional; same rules
     - https://app.javazone.no/
   scopes:                     # optional, default ['openid', 'email', 'profile']
     - openid
     - email
     - profile
-  groups:                     # optional, reference-only — exposed as COGNITO_GROUPS env var
-    - admins
-    - editors
+  groups:                     # optional — only members of these groups can sign in
+    - helter
+  env:                        # optional — also inject values under your own names
+    COGNITO_CLIENT_ID: NUXT_PUBLIC_OIDC_CLIENT_ID
+    COGNITO_ISSUER_URL: NUXT_PUBLIC_OIDC_AUTHORITY
 ```
+
+#### `client`
+
+| Value | For | You get |
+|---|---|---|
+| `confidential` | Server-side login (the server does the code exchange) | Client ID **and** secret |
+| `public` | Browser apps doing OIDC with PKCE (oidc-client-ts, etc.) — a secret can't be kept in a browser | Client ID, no secret |
+| `none` | APIs that only *verify* tokens issued to another app's client | Pool/issuer values only; no client, no callbacks, no `routing.host` needed |
+
+A typical split frontend/backend: the frontend uses `client: public`, the API uses `client: none` and validates tokens against `COGNITO_ISSUER_URL` / `COGNITO_WELL_KNOWN_URL`.
+
+A `client: none` API has no client ID of its own to check, so it accepts tokens issued to *any* client in the pool. Check `cognito:groups` (or the token's `client_id`) for anything that matters.
+
+Changing `client` between `confidential` and `public` replaces the Cognito client, so its ID changes. Running tasks keep the old ID until they restart: redeploy after the change.
 
 Both forms are supported and produce the same wiring.
 
@@ -210,7 +228,7 @@ Both forms are supported and produce the same wiring.
 - `external` — public users.
 - `none` or omitted — no Cognito integration.
 
-`auth:` requires `routing.host` — callback and logout URL defaults are derived from it.
+`auth:` with a client needs `routing.host` or explicit `callback_urls` — the defaults are derived from the host.
 
 #### Defaults
 
@@ -233,14 +251,21 @@ On the very first deploy with `auth:`, the first task can start a few seconds be
 |---|---|---|
 | `COGNITO_USER_POOL_ID` | Pool looked up by name | Used to construct the issuer URL on the backend |
 | `COGNITO_DOMAIN` | Hosted-UI FQDN of the pool | e.g. `javabin-internal.auth.eu-central-1.amazoncognito.com`; empty for external when no custom domain is configured |
-| `COGNITO_ISSUER_URL` | `https://cognito-idp.{region}.amazonaws.com/{pool_id}` | OIDC issuer for JWT validation (`{issuer}/.well-known/openid-configuration`) |
-| `COGNITO_CLIENT_ID` | SSM (ECS task `secrets`) | The OAuth client ID |
-| `COGNITO_CLIENT_SECRET` | SSM SecureString (ECS task `secrets`) | Always generated — server-side apps only |
-| `COGNITO_GROUPS` | Comma-joined list from `auth.groups` | Optional; for app-level authorization on the `cognito:groups` JWT claim |
+| `COGNITO_ISSUER_URL` | `https://cognito-idp.{region}.amazonaws.com/{pool_id}` | OIDC issuer for JWT validation |
+| `COGNITO_WELL_KNOWN_URL` | `{issuer}/.well-known/openid-configuration` | OIDC discovery document |
+| `COGNITO_CLIENT_ID` | SSM (ECS task `secrets`) | `confidential` and `public` only |
+| `COGNITO_CLIENT_SECRET` | SSM SecureString (ECS task `secrets`) | `confidential` only |
+| `COGNITO_GROUPS` | Comma-joined list from `auth.groups` | Only when `groups` is set |
 
-#### Groups are reference-only
+`auth.env` adds the same values under extra names (both names are injected). Only names injected for your `client` type can be aliased.
 
-`auth.groups` is a list of group names that the app *expects* to see on the `cognito:groups` JWT claim. **No Cognito groups are created or modified from `app.yaml`.** Groups are managed by the team-provisioner Lambda (e.g. `team-{team}` groups synced from the registry).
+#### Groups
+
+Tokens from the internal pool carry the user's registry groups in `cognito:groups` (ID and access token): every group in `javaBin/registry` `groups/groups.yaml` with `cognito: true` the user is a member of, plus `team-{team}` for teams they belong to. The `javabin-auth-claims` trigger adds them at every sign-in and refresh, from membership team-provisioner records on each registry merge. A registry change reaches tokens at the user's next sign-in or token refresh.
+
+`auth.groups` restricts the client: a user in none of the listed groups is refused at sign-in, so the app never receives a token for them. Apps should still check `cognito:groups` for finer-grained authorization (e.g. admin features).
+
+No Cognito groups are created from `app.yaml`; add groups in the registry.
 
 #### `pool: both` is not supported
 

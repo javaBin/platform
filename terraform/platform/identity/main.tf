@@ -14,6 +14,13 @@
 resource "aws_cognito_user_pool" "internal" {
   name = "${var.project}-internal"
 
+  lambda_config {
+    pre_token_generation_config {
+      lambda_arn     = aws_lambda_function.auth_claims.arn
+      lambda_version = "V2_0"
+    }
+  }
+
   auto_verified_attributes = ["email"]
   username_attributes      = ["email"]
 
@@ -180,4 +187,108 @@ resource "aws_route53_record" "external_auth" {
     zone_id                = aws_cognito_user_pool_domain.external[0].cloudfront_distribution_zone_id
     evaluate_target_health = false
   }
+}
+
+################################################################################
+# Registry group claims — javabin-auth-claims (pre-token-generation V2)
+#
+# Federated users (GoogleSAML) arrive with only an email; no Cognito group
+# membership exists for them. team-provisioner writes registry membership
+# (groups.yaml with cognito: true, team-<name> groups) to the memberships
+# table; this trigger puts the user's groups into cognito:groups of the ID
+# and access token at every sign-in and refresh.
+#
+# The same table holds each app client's allowed groups (written by
+# app-auth-sync from app.yaml auth.groups). If a client has allowed groups
+# and the user is in none of them, the trigger refuses the token.
+################################################################################
+
+locals {
+  lambda_src_path = "${path.module}/../../lambda-src"
+}
+
+resource "aws_dynamodb_table" "auth_memberships" {
+  name         = "${var.project}-auth-memberships"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "pk"
+
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  tags = {
+    Name = "${var.project}-auth-memberships"
+  }
+}
+
+data "archive_file" "auth_claims" {
+  type             = "zip"
+  output_path      = "${path.module}/builds/auth_claims.zip"
+  output_file_mode = "0644"
+  source_dir       = "${local.lambda_src_path}/auth_claims"
+}
+
+resource "aws_iam_role" "auth_claims" {
+  name = "${var.project}-auth-claims"
+  # The org boundary denies creating any role without one
+  permissions_boundary = var.org_boundary_arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "auth_claims" {
+  name = "${var.project}-auth-claims"
+  role = aws_iam_role.auth_claims.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "ReadMemberships"
+      Effect   = "Allow"
+      Action   = ["dynamodb:Scan", "dynamodb:GetItem"]
+      Resource = aws_dynamodb_table.auth_memberships.arn
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "auth_claims_logs" {
+  role       = aws_iam_role.auth_claims.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_function" "auth_claims" {
+  function_name    = "${var.project}-auth-claims"
+  role             = aws_iam_role.auth_claims.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 5
+  memory_size      = 256
+  filename         = data.archive_file.auth_claims.output_path
+  source_code_hash = data.archive_file.auth_claims.output_base64sha256
+
+  environment {
+    variables = {
+      MEMBERSHIPS_TABLE = aws_dynamodb_table.auth_memberships.name
+    }
+  }
+}
+
+resource "aws_lambda_permission" "auth_claims_cognito" {
+  statement_id  = "AllowCognitoInternalPool"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.auth_claims.function_name
+  principal     = "cognito-idp.amazonaws.com"
+  source_arn    = aws_cognito_user_pool.internal.arn
 }

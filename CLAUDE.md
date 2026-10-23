@@ -97,7 +97,7 @@ terraform/platform/
   compute/         ECS cluster, ECR base config
   monitoring/      SNS, EventBridge, Config, GuardDuty, Security Hub
   lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, resource-tagger, budget-enforcer, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set, ci-broker, app-auth-sync, plan-review
-  identity/        Cognito user pools (internal + external). Identity Center is in terraform/org/
+  identity/        Cognito user pools (internal + external), auth-claims trigger, auth memberships table. Identity Center is in terraform/org/
 ```
 
 ### Terraform — Org (human-applied, no CI)
@@ -169,7 +169,8 @@ terraform/state/
 | `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget |
 | `resource-tagger` | EventBridge-triggered, auto-tags created-by + commit on new resources |
 | `ci-broker` | Verifies the job's GitHub OIDC token (repo from signed claims), checks repo ∈ app.yaml team, vends short-lived team role credentials |
-| `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` (SSM request → client + credentials) |
+| `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` (SSM request → client + credentials + allowed groups) |
+| `auth-claims` | Internal pool pre-token trigger: registry groups → `cognito:groups`, enforces app `auth.groups` (in `identity/`) |
 | `plan-review` | LLM review of app Terraform plans with platform credentials; writes `risk.json` (invoked by app tf-plan) |
 
 ### Scripts
