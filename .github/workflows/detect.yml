@@ -15,6 +15,9 @@ on:
       has_maven:
         description: "pom.xml exists"
         value: ${{ jobs.detect.outputs.has_maven }}
+      has_gradle:
+        description: "build.gradle(.kts) exists"
+        value: ${{ jobs.detect.outputs.has_gradle }}
       has_pnpm:
         description: "pnpm-lock.yaml exists"
         value: ${{ jobs.detect.outputs.has_pnpm }}
@@ -24,6 +27,9 @@ on:
       app_name:
         description: "App name from app.yaml (empty if no app.yaml)"
         value: ${{ jobs.detect.outputs.app_name }}
+      app_team:
+        description: "Team from app.yaml (empty if no app.yaml)"
+        value: ${{ jobs.detect.outputs.app_team }}
 
 jobs:
   detect:
@@ -34,9 +40,11 @@ jobs:
       has_tf: ${{ steps.check.outputs.has_tf }}
       has_docker: ${{ steps.check.outputs.has_docker }}
       has_maven: ${{ steps.check.outputs.has_maven }}
+      has_gradle: ${{ steps.check.outputs.has_gradle }}
       has_pnpm: ${{ steps.check.outputs.has_pnpm }}
       has_eb: ${{ steps.check.outputs.has_eb }}
       app_name: ${{ steps.check.outputs.app_name }}
+      app_team: ${{ steps.check.outputs.app_team }}
     steps:
       - uses: actions/checkout@v6
 
@@ -47,10 +55,13 @@ jobs:
           echo "has_tf=$(test -d terraform && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "has_docker=$(test -f Dockerfile && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "has_maven=$(test -f pom.xml && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "has_gradle=$(test -f build.gradle.kts -o -f build.gradle && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "has_pnpm=$(test -f pnpm-lock.yaml && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "has_eb=$(test -d .elasticbeanstalk && echo true || echo false)" >> "$GITHUB_OUTPUT"
           if [ -f app.yaml ]; then
-            echo "app_name=$(grep -m1 '^name:' app.yaml | awk '{print $2}' | tr -d '\"'"'")" >> "$GITHUB_OUTPUT"
+            echo "app_name=$(yq '.name // ""' app.yaml)" >> "$GITHUB_OUTPUT"
+            echo "app_team=$(yq '.team // ""' app.yaml)" >> "$GITHUB_OUTPUT"
           else
             echo "app_name=" >> "$GITHUB_OUTPUT"
+            echo "app_team=" >> "$GITHUB_OUTPUT"
           fi

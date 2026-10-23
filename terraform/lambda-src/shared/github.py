@@ -116,10 +116,15 @@ def github_app_token():
     return _token_cache["token"]
 
 
-def resolve_team(repo_name):
+def resolve_team(repo_name, requested_team=None):
     """Resolve which team a repo belongs to via GitHub API.
 
-    Returns the team slug, or None if the repo isn't in any team.
+    A repo can belong to several GitHub teams. When the caller names the team
+    it deploys as (the `team:` field of app.yaml), that team is returned only
+    if the repo really belongs to it; otherwise None. Without a requested team,
+    the first team is returned.
+
+    Returns the team slug, or None if no matching team is found.
     Excludes platform-internal teams (e.g. 'platform').
     """
     token = github_app_token()
@@ -137,7 +142,7 @@ def resolve_team(repo_name):
         logger.error("GitHub API error for %s: %s", repo_name, e)
         return None
 
-    for team in teams:
-        if team["slug"] not in EXCLUDED_TEAMS:
-            return team["slug"]
-    return None
+    slugs = [t["slug"] for t in teams if t["slug"] not in EXCLUDED_TEAMS]
+    if requested_team:
+        return requested_team if requested_team in slugs else None
+    return slugs[0] if slugs else None

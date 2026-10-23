@@ -4,6 +4,8 @@
 # Usage: commit-generated-tf.sh <tf_root> <branch>
 #
 # Does nothing if there are no changes to commit.
+# Env: FORK_PR=true skips the push — a fork PR's token is read-only. tf-plan
+#      on that PR then plans whatever Terraform is committed on the branch.
 
 set -e
 
@@ -17,6 +19,12 @@ git add "$TF_ROOT/"
 
 if git diff --cached --quiet; then
   echo "Generated Terraform files are already up to date."
+  exit 0
+fi
+
+if [ "${FORK_PR:-false}" = "true" ]; then
+  echo "::warning::Generated Terraform differs from the committed files, but this PR comes from a fork and cannot be pushed to. It will be regenerated after merge."
+  git diff --cached --stat
   exit 0
 fi
 

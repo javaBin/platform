@@ -88,6 +88,7 @@ def action_check(event):
     """
     plan_key = event["plan_key"]
     repo_name = event["repo_name"]
+    team = event.get("team") or None
     session_name = event.get("session_name")
     prefix = _plan_prefix(plan_key)
 
@@ -104,7 +105,7 @@ def action_check(event):
 
     # LOW/MEDIUM — auto-approve
     if risk_level in ("LOW", "MEDIUM"):
-        credentials = _issue_credentials(repo_name, session_name)
+        credentials = _issue_credentials(repo_name, team, session_name)
         return {
             "approved": True,
             "risk_level": risk_level,
@@ -137,7 +138,7 @@ def action_check(event):
         plan_key, override.get("approved_by"),
     )
 
-    credentials = _issue_credentials(repo_name)
+    credentials = _issue_credentials(repo_name, team)
     return {
         "approved": True,
         "risk_level": risk_level,
@@ -212,13 +213,15 @@ def _sanitize_session_name(name):
     return sanitized[:64] if sanitized else "apply-gate"
 
 
-def _issue_credentials(repo_name, session_name=None):
+def _issue_credentials(repo_name, requested_team=None, session_name=None):
     """Resolve team from GitHub and assume the team's CI role."""
     account_id = os.environ.get("ACCOUNT_ID", "")
 
-    team = resolve_team(repo_name)
+    team = resolve_team(repo_name, requested_team)
     if not team:
         raise RuntimeError(
+            f"Repo '{repo_name}' is not in GitHub team '{requested_team}' (app.yaml team)"
+            if requested_team else
             f"Repo '{repo_name}' is not in any GitHub team. "
             f"Add it at https://github.com/orgs/javaBin/teams"
         )

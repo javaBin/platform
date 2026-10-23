@@ -11,6 +11,14 @@ on:
         description: "Docker build context"
         type: string
         default: "."
+      app_name:
+        description: "App name from app.yaml (ECR repo / ECS service are {team}-{app_name}); defaults to repo name"
+        type: string
+        default: ""
+      team:
+        description: "Team from app.yaml (the broker verifies the repo belongs to it)"
+        type: string
+        default: ""
       aws_account_id:
         description: "AWS account ID"
         type: string
@@ -44,21 +52,16 @@ jobs:
 
       - uses: actions/checkout@v6
 
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ secrets.PLATFORM_APP_ID }}
-          private-key: ${{ secrets.PLATFORM_APP_PRIVATE_KEY }}
-          owner: javaBin
-
+      # javaBin/platform is public: the caller's own GITHUB_TOKEN can read it,
+      # so app repos need no GitHub App credentials for any pipeline step.
       - name: Checkout platform scripts
         uses: actions/checkout@v6
         with:
           repository: javaBin/platform
-          token: ${{ steps.app-token.outputs.token }}
+          ref: main
           path: .platform
           sparse-checkout: scripts
+          persist-credentials: false
 
       - name: Assume broker role via OIDC
         uses: aws-actions/configure-aws-credentials@v6
@@ -71,6 +74,7 @@ jobs:
         id: broker
         env:
           PROJECT: javabin
+          APP_TEAM: ${{ inputs.team }}
         run: sh .platform/scripts/invoke-ci-broker.sh deploy
 
       - name: Login to ECR
@@ -81,12 +85,12 @@ jobs:
         id: tags
         env:
           TEAM: ${{ steps.broker.outputs.team }}
-          REPO_NAME: ${{ github.event.repository.name }}
+          APP_NAME: ${{ inputs.app_name || github.event.repository.name }}
           REF_NAME: ${{ github.ref_name }}
           REF: ${{ github.ref }}
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          REPO="${REGISTRY}/${TEAM}-${REPO_NAME}"
+          REPO="${REGISTRY}/${TEAM}-${APP_NAME}"
           SHA_TAG="sha-${GITHUB_SHA::8}"
           echo "primary_tag=${SHA_TAG}" >> "$GITHUB_OUTPUT"
           echo "repo=${REPO}" >> "$GITHUB_OUTPUT"

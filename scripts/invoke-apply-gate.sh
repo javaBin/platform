@@ -1,7 +1,8 @@
 #!/bin/sh
 # Invoke the apply-gate Lambda to get temporary credentials for terraform apply.
 #
-# Usage: invoke-apply-gate.sh <plan_key> <repo_name>
+# Usage: invoke-apply-gate.sh <plan_key> <repo_name> [team]
+#   team: app.yaml team; the gate verifies the repo belongs to it
 #
 # On success: exports AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN
 # On failure: exits 1 with reason
@@ -12,6 +13,7 @@ set -e
 
 PLAN_KEY="$1"
 REPO_NAME="$2"
+TEAM="${3:-}"
 LAMBDA_NAME="${LAMBDA_NAME:-javabin-apply-gate}"
 
 if [ -z "$PLAN_KEY" ] || [ -z "$REPO_NAME" ]; then
@@ -29,7 +31,8 @@ PAYLOAD=$(jq -n \
   --arg plan_key "$PLAN_KEY" \
   --arg repo_name "$REPO_NAME" \
   --arg session_name "$GATE_SESSION" \
-  '{action: $action, plan_key: $plan_key, repo_name: $repo_name, session_name: $session_name}')
+  --arg team "$TEAM" \
+  '{action: $action, plan_key: $plan_key, repo_name: $repo_name, session_name: $session_name, team: $team}')
 
 RESPONSE=$(aws lambda invoke \
   --function-name "$LAMBDA_NAME" \
