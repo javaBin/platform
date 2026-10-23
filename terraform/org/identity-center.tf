@@ -184,30 +184,27 @@ resource "aws_ssoadmin_permission_set_inline_policy" "developer" {
           "ssm:GetParameterHistory",
         ]
         Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/$${aws:PrincipalTag/team}/*"
-      },
-      # Platform-managed parameters in the team path: Cognito credentials
-      # (app-auth-sync) and the auth request (app Terraform).
-      {
-        Sid    = "DenyPlatformManagedParameters"
-        Effect = "Deny"
-        Action = ["ssm:PutParameter", "ssm:DeleteParameter", "ssm:DeleteParameters", "ssm:LabelParameterVersion"]
-        Resource = [
-          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/cognito-client-*",
-          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/auth",
-        ]
-      },
-      # Restart own services so tasks pick up new secret values
-      # (ECS resolves `secrets` only at task start).
-      {
-        Sid      = "RestartOwnTeamServices"
-        Effect   = "Allow"
-        Action   = ["ecs:UpdateService"]
-        Resource = "*"
+        # Only parameters the platform created and tagged for this team:
+        # creating one by hand would make the app's next terraform apply
+        # fail with ParameterAlreadyExists.
         Condition = {
           StringEquals = {
             "aws:ResourceTag/team" = "$${aws:PrincipalTag/team}"
           }
         }
+      },
+      # Platform-managed parameters in the team path: Cognito credentials
+      # (app-auth-sync), the auth request (app Terraform) and RDS master
+      # passwords (the database keeps the original; changing it breaks the app).
+      {
+        Sid    = "DenyPlatformManagedParameters"
+        Effect = "Deny"
+        Action = ["ssm:PutParameter", "ssm:LabelParameterVersion"]
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/cognito-client-*",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/auth",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/db-master-password",
+        ]
       },
     ]
   })

@@ -1871,3 +1871,98 @@ resource "aws_lambda_function" "plan_review" {
     }
   }
 }
+
+################################################################################
+# App Secret Rollout — restart an app when one of its secrets changes
+#
+# ECS reads task secrets only at task start. Teams can set their own secret
+# values (javabin secret set) but have no ecs:UpdateService, so this Lambda
+# forces a new deployment of {team}-{app} on every secret update.
+################################################################################
+
+data "archive_file" "app_secret_rollout" {
+  type             = "zip"
+  output_path      = "${path.module}/builds/app_secret_rollout.zip"
+  output_file_mode = "0644"
+  source_dir       = "${local.lambda_src_path}/app_secret_rollout"
+}
+
+resource "aws_iam_role" "app_secret_rollout" {
+  name = "${var.project}-app-secret-rollout"
+  # The org boundary denies creating any role without one
+  permissions_boundary = var.org_boundary_arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "app_secret_rollout" {
+  name = "${var.project}-app-secret-rollout"
+  role = aws_iam_role.app_secret_rollout.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "RestartAppServices"
+      Effect   = "Allow"
+      Action   = "ecs:UpdateService"
+      Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:service/${var.project}-platform/*"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "app_secret_rollout_logs" {
+  role       = aws_iam_role.app_secret_rollout.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_function" "app_secret_rollout" {
+  function_name    = "${var.project}-app-secret-rollout"
+  role             = aws_iam_role.app_secret_rollout.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 128
+  filename         = data.archive_file.app_secret_rollout.output_path
+  source_code_hash = data.archive_file.app_secret_rollout.output_base64sha256
+
+  environment {
+    variables = {
+      PROJECT = var.project
+    }
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "app_secret_rollout_trigger" {
+  name        = "${var.project}-app-secret-rollout-trigger"
+  description = "An app secret value was changed"
+
+  event_pattern = jsonencode({
+    source      = ["aws.ssm"]
+    detail-type = ["Parameter Store Change"]
+    detail = {
+      name      = [{ prefix = "/${var.project}/apps/" }]
+      operation = ["Update"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "app_secret_rollout" {
+  rule      = aws_cloudwatch_event_rule.app_secret_rollout_trigger.name
+  target_id = "invoke-app-secret-rollout"
+  arn       = aws_lambda_function.app_secret_rollout.arn
+}
+
+resource "aws_lambda_permission" "app_secret_rollout_eventbridge" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.app_secret_rollout.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.app_secret_rollout_trigger.arn
+}

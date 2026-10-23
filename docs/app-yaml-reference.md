@@ -159,11 +159,11 @@ RDS instances generate a master password at creation time, stored in SSM Paramet
 SSM Parameter Store SecureString parameters. The platform creates each one with the value `PLACEHOLDER`; set the real value with the CLI from the app repo (needs the `javabin-developer` SSO role):
 
 ```bash
-javabin secret list                      # which secrets still hold PLACEHOLDER
-javabin secret set stripe-key --restart  # prompts without echo; --stdin to pipe it in
+javabin secret list            # which secrets still hold PLACEHOLDER
+javabin secret set stripe-key  # prompts without echo; --stdin to pipe it in
 ```
 
-ECS reads secrets when a task starts, so `--restart` (or any redeploy) is needed for running tasks to see a new value. Terraform never overwrites the value once set.
+ECS reads secrets when a task starts, so the platform restarts the service (`javabin-app-secret-rollout`) within a minute of a secret changing. Only secrets the platform created can be set (deploy first), and Terraform never overwrites the value once set.
 
 ```yaml
 resources:
