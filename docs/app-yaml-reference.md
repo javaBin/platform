@@ -218,6 +218,10 @@ auth:
 
 A typical split frontend/backend: the frontend uses `client: public`, the API uses `client: none` and validates tokens against `COGNITO_ISSUER_URL` / `COGNITO_WELL_KNOWN_URL`.
 
+A `client: none` API has no client ID of its own to check, so it accepts tokens issued to *any* client in the pool. Check `cognito:groups` (or the token's `client_id`) for anything that matters.
+
+Changing `client` between `confidential` and `public` replaces the Cognito client, so its ID changes. Running tasks keep the old ID until they restart: redeploy after the change.
+
 Both forms are supported and produce the same wiring.
 
 - `internal` — Javabin heroes. Sign-in offers every identity provider on the pool (Google Workspace SAML) plus Cognito users.

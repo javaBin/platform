@@ -611,7 +611,7 @@ resource "aws_iam_role_policy" "team_provisioner" {
       {
         Sid      = "WriteAuthMemberships"
         Effect   = "Allow"
-        Action   = ["dynamodb:PutItem"]
+        Action   = ["dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Scan"]
         Resource = var.auth_memberships_table_arn
       },
       {

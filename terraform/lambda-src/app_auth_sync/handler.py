@@ -239,6 +239,9 @@ def sync(team, app, req):
 
 def _put_client_groups(client_id, groups, team, app):
     if not MEMBERSHIPS_TABLE:
+        if groups:
+            # Fail closed: without the table the restriction would silently vanish
+            raise RuntimeError("MEMBERSHIPS_TABLE is not set; cannot record allowed groups")
         return
     dynamodb.put_item(
         TableName=MEMBERSHIPS_TABLE,

@@ -857,6 +857,30 @@ def _write_membership(group_name, emails):
     )
 
 
+def _prune_memberships(current_groups):
+    """Delete recorded registry groups that are gone or no longer cognito-enabled.
+
+    team-<name> rows are owned by team sync and are left alone.
+    """
+    if not MEMBERSHIPS_TABLE:
+        return []
+    pruned, kwargs = [], {"TableName": MEMBERSHIPS_TABLE, "ProjectionExpression": "pk"}
+    while True:
+        page = dynamodb_client.scan(**kwargs)
+        for item in page.get("Items", []):
+            pk = item["pk"]["S"]
+            name = pk[len("group#"):]
+            if pk.startswith("group#") and not name.startswith("team-") and name not in current_groups:
+                dynamodb_client.delete_item(TableName=MEMBERSHIPS_TABLE, Key={"pk": {"S": pk}})
+                pruned.append(name)
+        if "LastEvaluatedKey" not in page:
+            break
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    if pruned:
+        logger.info("Pruned stale auth memberships: %s", pruned)
+    return pruned
+
+
 def sync_cognito_group(team):
     """Create or update a Cognito group in the internal user pool and sync membership.
 
@@ -1109,7 +1133,10 @@ def sync_group_to_cognito(group):
         return {"skipped": True, "reason": "cognito_not_enabled"}
 
     group_name = group["name"]
-    _write_membership(group_name, group.get("members") or [])
+    # Only payloads with resolved members (sync_groups_and_heros) carry a
+    # member list; others must not wipe the recorded membership.
+    if "members" in group:
+        _write_membership(group_name, group["members"])
     google_email = group["google"]
     pool_id = COGNITO_INTERNAL_POOL_ID
 
@@ -1774,6 +1801,14 @@ def handle_sync_groups_and_heros(event):
         notify_slack(results, ci_context=event.get("ci_context"))
     except Exception as e:
         logger.error("Slack notification failed: %s", e)
+
+
+    # Full group list: drop memberships of removed / no-longer-cognito groups
+    try:
+        results["auth_memberships_pruned"] = _prune_memberships(
+            {g["name"] for g in groups if g.get("cognito")})
+    except Exception as e:
+        logger.error("Pruning auth memberships failed: %s", e)
 
     return {
         "statusCode": 200,
