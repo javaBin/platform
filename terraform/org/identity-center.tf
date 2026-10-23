@@ -172,6 +172,43 @@ resource "aws_ssoadmin_permission_set_inline_policy" "developer" {
         ]
         Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/$${aws:PrincipalTag/team}/*"
       },
+      # Secret values: app.yaml `resources.secrets` creates the parameter with
+      # a PLACEHOLDER value; the team sets the real value (`javabin secret
+      # set`). Only under the team's own path.
+      {
+        Sid    = "SetOwnTeamSecrets"
+        Effect = "Allow"
+        Action = [
+          "ssm:PutParameter",
+          "ssm:LabelParameterVersion",
+          "ssm:GetParameterHistory",
+        ]
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/$${aws:PrincipalTag/team}/*"
+      },
+      # Platform-managed parameters in the team path: Cognito credentials
+      # (app-auth-sync) and the auth request (app Terraform).
+      {
+        Sid    = "DenyPlatformManagedParameters"
+        Effect = "Deny"
+        Action = ["ssm:PutParameter", "ssm:DeleteParameter", "ssm:DeleteParameters", "ssm:LabelParameterVersion"]
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/cognito-client-*",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/auth",
+        ]
+      },
+      # Restart own services so tasks pick up new secret values
+      # (ECS resolves `secrets` only at task start).
+      {
+        Sid      = "RestartOwnTeamServices"
+        Effect   = "Allow"
+        Action   = ["ecs:UpdateService"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/team" = "$${aws:PrincipalTag/team}"
+          }
+        }
+      },
     ]
   })
 }
