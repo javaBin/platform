@@ -96,7 +96,7 @@ terraform/platform/
   iam/             GitHub OIDC, CI roles, permission boundary
   compute/         ECS cluster, ECR base config
   monitoring/      SNS, EventBridge, Config, GuardDuty, Security Hub
-  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, resource-tagger, budget-enforcer, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set, ci-broker, app-auth-sync, plan-review
+  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, resource-tagger, budget-enforcer, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set, ci-broker, app-auth-sync, plan-review, app-secret-rollout
   identity/        Cognito user pools (internal + external), auth-claims trigger, auth memberships table. Identity Center is in terraform/org/
 ```
 
@@ -172,6 +172,7 @@ terraform/state/
 | `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` (SSM request → client + credentials + allowed groups) |
 | `auth-claims` | Internal pool pre-token trigger: registry groups → `cognito:groups`, enforces app `auth.groups` (in `identity/`) |
 | `plan-review` | LLM review of app Terraform plans with platform credentials; writes `risk.json` (invoked by app tf-plan) |
+| `app-secret-rollout` | Restarts `{team}-{app}` when one of its secrets in `/javabin/apps/` changes (ECS reads secrets only at task start) |
 
 ### Scripts
 | Script | What |

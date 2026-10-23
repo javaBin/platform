@@ -138,6 +138,11 @@ Team roles are denied writing `risk.json`, `review.json` and `override.json` in 
 |---------------|-----|
 | `/javabin/slack/platform-override-alerts-webhook` | HIGH/FAILED alerts |
 
+## app-secret-rollout
+
+**Trigger:** EventBridge "Parameter Store Change" (Update) under `/javabin/apps/`
+**Purpose:** ECS resolves task secrets only at start, so after a team sets a secret value (`javabin secret set`) this forces a new deployment of `{team}-{app}` in `javabin-platform`. Teams have no `ecs:UpdateService` themselves (it would also allow changing networking and task definitions). Platform-managed parameters (`auth`, `cognito-client-*`, `db-master-password`) are ignored; a missing service is logged and skipped.
+
 ## Shared Module: pricing
 
 `terraform/lambda-src/shared/pricing.py` — provides `estimate_cost()` for enriching alerts with cost impact. Uses AWS Pricing API (us-east-1 endpoint). Caches pricing data across Lambda invocations.
