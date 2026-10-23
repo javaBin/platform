@@ -12,5 +12,11 @@ set -e
 AUDIENCE="${1:?Usage: github-oidc-token.sh <audience>}"
 : "${ACTIONS_ID_TOKEN_REQUEST_URL:?id-token: write permission is required}"
 
-curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r '.value'
+RESPONSE=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}")
+TOKEN=$(echo "$RESPONSE" | jq -r '.value // empty')
+if [ -z "$TOKEN" ]; then
+  echo "ERROR: no OIDC token returned for audience ${AUDIENCE}" >&2
+  exit 1
+fi
+echo "$TOKEN"

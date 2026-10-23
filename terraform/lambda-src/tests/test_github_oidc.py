@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from shared import github_oidc as oidc  # noqa: E402
@@ -81,6 +82,15 @@ class GithubOidcTest(unittest.TestCase):
                             "javaBin/platform workflow")
         self.assertRejected(self.token(job_workflow_ref="javaBin/platform/.github/workflows/tf-plan.yml@refs/heads/evil"),
                             "javaBin/platform workflow")
+
+    def test_verification_needs_no_binaries(self):
+        token = self.token()
+        with unittest.mock.patch("subprocess.run", side_effect=AssertionError("shelled out")):
+            self.assertEqual(oidc.repo_name(self.verify(token)), "cupcake")
+
+    def test_non_object_claims_are_a_token_error(self):
+        head = b64url(json.dumps({"alg": "RS256", "kid": "k1"}).encode())
+        self.assertRejected(f"{head}.{b64url(b'[1, 2]')}.{b64url(b'x')}", "JSON objects")
 
     def test_missing_or_garbage_token(self):
         self.assertRejected(None, "missing")
