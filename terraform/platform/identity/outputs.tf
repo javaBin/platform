@@ -43,3 +43,13 @@ output "external_user_pool_domain" {
   description = "Custom domain of the external Cognito user pool (empty if not configured)"
   value       = var.certificate_arn != "" ? "auth-external.${var.domain}" : ""
 }
+
+output "auth_memberships_table_name" {
+  description = "DynamoDB table with registry group memberships and per-client allowed groups"
+  value       = aws_dynamodb_table.auth_memberships.name
+}
+
+output "auth_memberships_table_arn" {
+  description = "ARN of the auth memberships table"
+  value       = aws_dynamodb_table.auth_memberships.arn
+}

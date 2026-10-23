@@ -38,3 +38,8 @@ variable "certificate_arn" {
   type        = string
   default     = ""
 }
+
+variable "org_boundary_arn" {
+  description = "Permissions boundary for roles created here (required by the org boundary)"
+  type        = string
+}

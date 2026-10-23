@@ -34,6 +34,7 @@ logger.setLevel(logging.INFO)
 ssm = boto3.client("ssm")
 budgets_client = boto3.client("budgets")
 cognito_client = boto3.client("cognito-idp")
+dynamodb_client = boto3.client("dynamodb")
 identitystore_client = boto3.client("identitystore")
 
 GOOGLE_SA_PARAM = os.environ.get(
@@ -835,6 +836,51 @@ def sync_budget(team):
 # Cognito + Identity Center — stubs with clear extension points
 # ---------------------------------------------------------------------------
 
+MEMBERSHIPS_TABLE = os.environ.get("MEMBERSHIPS_TABLE", "")
+
+
+def _write_membership(group_name, emails):
+    """Record a group's registry members for the auth-claims trigger.
+
+    Cognito has no membership for federated users until they sign in, so the
+    pre-token trigger puts groups into tokens from this table instead.
+    """
+    if not MEMBERSHIPS_TABLE:
+        return
+    dynamodb_client.put_item(
+        TableName=MEMBERSHIPS_TABLE,
+        Item={
+            "pk": {"S": f"group#{group_name}"},
+            "members": {"L": [{"S": e.lower()} for e in sorted(set(emails)) if e]},
+            "source": {"S": "registry"},
+        },
+    )
+
+
+def _prune_memberships(current_groups):
+    """Delete recorded registry groups that are gone or no longer cognito-enabled.
+
+    team-<name> rows are owned by team sync and are left alone.
+    """
+    if not MEMBERSHIPS_TABLE:
+        return []
+    pruned, kwargs = [], {"TableName": MEMBERSHIPS_TABLE, "ProjectionExpression": "pk"}
+    while True:
+        page = dynamodb_client.scan(**kwargs)
+        for item in page.get("Items", []):
+            pk = item["pk"]["S"]
+            name = pk[len("group#"):]
+            if pk.startswith("group#") and not name.startswith("team-") and name not in current_groups:
+                dynamodb_client.delete_item(TableName=MEMBERSHIPS_TABLE, Key={"pk": {"S": pk}})
+                pruned.append(name)
+        if "LastEvaluatedKey" not in page:
+            break
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    if pruned:
+        logger.info("Pruned stale auth memberships: %s", pruned)
+    return pruned
+
+
 def sync_cognito_group(team):
     """Create or update a Cognito group in the internal user pool and sync membership.
 
@@ -925,6 +971,7 @@ def sync_cognito_group(team):
             )
             logger.info("Removed %s from Cognito group %s", email, group_name)
 
+    _write_membership(group_name, desired_emails)
     return {"synced": True, "group": group_name, "member_count": len(desired_emails)}
 
 
@@ -1075,13 +1122,21 @@ def _get_google_group_members(group_email):
 
 
 def sync_group_to_cognito(group):
-    """Ensure a Cognito group exists. No member sync — JIT handles it at sign-in."""
+    """Ensure a Cognito group exists and record its registry members.
+
+    Members reach tokens through the auth-claims pre-token trigger, which
+    reads the memberships table — Cognito group membership is not synced.
+    """
     if not COGNITO_INTERNAL_POOL_ID:
         return {"skipped": True, "reason": "cognito_pool_not_configured"}
     if not group.get("cognito"):
         return {"skipped": True, "reason": "cognito_not_enabled"}
 
     group_name = group["name"]
+    # Only payloads with resolved members (sync_groups_and_heros) carry a
+    # member list; others must not wipe the recorded membership.
+    if "members" in group:
+        _write_membership(group_name, group["members"])
     google_email = group["google"]
     pool_id = COGNITO_INTERNAL_POOL_ID
 
@@ -1746,6 +1801,14 @@ def handle_sync_groups_and_heros(event):
         notify_slack(results, ci_context=event.get("ci_context"))
     except Exception as e:
         logger.error("Slack notification failed: %s", e)
+
+
+    # Full group list: drop memberships of removed / no-longer-cognito groups
+    try:
+        results["auth_memberships_pruned"] = _prune_memberships(
+            {g["name"] for g in groups if g.get("cognito")})
+    except Exception as e:
+        logger.error("Pruning auth memberships failed: %s", e)
 
     return {
         "statusCode": 200,

@@ -127,3 +127,13 @@ variable "cur_data_bucket_arn" {
   type        = string
 }
 
+
+variable "auth_memberships_table_name" {
+  description = "Auth memberships table (registry groups + per-client allowed groups)"
+  type        = string
+}
+
+variable "auth_memberships_table_arn" {
+  description = "ARN of the auth memberships table"
+  type        = string
+}
