@@ -31,7 +31,7 @@ resource "aws_ecs_task_definition" "this" {
       essential = true
       user      = tostring(var.container_user)
 
-      readonlyRootFilesystem = true
+      readonlyRootFilesystem = var.readonly_root_filesystem
 
       mountPoints = [
         {
@@ -91,10 +91,20 @@ resource "aws_ecs_service" "this" {
     assign_public_ip = false
   }
 
-  load_balancer {
-    target_group_arn = var.target_group_arn
-    container_name   = var.name
-    container_port   = var.port
+  dynamic "load_balancer" {
+    for_each = var.target_group_arn != "" ? [1] : []
+    content {
+      target_group_arn = var.target_group_arn
+      container_name   = var.name
+      container_port   = var.port
+    }
+  }
+
+  # Roll back a deployment whose tasks never become healthy, instead of
+  # leaving ecs-deploy waiting for services-stable to time out.
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
   }
 
   enable_ecs_managed_tags = true

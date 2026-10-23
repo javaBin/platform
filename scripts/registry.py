@@ -1,9 +1,8 @@
 """Module registry — constants and templates for Terraform generation.
 
 Used by generate-modules.py to produce module {} blocks from app.yaml.
-The old expand-modules.py used the REGISTRY list and DSL expressions — that
-approach is deprecated. Module blocks let Terraform handle variable resolution
-and cross-module references natively.
+Module blocks let Terraform handle variable resolution and cross-module
+references natively.
 """
 
 # ---------------------------------------------------------------------------
@@ -91,7 +90,7 @@ override.tf.json
 OUTPUTS_TEMPLATE = """\
 # GENERATED FROM app.yaml — do not edit, changes will be overwritten
 output "service_url" {{
-  value = "https://{host}"
+  value = "{service_url}"
 }}
 
 output "ecr_url" {{

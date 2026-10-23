@@ -75,8 +75,9 @@ variable "security_group_ids" {
 }
 
 variable "target_group_arn" {
-  description = "ALB target group ARN"
+  description = "ALB target group ARN. Empty for services without routing (workers)."
   type        = string
+  default     = ""
 }
 
 variable "desired_count" {
@@ -94,4 +95,10 @@ variable "container_user" {
   description = "User to run the container as (non-root for ECS.20 compliance)"
   type        = string
   default     = "1000"
+}
+
+variable "readonly_root_filesystem" {
+  description = "Mount the container root filesystem read-only (ECS.5). /tmp is always writable."
+  type        = bool
+  default     = true
 }
