@@ -108,7 +108,7 @@ jobs:
       # has — the platform App token does. Fail loudly: silently falling back
       # to the committed tfvars is how new teams ended up without CI roles.
       - name: Generate GitHub App token
-        if: steps.changes.outputs.has_infra_changes == 'true' && github.ref == 'refs/heads/main'
+        if: steps.changes.outputs.has_infra_changes == 'true'
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
@@ -116,8 +116,10 @@ jobs:
           private-key: ${{ secrets.PLATFORM_APP_PRIVATE_KEY }}
           owner: javaBin
 
+      # Also on PRs: otherwise the PR plan uses the committed tfvars and
+      # shows every team role created on main as "to destroy".
       - name: Sync registered teams from GitHub org
-        if: steps.changes.outputs.has_infra_changes == 'true' && github.ref == 'refs/heads/main'
+        if: steps.changes.outputs.has_infra_changes == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: python3 scripts/sync-registered-teams.py "${{ env.TF_ROOT }}/registered-teams.auto.tfvars"
