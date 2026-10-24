@@ -268,6 +268,17 @@ in Google Workspace Admin. The team-provisioner Lambda uses it to manage Google 
 The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation target at
 `/javabin/platform/google-admin-email`.
 
+Delegated scopes the platform code requests (Admin console > Security > API controls > Domain-wide
+delegation; the field replaces the whole list, so read what is there first and only add, since the
+console may grant scopes not listed here): `admin.directory.group`,
+`admin.directory.group.member`, `admin.directory.user`, `admin.directory.user.alias`, `gmail.send`,
+`gmail.settings.sharing`, `apps.groups.settings` (prefix `https://www.googleapis.com/auth/`).
+Google rejects a token if any requested scope is not delegated, so `apps.groups.settings` is
+requested on a separate token (`_get_google_groups_settings_token`) and team group settings are
+skipped, not failed, when it is missing. The Groups Settings API (`groupssettings.googleapis.com`)
+must be enabled in `javabin-platform`, and Groups for Business must be ON for members' org units.
+Team group OWNERs are admin-managed and never removed by the sync; non-@java.no members are skipped.
+
 ## Work Packages
 
 ### Task Status

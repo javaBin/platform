@@ -184,13 +184,35 @@ GOOGLE_SCOPES = (
 )
 
 
-def _get_google_access_token():
+GOOGLE_GROUPS_SETTINGS_SCOPE = "https://www.googleapis.com/auth/apps.groups.settings"
+
+
+class GoogleScopeNotDelegated(Exception):
+    """Raised when the delegated service account lacks a requested scope."""
+
+    def __init__(self, scope):
+        super().__init__(f"scope not delegated to DWD client: {scope}")
+        self.scope = scope
+
+
+# How long a "scope not delegated" answer is remembered, so one invocation does
+# not retry (and log) the token exchange for every team.
+SCOPE_NOT_DELEGATED_TTL = 300
+
+
+def _get_delegated_token(scope, cache_key):
     """Exchange a domain-wide delegation JWT for a Google OAuth2 access token.
 
-    Token is cached for ~58 minutes (Google tokens last 1 hour).
+    Token is cached for ~58 minutes (Google tokens last 1 hour). Raises
+    GoogleScopeNotDelegated when Google answers `unauthorized_client`, which
+    happens when any requested scope is missing from the delegation grant.
+    That outcome is cached for SCOPE_NOT_DELEGATED_TTL seconds.
     """
-    cached = _credential_cache.get("_google_token")
-    if cached and cached["exp"] > time.time() + 120:
+    cached = _credential_cache.get(cache_key)
+    if cached and cached.get("not_delegated"):
+        if cached["exp"] > time.time():
+            raise GoogleScopeNotDelegated(scope)
+    elif cached and cached["exp"] > time.time() + 120:
         return cached["token"]
 
     sa_json = json.loads(_get_ssm_param(GOOGLE_SA_PARAM))
@@ -201,7 +223,7 @@ def _get_google_access_token():
         {
             "iss": sa_json["client_email"],
             "sub": admin_email,
-            "scope": GOOGLE_SCOPES,
+            "scope": scope,
             "aud": "https://oauth2.googleapis.com/token",
             "iat": now,
             "exp": now + 3600,
@@ -226,14 +248,36 @@ def _get_google_access_token():
             token = json.loads(resp.read())["access_token"]
     except urllib.error.HTTPError as e:
         body_text = e.read().decode("utf-8", errors="replace")
+        if "unauthorized_client" in body_text:
+            logger.warning("Google scope not delegated (%s): %d %s", scope, e.code, body_text)
+            _credential_cache[cache_key] = {
+                "not_delegated": True,
+                "exp": time.time() + SCOPE_NOT_DELEGATED_TTL,
+            }
+            raise GoogleScopeNotDelegated(scope) from e
         logger.error("Google OAuth token exchange failed: %d %s", e.code, body_text)
         raise
 
-    _credential_cache["_google_token"] = {
+    _credential_cache[cache_key] = {
         "token": token,
         "exp": time.time() + 3500,
     }
     return token
+
+
+def _get_google_access_token():
+    """Access token for the Admin Directory + Gmail scopes (GOOGLE_SCOPES)."""
+    return _get_delegated_token(GOOGLE_SCOPES, "_google_token")
+
+
+def _get_google_groups_settings_token():
+    """Access token for the Groups Settings API only.
+
+    Requested on its own token so a missing delegation for this scope does not
+    break the Directory sync that shares GOOGLE_SCOPES (Google rejects the
+    whole token if any one requested scope is not delegated).
+    """
+    return _get_delegated_token(GOOGLE_GROUPS_SETTINGS_SCOPE, "_google_groups_settings_token")
 
 
 def _google_api(method, path, access_token, body=None):
@@ -521,10 +565,110 @@ def _normalize_member(member):
     return {}
 
 
+# Settings enforced on every team group so members can read the group's mail.
+# Who-can-post and moderation are deliberately NOT enforced: outside senders
+# keep reaching the group exactly as before.
+TEAM_GROUP_SETTINGS = {
+    "whoCanViewGroup": "ALL_MEMBERS_CAN_VIEW",
+    "isArchived": "true",
+    "archiveOnly": "false",
+    "whoCanViewMembership": "ALL_IN_DOMAIN_CAN_VIEW",
+    "whoCanJoin": "INVITED_CAN_JOIN",
+    "allowWebPosting": "true",
+    "allowExternalMembers": "false",
+}
+
+# Settings reported (never written) so the first run shows today's values.
+TEAM_GROUP_REPORTED_SETTINGS = ("whoCanPostMessage", "messageModerationLevel")
+
+GOOGLE_MEMBER_ROLE_FOR = {"maintainer": "MANAGER", "member": "MEMBER"}
+
+
+class GoogleGroupsSettingsApiDisabled(Exception):
+    """Raised when the Groups Settings API is not enabled in the GCP project."""
+
+
+def _groups_settings_api(method, email, access_token, body=None):
+    """Call the Google Groups Settings API. Returns parsed JSON, or None on 404."""
+    url = (
+        "https://www.googleapis.com/groups/v1/groups/"
+        f"{urllib.parse.quote(email, safe='')}?alt=json"
+    )
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {access_token}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            raw = resp.read()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        body_text = e.read().decode("utf-8", errors="replace")
+        logger.error("Groups Settings API %s %s -> %d: %s", method, email, e.code, body_text)
+        if e.code == 403 and ("accessNotConfigured" in body_text or "SERVICE_DISABLED" in body_text):
+            raise GoogleGroupsSettingsApiDisabled(body_text[:200]) from e
+        raise
+
+
+def enforce_team_group_settings(group_email):
+    """Make sure team members can read the group's mail and archive.
+
+    Reads the current settings and PATCHes only keys that differ, so a group
+    already in sync gets no write. Never raises: returns a dict describing the
+    outcome so member sync still succeeds when settings cannot be applied.
+    """
+    try:
+        token = _get_google_groups_settings_token()
+    except GoogleScopeNotDelegated:
+        return {"skipped": True, "reason": "groups settings scope not delegated"}
+
+    try:
+        current = None
+        # A freshly created group can 404 here for a few seconds.
+        for delay in (2, 4, 8, None):
+            current = _groups_settings_api("GET", group_email, token)
+            if current is not None or delay is None:
+                break
+            time.sleep(delay)
+        if current is None:
+            return {"error": f"groups settings for {group_email} not found"}
+
+        reported = {k: current.get(k) for k in TEAM_GROUP_REPORTED_SETTINGS}
+        drift = {
+            k: v for k, v in TEAM_GROUP_SETTINGS.items()
+            if str(current.get(k, "")).lower() != v.lower()
+        }
+        if drift:
+            _groups_settings_api("PATCH", group_email, token, drift)
+            logger.info("Updated settings on %s: %s", group_email, sorted(drift))
+        return {"changed": sorted(drift), "current": reported}
+    except GoogleGroupsSettingsApiDisabled:
+        return {
+            "error": "Groups Settings API (groupssettings.googleapis.com) is not "
+                     "enabled in GCP project javabin-platform"
+        }
+    except Exception as e:  # noqa: BLE001 — settings must not fail member sync
+        logger.exception("Failed to enforce settings on %s", group_email)
+        return {"error": str(e)[:200]}
+
+
+def _google_role_for(member):
+    """Registry role -> Google group role. maintainer -> MANAGER, else MEMBER."""
+    return GOOGLE_MEMBER_ROLE_FOR.get(str(member.get("role", "member")).lower(), "MEMBER")
+
+
 def sync_google_group(team):
     """Create or update a Google Workspace group and sync its membership.
 
-    Group email is derived as team-{name}@java.no. All members are MEMBER role.
+    Group email is derived as team-{name}@java.no. Registry `role: maintainer`
+    becomes Google MANAGER, everyone else MEMBER. OWNERs (only ever added by
+    a Workspace admin by hand) are never demoted or removed, even when they are
+    not in the registry. Members outside java.no are not added (the group does
+    not allow external members); they are reported in `skipped_external`.
+    Group settings are then enforced so members can read the mail archive (see
+    enforce_team_group_settings).
     """
     team_name = team["name"]
     group_email = f"team-{team_name}@java.no"
@@ -550,7 +694,7 @@ def sync_google_group(team):
             logger.info("Created Google group %s", group_email)
 
     # Current members (paginated — Google returns max 200 per page)
-    current_emails = set()
+    current_roles = {}  # email -> role
     page_token = None
     while True:
         path = f"/groups/{group_key}/members?maxResults=200"
@@ -559,7 +703,7 @@ def sync_google_group(team):
         resp = _google_api("GET", path, access_token)
         if resp and "members" in resp:
             for m in resp["members"]:
-                current_emails.add(m["email"].lower())
+                current_roles[m["email"].lower()] = m.get("role", "MEMBER")
         if resp and resp.get("nextPageToken"):
             page_token = resp["nextPageToken"]
         else:
@@ -567,25 +711,49 @@ def sync_google_group(team):
 
     # Desired members
     desired_emails = set()
+    added = 0
+    role_changes = []
+    skipped_external = []
     for member in team.get("members", []):
         m = _normalize_member(member)
         email = m.get("email", "").lower()
         if not email:
             continue
         desired_emails.add(email)
+        role = _google_role_for(m)
 
-        if email not in current_emails:
+        if email not in current_roles and not email.endswith("@java.no"):
+            # allowExternalMembers=false: Google would reject the insert and
+            # abort the rest of this team's sync. Report instead.
+            skipped_external.append(email)
+            logger.warning("Not adding external address %s to %s", email, group_email)
+        elif email not in current_roles:
             _google_api(
                 "POST",
                 f"/groups/{group_key}/members",
                 access_token,
-                {"email": email, "role": "MEMBER"},
+                {"email": email, "role": role},
             )
-            logger.info("Added %s to %s", email, group_email)
+            added += 1
+            logger.info("Added %s to %s as %s", email, group_email, role)
+        elif current_roles[email] != role and current_roles[email] != "OWNER":
+            encoded_email = urllib.parse.quote(email, safe="")
+            _google_api(
+                "PATCH",
+                f"/groups/{group_key}/members/{encoded_email}",
+                access_token,
+                {"role": role},
+            )
+            role_changes.append(f"{email} {current_roles[email]}->{role}")
+            logger.info("Changed %s in %s: %s -> %s", email, group_email, current_roles[email], role)
 
-    # Remove members no longer in the team definition
-    for email in current_emails:
-        if email not in desired_emails:
+    # Remove members no longer in the team definition. OWNERs are kept: they
+    # are set by a Workspace admin, not by the registry.
+    kept_owners = []
+    for email, current_role in current_roles.items():
+        if email not in desired_emails and current_role == "OWNER":
+            kept_owners.append(email)
+        elif email not in desired_emails:
             encoded_email = urllib.parse.quote(email, safe="")
             _google_api(
                 "DELETE",
@@ -598,6 +766,11 @@ def sync_google_group(team):
         "synced": True,
         "group": group_email,
         "member_count": len(desired_emails),
+        "added": added,
+        "role_changes": role_changes,
+        "skipped_external": skipped_external,
+        "kept_owners": kept_owners,
+        "settings": enforce_team_group_settings(group_email),
     }
 
 
@@ -2132,8 +2305,20 @@ def _result_line(provider, outcome):
         details.append(f"{outcome['member_count']} total")
     if outcome.get("extra_preserved"):
         details.append(f"{outcome['extra_preserved']} manual")
+    if outcome.get("role_changes"):
+        details.append(f"{len(outcome['role_changes'])} role change(s)")
+    settings = outcome.get("settings")
+    if isinstance(settings, dict) and settings.get("changed"):
+        details.append(f"settings: {', '.join(settings['changed'])}")
     if details:
         parts.append(f"({', '.join(details)})")
+    if isinstance(settings, dict):
+        if settings.get("skipped"):
+            parts.append(f":warning: group settings skipped: {settings.get('reason')}")
+        elif settings.get("error"):
+            parts.append(f":warning: group settings: {settings['error'][:150]}")
+    if outcome.get("skipped_external"):
+        parts.append(f":warning: not added (not @java.no): {', '.join(outcome['skipped_external'])}")
     return " ".join(parts)
 
 
