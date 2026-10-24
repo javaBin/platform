@@ -5,7 +5,7 @@
 #   GitHub Actions → plan → LLM review → apply
 #
 # Sub-modules:
-#   networking  VPC, subnets, NAT, security groups
+#   networking  VPC, subnets, NAT, security groups, app-to-app DNS namespace
 #   ingress     ALB, ACM wildcard certs (*.javazone.no, *.java.no, *.javabin.no)
 #   iam         GitHub OIDC, CI roles, permission boundary, ECS execution role
 #   compute     ECS cluster, public ECR images
@@ -106,6 +106,9 @@ module "lambdas" {
   athena_workgroup               = module.cost_analytics.athena_workgroup_name
   athena_results_bucket_arn      = module.cost_analytics.athena_results_bucket_arn
   cur_data_bucket_arn            = module.cost_analytics.cur_data_bucket_arn
+  vpc_id                         = module.networking.vpc_id
+  vpc_arn                        = module.networking.vpc_arn
+  service_discovery_namespace_id = module.networking.service_discovery_namespace_id
 }
 
 module "identity" {

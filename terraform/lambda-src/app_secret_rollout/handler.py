@@ -10,7 +10,9 @@ platform does the restart:
     -> force a new deployment of service {team}-{app} in the platform cluster
 
 Platform-managed parameters (auth request, Cognito credentials, RDS master
-password) are ignored: their consumers redeploy through their own paths.
+password, the app-to-app request and its status) are ignored: their consumers
+redeploy through their own paths. Peer URLs and M2M client credentials
+written by app-peers-sync do restart the caller, so it picks them up.
 """
 
 import logging
@@ -25,7 +27,7 @@ logger.setLevel(logging.INFO)
 PROJECT = os.environ.get("PROJECT", "javabin")
 CLUSTER = os.environ.get("CLUSTER", f"{PROJECT}-platform")
 SECRET_RE = re.compile(rf"^/{re.escape(PROJECT)}/apps/(?P<team>[a-z]{{1,12}})/(?P<app>[a-z][a-z0-9-]{{0,19}})/(?P<name>[^/]+)$")
-PLATFORM_MANAGED = re.compile(r"^(auth|cognito-client-.*|db-master-password)$")
+PLATFORM_MANAGED = re.compile(r"^(auth|cognito-client-.*|db-master-password|network|peers-status)$")
 
 ecs = boto3.client("ecs")
 

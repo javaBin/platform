@@ -52,10 +52,18 @@ class AppSecretRolloutTest(unittest.TestCase):
         ecs = FakeECS()
         h = load(ecs)
         for name in ("/javabin/apps/cupcake/frosting/auth", "/javabin/apps/cupcake/frosting/cognito-client-id",
-                     "/javabin/apps/core/api/db-master-password", "/javabin/platform/github-app-key"):
+                     "/javabin/apps/core/api/db-master-password", "/javabin/platform/github-app-key",
+                     "/javabin/apps/cupcake/frosting/network", "/javabin/apps/cupcake/frosting/peers-status"):
             self.assertEqual(h.handler(event(name), None)["status"], "ignored")
         self.assertEqual(h.handler(event("/javabin/apps/cupcake/frosting/x", "Create"), None)["status"], "ignored")
         self.assertEqual(ecs.calls, [])
+
+    def test_peer_url_and_m2m_credentials_restart_the_caller(self):
+        ecs = FakeECS()
+        h = load(ecs)
+        for name in ("/javabin/apps/cupcake/frosting/peer-moresleep-moresleep-url",
+                     "/javabin/apps/cupcake/frosting/m2m-client-secret"):
+            self.assertEqual(h.handler(event(name), None)["status"], "restarted")
 
     def test_missing_service_is_not_an_error(self):
         ecs = FakeECS(missing={"cupcake-frosting"})

@@ -1963,3 +1963,234 @@ resource "aws_lambda_permission" "app_secret_rollout_eventbridge" {
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.app_secret_rollout_trigger.arn
 }
+
+################################################################################
+# App Peers Sync — app-to-app calls declared in app.yaml (calls / provides)
+#
+# App Terraform (app-network module) writes /<project>/apps/<team>/<app>/network
+# with the app's security group, port, calls and consumers. The parameter path
+# is the app's identity (only that team can write it). For every edge both
+# sides declared, this Lambda adds the security group rule, keeps the Cognito
+# resource servers and M2M clients in the internal pool, and writes the peer
+# URLs and client credentials into the caller's own path.
+# See terraform/lambda-src/app_peers_sync/handler.py.
+################################################################################
+
+data "archive_file" "app_peers_sync" {
+  type             = "zip"
+  output_path      = "${path.module}/builds/app_peers_sync.zip"
+  output_file_mode = "0644"
+
+  source {
+    content  = file("${local.lambda_src_path}/app_peers_sync/handler.py")
+    filename = "handler.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/__init__.py")
+    filename = "shared/__init__.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/slack.py")
+    filename = "shared/slack.py"
+  }
+}
+
+resource "aws_iam_role" "app_peers_sync" {
+  name = "${var.project}-app-peers-sync"
+  # The org boundary denies creating any role without one
+  permissions_boundary = var.org_boundary_arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "app_peers_sync" {
+  name = "${var.project}-app-peers-sync"
+  role = aws_iam_role.app_peers_sync.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadAppRequests"
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:GetParametersByPath"]
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*",
+        ]
+      },
+      {
+        Sid    = "WritePeerParameters"
+        Effect = "Allow"
+        Action = [
+          "ssm:PutParameter",
+          "ssm:DeleteParameter",
+          "ssm:DeleteParameters",
+          "ssm:AddTagsToResource",
+        ]
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/peer-*",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/m2m-client-*",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/peers-status",
+        ]
+      },
+      {
+        Sid      = "ReadSlackWebhook"
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/slack/platform-resource-alerts-webhook"
+      },
+      {
+        # Only app task groups (app-network tags them) in the platform VPC
+        Sid      = "EditAppSecurityGroups"
+        Effect   = "Allow"
+        Action   = ["ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress"]
+        Resource = "arn:aws:ec2:${var.region}:${var.aws_account_id}:security-group/*"
+        Condition = {
+          StringEquals = { "aws:ResourceTag/javabin-network" = "app" }
+          ArnEquals    = { "ec2:Vpc" = var.vpc_arn }
+        }
+      },
+      {
+        Sid      = "EditPeerRules"
+        Effect   = "Allow"
+        Action   = ["ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress"]
+        Resource = "arn:aws:ec2:${var.region}:${var.aws_account_id}:security-group-rule/*"
+      },
+      {
+        Sid      = "TagPeerRulesOnCreate"
+        Effect   = "Allow"
+        Action   = "ec2:CreateTags"
+        Resource = "arn:aws:ec2:${var.region}:${var.aws_account_id}:security-group-rule/*"
+        Condition = {
+          StringEquals = { "ec2:CreateAction" = "AuthorizeSecurityGroupIngress" }
+        }
+      },
+      {
+        # EC2 Describe*, Cloud Map List* and ecs:ListTasks have no resource-level permissions
+        Sid    = "Describe"
+        Effect = "Allow"
+        Action = [
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSecurityGroupRules",
+          "ec2:DescribeNetworkInterfaces",
+          "servicediscovery:ListServices",
+          "servicediscovery:ListInstances",
+          "servicediscovery:ListTagsForResource",
+          "ecs:ListTasks",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid      = "DescribeAppTasks"
+        Effect   = "Allow"
+        Action   = "ecs:DescribeTasks"
+        Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:task/${var.project}-platform/*"
+      },
+      {
+        Sid    = "ManageM2M"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:CreateResourceServer",
+          "cognito-idp:UpdateResourceServer",
+          "cognito-idp:DeleteResourceServer",
+          "cognito-idp:DescribeResourceServer",
+          "cognito-idp:ListResourceServers",
+          "cognito-idp:CreateUserPoolClient",
+          "cognito-idp:UpdateUserPoolClient",
+          "cognito-idp:DeleteUserPoolClient",
+          "cognito-idp:DescribeUserPoolClient",
+          "cognito-idp:ListUserPoolClients",
+        ]
+        Resource = var.internal_user_pool_arn
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "app_peers_sync_logs" {
+  role       = aws_iam_role.app_peers_sync.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_function" "app_peers_sync" {
+  function_name    = "${var.project}-app-peers-sync"
+  role             = aws_iam_role.app_peers_sync.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 120
+  memory_size      = 128
+  filename         = data.archive_file.app_peers_sync.output_path
+  source_code_hash = data.archive_file.app_peers_sync.output_base64sha256
+
+  # One sync at a time: every run recomputes everything, so runs must not race
+  reserved_concurrent_executions = 1
+
+  environment {
+    variables = {
+      PROJECT             = var.project
+      VPC_ID              = var.vpc_id
+      INTERNAL_POOL_ID    = var.internal_user_pool_id
+      NAMESPACE_ID        = var.service_discovery_namespace_id
+      CLUSTER             = "${var.project}-platform"
+      INFRA_WEBHOOK_PARAM = "/${var.project}/slack/platform-resource-alerts-webhook"
+    }
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "app_peers_sync_trigger" {
+  name        = "${var.project}-app-peers-sync-trigger"
+  description = "app.yaml calls/provides request created, changed or deleted"
+
+  event_pattern = jsonencode({
+    source      = ["aws.ssm"]
+    detail-type = ["Parameter Store Change"]
+    detail = {
+      name      = [{ wildcard = "/${var.project}/apps/*/*/network" }]
+      operation = ["Create", "Update", "Delete"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "app_peers_sync" {
+  rule      = aws_cloudwatch_event_rule.app_peers_sync_trigger.name
+  target_id = "invoke-app-peers-sync"
+  arn       = aws_lambda_function.app_peers_sync.arn
+}
+
+resource "aws_lambda_permission" "app_peers_sync_eventbridge" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.app_peers_sync.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.app_peers_sync_trigger.arn
+}
+
+# Daily safety net plus the ownership audits (Cloud Map names, borrowed SGs)
+resource "aws_cloudwatch_event_rule" "app_peers_sync_reconcile" {
+  name                = "${var.project}-app-peers-sync-reconcile"
+  description         = "Daily reconcile and audit of app-to-app calls"
+  schedule_expression = "cron(45 3 * * ? *)"
+}
+
+resource "aws_cloudwatch_event_target" "app_peers_sync_reconcile" {
+  rule      = aws_cloudwatch_event_rule.app_peers_sync_reconcile.name
+  target_id = "reconcile-app-peers-sync"
+  arn       = aws_lambda_function.app_peers_sync.arn
+  input     = jsonencode({ action = "reconcile" })
+}
+
+resource "aws_lambda_permission" "app_peers_sync_reconcile" {
+  statement_id  = "AllowEventBridgeReconcile"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.app_peers_sync.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.app_peers_sync_reconcile.arn
+}
