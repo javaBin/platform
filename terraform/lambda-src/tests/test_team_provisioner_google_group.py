@@ -5,6 +5,7 @@ Run: python3 -m unittest discover -s terraform/lambda-src/tests
 
 import importlib.util
 import io
+import json
 import os
 import sys
 import types
@@ -152,6 +153,48 @@ class DelegatedTokenTest(unittest.TestCase):
                 h._get_google_groups_settings_token()
 
 
+    def test_not_delegated_is_cached_for_the_invocation(self):
+        h = load()
+        h._create_jwt = lambda payload, key: "jwt"
+        calls = []
+
+        def fail(req):
+            calls.append(req)
+            raise http_error(401, '{"error":"unauthorized_client"}')
+        with mock.patch.object(h, "_get_ssm_param", side_effect=lambda n: '{"client_email": "sa@x", "private_key": "k"}' if n == h.GOOGLE_SA_PARAM else "admin@java.no"), \
+                mock.patch.object(h.urllib.request, "urlopen", side_effect=fail):
+            for _ in range(3):
+                with self.assertRaises(h.GoogleScopeNotDelegated) as ctx:
+                    h._get_google_groups_settings_token()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("scope not delegated to DWD client: https://www.googleapis.com/auth/apps.groups.settings",
+                      str(ctx.exception))
+
+
+class GroupsSettingsApiRequestTest(unittest.TestCase):
+    def test_patch_request_shape(self):
+        h = load()
+        captured = []
+
+        class Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req):
+            captured.append(req)
+            return Resp(b'{"isArchived": "true"}')
+        with mock.patch.object(h.urllib.request, "urlopen", side_effect=fake_urlopen):
+            h._groups_settings_api("PATCH", "team-x@java.no", "tok", {"isArchived": "true"})
+        req = captured[0]
+        self.assertEqual(req.get_method(), "PATCH")
+        self.assertEqual(req.full_url, "https://www.googleapis.com/groups/v1/groups/team-x%40java.no?alt=json")
+        self.assertEqual(json.loads(req.data), {"isArchived": "true"})
+        self.assertEqual(req.get_header("Authorization"), "Bearer tok")
+
+
 class SyncGoogleGroupRolesTest(unittest.TestCase):
     def setUp(self):
         self.h = load()
@@ -192,6 +235,23 @@ class SyncGoogleGroupRolesTest(unittest.TestCase):
         fake, _ = self.sync({"ada@java.no": "MEMBER", "gone@java.no": "MANAGER"}, ["ada"])
         self.assertEqual([c[1] for c in fake.writes("DELETE")], ["/groups/team-x%40java.no/members/gone%40java.no"])
 
+    def test_owner_not_in_registry_is_kept(self):
+        fake, result = self.sync({"ada@java.no": "MEMBER", "platform@java.no": "OWNER"}, ["ada"])
+        self.assertEqual(fake.writes("DELETE"), [])
+        self.assertEqual(result["kept_owners"], ["platform@java.no"])
+
+    def test_external_member_is_skipped_not_fatal(self):
+        fake, result = self.sync({}, [{"email": "anders@example.com"}, "ada"])
+        posts = [c[2]["email"] for c in fake.writes("POST")]
+        self.assertEqual(posts, ["ada@java.no"])
+        self.assertEqual(result["skipped_external"], ["anders@example.com"])
+        self.assertEqual(result["settings"], {"changed": []})
+
+    def test_existing_external_member_is_not_removed(self):
+        fake, result = self.sync({"anders@example.com": "MEMBER"}, [{"email": "anders@example.com"}])
+        self.assertEqual(fake.writes("DELETE") + fake.writes("POST"), [])
+        self.assertEqual(result["skipped_external"], [])
+
     def test_settings_result_is_included(self):
         _, result = self.sync({}, ["ada"])
         self.assertEqual(result["settings"], {"changed": []})
@@ -204,6 +264,12 @@ class ResultLineTest(unittest.TestCase):
             "skipped": True, "reason": "groups settings scope not delegated"}})
         self.assertIn(":white_check_mark: google: synced", line)
         self.assertIn(":warning: group settings skipped", line)
+
+    def test_skipped_external_is_flagged(self):
+        h = load()
+        line = h._result_line("google", {"synced": True, "member_count": 1,
+                                         "skipped_external": ["x@example.com"]})
+        self.assertIn(":warning: not added (not @java.no): x@example.com", line)
 
     def test_changes_are_listed(self):
         h = load()
