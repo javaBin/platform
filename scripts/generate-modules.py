@@ -60,7 +60,7 @@ SCHEMA = {
     "team": None,
     "compute": {"cpu", "memory", "port", "desired_count", "health_check",
                 "health_check_matcher", "user", "readonly_root_filesystem"},
-    "routing": {"host", "priority", "deregistration_delay"},
+    "routing": {"host", "priority", "deregistration_delay", "adopt_dns"},
     "domain": None,
     "resources": {"buckets", "databases", "secrets", "queues"},
     "auth": {"pool", "client", "callback_urls", "logout_urls", "scopes", "groups", "env"},
@@ -72,7 +72,8 @@ RESOURCE_SCHEMA = {
     "buckets": {"name", "env", "versioning", "expire_days"},
     "databases": {"name", "env", "engine", "hash_key", "hash_key_type", "range_key",
                   "range_key_type", "ttl_attribute", "instance_class", "allocated_storage",
-                  "engine_version", "backup_retention_period", "multi_az", "deletion_protection"},
+                  "engine_version", "backup_retention_period", "multi_az", "deletion_protection",
+                  "adopt", "host_env", "port_env"},
     "secrets": {"name", "env", "description"},
     "queues": {"name", "env", "visibility_timeout", "retention_seconds", "max_receive_count"},
 }
@@ -91,6 +92,11 @@ TEAM_RE = re.compile(r"^[a-z]{1,12}$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 HOST_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+RDS_IDENTIFIER_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9-]{0,62}$")
+
+POSTGRES_ENGINES = ("postgres", "postgresql")
+# An adopted database keeps its live shape; these would suggest otherwise.
+ADOPT_REJECTED = ("instance_class", "allocated_storage", "engine_version", "multi_az")
 
 
 def host_zone(host):
@@ -107,6 +113,28 @@ def _check_keys(section, data, allowed):
         raise AppYamlError(
             f"{section}: unknown field(s) {', '.join(unknown)} "
             f"(supported: {', '.join(sorted(allowed))})"
+        )
+
+
+def _validate_database(where, db):
+    postgres = str(db.get("engine") or "dynamodb").lower() in POSTGRES_ENGINES
+    for key in ("host_env", "port_env"):
+        if key in db:
+            if not postgres:
+                raise AppYamlError(f"{where}.{key}: only supported for engine: postgres")
+            if not ENV_RE.match(str(db[key])):
+                raise AppYamlError(f"{where}.{key}: {db[key]!r} is not a valid variable name")
+    if "adopt" not in db:
+        return
+    if not postgres:
+        raise AppYamlError(f"{where}.adopt: only supported for engine: postgres")
+    if not RDS_IDENTIFIER_RE.match(str(db["adopt"])):
+        raise AppYamlError(f"{where}.adopt: {db['adopt']!r} is not an RDS DB instance identifier")
+    rejected = [k for k in ADOPT_REJECTED if k in db]
+    if rejected:
+        raise AppYamlError(
+            f"{where}: {', '.join(rejected)} cannot be set with adopt — an adopted database keeps "
+            "its live engine, class, storage and placement; change those outside app.yaml"
         )
 
 
@@ -140,6 +168,8 @@ def validate(app):
             )
         if not isinstance(routing.get("priority"), int) or not 1 <= routing["priority"] <= 50000:
             raise AppYamlError("routing.priority is required: a unique integer 1-50000")
+        if "adopt_dns" in routing and not isinstance(routing["adopt_dns"], bool):
+            raise AppYamlError("routing.adopt_dns must be true or false")
 
     for rtype, items in (app.get("resources") or {}).items():
         if not isinstance(items, list):
@@ -150,6 +180,8 @@ def validate(app):
                 raise AppYamlError(f"resources.{rtype}[{i}].name: {item.get('name')!r} is not a valid name")
             if item.get("env") and not ENV_RE.match(item["env"]):
                 raise AppYamlError(f"resources.{rtype}[{i}].env: {item['env']!r} is not a valid variable name")
+            if rtype == "databases":
+                _validate_database(f"resources.databases[{i}]", item)
 
     env = app.get("environment")
     if env is not None:
@@ -236,6 +268,18 @@ def module_block(name, source, attrs):
     return "\n".join(lines)
 
 
+def import_block(to, import_id):
+    """An `import {}` block adopting an existing resource. Once the resource is
+    in state Terraform skips the block, so it can stay in the generated file."""
+    return f"import {{\n  to = {to}\n  id = {hcl_string(import_id)}\n}}"
+
+
+def _wire_postgres_env(env_map, mod_name, db):
+    for key, output in (("env", "endpoint"), ("host_env", "address"), ("port_env", "port")):
+        if db.get(key):
+            env_map[db[key]] = Ref(f"module.{mod_name}.{output}")
+
+
 # ---------------------------------------------------------------------------
 # Main generation
 # ---------------------------------------------------------------------------
@@ -258,6 +302,8 @@ def generate(app, account_id, region, platform_ref):
         if not routing.get("priority"):
             raise AppYamlError("domain: requires routing.priority (unique 1-50000) to create the ALB rule")
         routing["host"] = app["domain"]
+
+    imports = []  # (resource address, import id) for existing resources to adopt
 
     def src(mod):
         path = MODULE_SOURCES[mod]
@@ -311,6 +357,9 @@ def generate(app, account_id, region, platform_ref):
             "alb_dns_name": Ref("module.platform.alb_dns_name"),
             "alb_zone_id": Ref("module.platform.alb_zone_id"),
             "deregistration_delay": routing.get("deregistration_delay", 30),
+            # adopt_dns: take over an existing record (Route53 UPSERT). Only
+            # emitted when set, so other apps' generated files don't change.
+            **({"allow_dns_overwrite": True} if routing.get("adopt_dns") else {}),
         }))
 
     # Collection modules (buckets, databases, secrets, queues)
@@ -336,7 +385,20 @@ def generate(app, account_id, region, platform_ref):
     for db in resources.get("databases", []):
         dname = db["name"]
         engine = (db.get("engine") or "dynamodb").lower()
-        if engine in ("postgres", "postgresql"):
+        if engine in POSTGRES_ENGINES and db.get("adopt"):
+            # Existing instance: imported, never created. Password auth with
+            # the app's own credentials, so no task-role policy.
+            mod_name = f"rds_{dname}"
+            attrs = {
+                "identifier": db["adopt"],
+                "deletion_protection": db.get("deletion_protection", True),
+            }
+            if db.get("backup_retention_period") is not None:
+                attrs["backup_retention_period"] = db["backup_retention_period"]
+            blocks.append(module_block(mod_name, src("service-rds-adopted"), attrs))
+            imports.append((f"module.{mod_name}.aws_db_instance.this", db["adopt"]))
+            _wire_postgres_env(env_map, mod_name, db)
+        elif engine in POSTGRES_ENGINES:
             mod_name = f"rds_{dname}"
             blocks.append(module_block(mod_name, src("service-rds"), {
                 "name": dname,
@@ -353,8 +415,7 @@ def generate(app, account_id, region, platform_ref):
                 "deletion_protection": db.get("deletion_protection", True),
             }))
             policy_map[mod_name] = Ref(f"module.{mod_name}.access_policy_json")
-            if db.get("env"):
-                env_map[db["env"]] = Ref(f"module.{mod_name}.endpoint")
+            _wire_postgres_env(env_map, mod_name, db)
         elif engine == "dynamodb":
             mod_name = f"database_{dname}"
             attrs = {
@@ -541,6 +602,8 @@ def generate(app, account_id, region, platform_ref):
         blocks.append(f"""data "aws_sns_topic" "alerts" {{
   name = "{PROJECT}-alerts"
 }}""")
+
+    blocks.extend(import_block(to, id_) for to, id_ in imports)
 
     files["main.tf"] = GENERATED + "\n\n".join(blocks) + "\n"
 

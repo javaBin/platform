@@ -29,6 +29,7 @@ MODULE_SOURCES = {
     "service-bucket":     "terraform/modules/service-bucket",
     "service-database":   "terraform/modules/service-database",
     "service-rds":        "terraform/modules/service-rds",
+    "service-rds-adopted": "terraform/modules/service-rds-adopted",
     "service-secret":     "terraform/modules/service-secret",
     "service-queue":      "terraform/modules/service-queue",
     "cognito-app-client": "terraform/modules/cognito-app-client",
