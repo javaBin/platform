@@ -36,41 +36,11 @@ resource "aws_guardduty_filter" "team_provisioner_cognito_sync" {
   }
 }
 
-# Team SSO roles read their apps' SSM parameters (`javabin secret`, the
-# console). The team permission set only allows ssm:GetParameter* on
-# /javabin/apps/${aws:PrincipalTag/team}/*, so every such read is the team's
-# own parameter. Other anomaly types for these roles still alert.
-data "aws_iam_roles" "team_sso" {
-  name_regex  = "^AWSReservedSSO_${var.project}-team-.+"
-  path_prefix = "/aws-reserved/sso.amazonaws.com/"
-}
-
-resource "aws_guardduty_filter" "team_sso_own_ssm_params" {
-  # Role names carry an unpredictable suffix, so they come from IAM; skip the
-  # filter when no team role exists yet. New teams are picked up next apply.
-  count = length(data.aws_iam_roles.team_sso.names) > 0 ? 1 : 0
-
-  name        = "team-sso-own-ssm-params"
-  description = "Benign: team SSO roles read SSM params under their own team path"
-  detector_id = aws_guardduty_detector.main.id
-  action      = "ARCHIVE"
-  rank        = 2
-
-  finding_criteria {
-    criterion {
-      field  = "type"
-      equals = ["CredentialAccess:IAMUser/AnomalousBehavior"]
-    }
-    criterion {
-      field  = "service.action.awsApiCallAction.api"
-      equals = ["GetParameter"]
-    }
-    criterion {
-      field  = "resource.accessKeyDetails.userName"
-      equals = sort(tolist(data.aws_iam_roles.team_sso.names))
-    }
-  }
-}
+# Deliberately no filter for team SSO roles' CredentialAccess:IAMUser/
+# AnomalousBehavior on ssm:GetParameter. The team permission set is
+# Action "*" scoped by StringEqualsIfExists aws:ResourceTag/team, so it does
+# not limit reads to the team's own path, and this finding type is exactly
+# what a stolen SSO session reading secrets produces. Triage it by hand.
 
 # ------------------------------------------------------------------
 # Security Hub controls disabled per standard
