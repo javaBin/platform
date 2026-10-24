@@ -956,27 +956,8 @@ resource "aws_lambda_function" "password_set" {
   }
 }
 
-resource "aws_lambda_function_url" "password_set" {
-  function_name      = aws_lambda_function.password_set.function_name
-  authorization_type = "NONE"
-}
-
-# Public access for function URL — both permissions required since Oct 2025.
-# FunctionURLAllowPublicAccess is imported (auto-created by the function URL).
-resource "aws_lambda_permission" "password_set_public_url" {
-  statement_id           = "FunctionURLAllowPublicAccess"
-  action                 = "lambda:InvokeFunctionUrl"
-  function_name          = aws_lambda_function.password_set.function_name
-  principal              = "*"
-  function_url_auth_type = "NONE"
-}
-
-resource "aws_lambda_permission" "password_set_public_invoke" {
-  statement_id  = "AllowPublicInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.password_set.function_name
-  principal     = "*"
-}
+# No function URL or public resource policy: the only entry point is the ALB
+# (password.javazone.no), invoked via the scoped AllowALBInvoke permission.
 
 # Store custom domain URL in SSM so team-provisioner uses the friendly URL
 # in welcome emails instead of the raw Lambda Function URL.

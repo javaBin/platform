@@ -38,10 +38,6 @@ output "password_set_function_arn" {
   value       = aws_lambda_function.password_set.arn
 }
 
-output "password_set_function_url" {
-  description = "Function URL for the password-set Lambda"
-  value       = aws_lambda_function_url.password_set.function_url
-}
 
 output "apply_gate_role_arn" {
   description = "ARN of the apply-gate Lambda IAM role"
