@@ -88,7 +88,6 @@ SNS topics, EventBridge rules, Config, GuardDuty, Security Hub.
 | Kind | What | Why |
 |------|------|-----|
 | GuardDuty filter (archive) | `Impact:IAMUser/AnomalousBehavior` from `javabin-team-provisioner` on `cognito-idp` | Scheduled Cognito group sync by the team-provisioner Lambda |
-| GuardDuty filter (archive) | `CredentialAccess:IAMUser/AnomalousBehavior`, API `GetParameter`, from `AWSReservedSSO_javabin-team-*` roles | The team permission set only allows SSM reads under `/javabin/apps/<own team>/*`. Role names come from a data source; new teams are added on the next apply |
 | Security Hub control disabled | CIS 1.2.0 CloudWatch.1-14, CloudTrail.5; FSBP CloudTrail.5 | No CloudTrail to CloudWatch Logs (cost). EventBridge rules and GuardDuty give the equivalent alerts |
 | Security Hub control disabled | FSBP GuardDuty.7 | No EKS |
 | Security Hub control disabled | FSBP Macie.1 | Not adopted (cost); revisit if PII lands in S3 |
@@ -99,6 +98,8 @@ SNS topics, EventBridge rules, Config, GuardDuty, Security Hub.
 | Security Hub automation rule (suppress) | ELB.18 on the platform ALB port-80 listener | Redirect-only listener |
 
 GuardDuty filters only affect new findings; archive existing matches once in the console.
+
+Team SSO roles' `CredentialAccess:IAMUser/AnomalousBehavior` on `ssm:GetParameter` is deliberately not filtered. The `javabin-team-{team}` permission set is `Action "*"` scoped by `StringEqualsIfExists aws:ResourceTag/team`, so untagged parameters are readable too, and this is the finding a stolen SSO session produces. Check the source country and confirm with the user before archiving one.
 
 ## lambdas
 
