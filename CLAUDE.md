@@ -193,6 +193,8 @@ terraform/state/
 | `scripts/invoke-apply-gate.sh` | CI: invoke gate Lambda for apply credentials |
 | `scripts/run-plan.sh` | CI: terraform plan with exit code handling |
 | `scripts/upload-plan.sh` | CI: upload plan artifact to S3 |
+| `scripts/auth-doctor.py` | CI (after app apply) / local: checks an app's Cognito sign-in end to end from auth-status + HTTP probes (tests: `scripts/tests/`) |
+| `scripts/reconcile-app-auth.sh` | CI (after platform apply): queue an app-auth-sync reconcile |
 
 ## Naming
 
@@ -254,7 +256,9 @@ All parameters are in `eu-central-1`. Use `--profile javabin --region eu-central
 | `/javabin/platform/atlassian-api-key` | SecureString | team-provisioner (Atlassian org admin API key, unscoped — full org admin) |
 | `/javabin/platform-overrides/{repo}/{sha}` | SecureString | Risk gate override tokens (single-use) |
 | `/javabin/apps/{team}/{app}/auth` | String | app.yaml `auth:` request (written by app TF, read by app-auth-sync) |
-| `/javabin/apps/{team}/{app}/cognito-client-{id,secret}` | String / SecureString | Written by app-auth-sync, read by ECS execution role |
+| `/javabin/apps/{team}/{app}/cognito-client-{id,secret,identity-provider}` | String / SecureString / String | Written by app-auth-sync (only on change; a change restarts the app), read by ECS execution role |
+| `/javabin/apps/{team}/{app}/auth-status` | String (JSON) | Written by app-auth-sync, read by the team and `scripts/auth-doctor.py` |
+| `/javabin/platform/google-oauth/internal/{client-id,client-secret}` | String / SecureString | Internal pool's Google OIDC IdP (identity TF; IdP is created only when both exist) |
 
 ## GCP Connection
 
@@ -296,7 +300,7 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 
 ### Known Issues
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
-- **Cognito**: pools deployed; internal pool's `GoogleSAML` IdP was created outside Terraform
+- **Cognito**: pools deployed; internal pool's `GoogleSAML` IdP was created outside Terraform. It is replaced by the Terraform-managed Google OIDC IdP at cutover (docs/cognito-google-setup.md), then deleted
 - **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) instead. The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
 - **App databases share one network path**: service-rds allows ingress from the shared ECS tasks SG, so every team's tasks can reach every team's DB port (password still required). Fix: per-app security groups
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.

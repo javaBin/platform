@@ -88,6 +88,10 @@ class TeamPermissionSetTest(unittest.TestCase):
         self.assertEqual(result["provisioned"], {"status": "SUCCEEDED"})
         deny = next(st for st in policy["Statement"] if st["Sid"] == "DenyCreatingParameters")
         self.assertEqual(deny["Condition"], {"BoolIfExists": {"ssm:Overwrite": "false"}})
+        # app-auth-sync's outputs are readable but not writable by the team
+        managed = next(st for st in policy["Statement"] if st["Sid"] == "DenyPlatformManagedParameters")
+        self.assertTrue(any(r.endswith("/apps/*/*/auth-status") for r in managed["Resource"]))
+        self.assertTrue(any(r.endswith("/apps/*/*/cognito-client-*") for r in managed["Resource"]))
 
     def _guardrails_with(self, tags=None, missing=False):
         h = load(FakeDynamo([]))

@@ -193,9 +193,9 @@ resource "aws_ssoadmin_permission_set_inline_policy" "developer" {
           }
         }
       },
-      # Platform-managed parameters in the team path: Cognito credentials
-      # (app-auth-sync), the auth request (app Terraform) and RDS master
-      # passwords (the database keeps the original; changing it breaks the app).
+      # Platform-managed parameters in the team path: Cognito credentials and
+      # auth-status (app-auth-sync), the auth request (app Terraform) and RDS
+      # master passwords (the database keeps the original; changing it breaks the app).
       {
         Sid    = "DenyPlatformManagedParameters"
         Effect = "Deny"
@@ -203,6 +203,7 @@ resource "aws_ssoadmin_permission_set_inline_policy" "developer" {
         Resource = [
           "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/cognito-client-*",
           "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/auth",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/auth-status",
           "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/db-master-password",
         ]
       },

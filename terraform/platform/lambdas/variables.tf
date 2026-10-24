@@ -138,6 +138,27 @@ variable "auth_memberships_table_arn" {
   type        = string
 }
 
+variable "internal_identity_providers" {
+  description = "Sign-in IdPs app-auth-sync puts on internal-pool app clients"
+  type        = list(string)
+}
+
+variable "external_identity_providers" {
+  description = "Sign-in IdPs app-auth-sync puts on external-pool app clients"
+  type        = list(string)
+}
+
+variable "internal_user_pool_domain" {
+  description = "Hosted-UI domain of the internal pool (reported in auth-status for probes)"
+  type        = string
+}
+
+variable "external_user_pool_domain" {
+  description = "Hosted-UI domain of the external pool, empty if none"
+  type        = string
+  default     = ""
+}
+
 variable "atlassian_sync_apply" {
   description = "Let team-provisioner write Atlassian group memberships; false = report the plan only"
   type        = bool
