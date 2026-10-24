@@ -233,7 +233,8 @@ resource "aws_vpc_security_group_egress_rule" "ecs_all" {
 # module). team=shared lets every team create its Cloud Map service in it;
 # the developer boundary denies deleting or retagging the namespace. The
 # namespace also creates a Route53 private hosted zone; Route53 ignores tag
-# conditions, so the boundary denies changing that zone by its ARN.
+# conditions, so the boundary denies record changes under <project>.internal
+# by record name (DenyAppDNS) and hosted-zone deletion outright.
 ################################################################################
 
 resource "aws_service_discovery_private_dns_namespace" "internal" {

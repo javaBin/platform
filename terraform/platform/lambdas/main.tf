@@ -2089,10 +2089,12 @@ resource "aws_iam_role_policy" "app_peers_sync" {
         Resource = "*"
       },
       {
+        # Read-only; the zone ID is only known after apply, so keep this
+        # statement readable in the plan
         Sid      = "AuditPrivateZone"
         Effect   = "Allow"
         Action   = "route53:ListResourceRecordSets"
-        Resource = "arn:aws:route53:::hostedzone/${var.service_discovery_zone_id}"
+        Resource = "arn:aws:route53:::hostedzone/*"
       },
       {
         Sid      = "DescribeAppTasks"
