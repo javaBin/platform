@@ -2089,6 +2089,12 @@ resource "aws_iam_role_policy" "app_peers_sync" {
         Resource = "*"
       },
       {
+        Sid      = "AuditPrivateZone"
+        Effect   = "Allow"
+        Action   = "route53:ListResourceRecordSets"
+        Resource = "arn:aws:route53:::hostedzone/${var.service_discovery_zone_id}"
+      },
+      {
         Sid      = "DescribeAppTasks"
         Effect   = "Allow"
         Action   = "ecs:DescribeTasks"
@@ -2139,6 +2145,7 @@ resource "aws_lambda_function" "app_peers_sync" {
       VPC_ID              = var.vpc_id
       INTERNAL_POOL_ID    = var.internal_user_pool_id
       NAMESPACE_ID        = var.service_discovery_namespace_id
+      HOSTED_ZONE_ID      = var.service_discovery_zone_id
       CLUSTER             = "${var.project}-platform"
       INFRA_WEBHOOK_PARAM = "/${var.project}/slack/platform-resource-alerts-webhook"
     }
@@ -2173,7 +2180,8 @@ resource "aws_lambda_permission" "app_peers_sync_eventbridge" {
   source_arn    = aws_cloudwatch_event_rule.app_peers_sync_trigger.arn
 }
 
-# Daily safety net plus the ownership audits (Cloud Map names, borrowed SGs)
+# Daily safety net plus the ownership audits (Cloud Map names, private zone
+# records, borrowed SGs)
 resource "aws_cloudwatch_event_rule" "app_peers_sync_reconcile" {
   name                = "${var.project}-app-peers-sync-reconcile"
   description         = "Daily reconcile and audit of app-to-app calls"

@@ -25,6 +25,14 @@ output "peer_url_arns" {
   value       = { for k in keys(var.calls) : k => "${local.param_arn_prefix}/peer-${replace(k, "/", "-")}-url" }
 }
 
+output "peer_scopes_arns" {
+  description = "\"team/app\" => ARN of the parameter app-peers-sync writes the granted scopes to (calls with scopes only)"
+  value = {
+    for k, scopes in var.calls : k => "${local.param_arn_prefix}/peer-${replace(k, "/", "-")}-scopes"
+    if length(scopes) > 0
+  }
+}
+
 output "m2m_client_id_arn" {
   description = "ARN of the parameter app-peers-sync writes the M2M client ID to"
   value       = "${local.param_arn_prefix}/m2m-client-id"
@@ -37,7 +45,7 @@ output "m2m_client_secret_arn" {
 
 output "token_url" {
   description = "OAuth2 token endpoint of the internal pool (client_credentials)"
-  value       = "https://${var.internal_pool_name}.auth.${local.region}.amazoncognito.com/oauth2/token"
+  value       = "https://${var.internal_pool_domain}.auth.${local.region}.amazoncognito.com/oauth2/token"
 }
 
 output "issuer_url" {

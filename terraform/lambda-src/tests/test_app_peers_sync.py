@@ -44,7 +44,7 @@ class FakeSSM:
 class FakeEC2:
     def __init__(self, groups):
         self.groups = groups  # sg -> (name, team)
-        self.rules = {}  # rule_id -> (sg, ref, port, managed)
+        self.rules = {}  # rule_id -> (sg, ref, port, managed, peer)
         self.authorized, self.revoked = [], []
         self.n = 0
 
@@ -56,12 +56,12 @@ class FakeEC2:
         assert name == "describe_security_group_rules"
         return Pager(lambda **kw: {"SecurityGroupRules": [
             {"SecurityGroupRuleId": rid, "GroupId": sg, "IsEgress": False, "FromPort": port, "ToPort": port,
-             "ReferencedGroupInfo": {"GroupId": ref}}
-            for rid, (sg, ref, port, managed) in self.rules.items() if managed]})
+             "ReferencedGroupInfo": {"GroupId": ref}, "Tags": [{"Key": "javabin-peer", "Value": peer}]}
+            for rid, (sg, ref, port, managed, peer) in self.rules.items() if managed]})
 
-    def add_rule(self, sg, ref, port, managed=True):
+    def add_rule(self, sg, ref, port, managed=True, peer=""):
         self.n += 1
-        self.rules[f"sgr-{self.n}"] = (sg, ref, port, managed)
+        self.rules[f"sgr-{self.n}"] = (sg, ref, port, managed, peer)
 
     def authorize_security_group_ingress(self, GroupId, IpPermissions, TagSpecifications):
         perm = IpPermissions[0]
@@ -70,12 +70,12 @@ class FakeEC2:
             raise Exception("InvalidPermission.Duplicate")
         tags = {t["Key"]: t["Value"] for t in TagSpecifications[0]["Tags"]}
         assert tags["managed-by"] == "javabin-app-peers-sync"
-        self.add_rule(GroupId, ref, perm["FromPort"])
+        self.add_rule(GroupId, ref, perm["FromPort"], peer=tags["javabin-peer"])
         self.authorized.append((GroupId, ref, perm["FromPort"]))
 
     def revoke_security_group_ingress(self, GroupId, SecurityGroupRuleIds):
         for rid in SecurityGroupRuleIds:
-            sg, ref, port, _ = self.rules.pop(rid)
+            sg, ref, port, *_ = self.rules.pop(rid)
             assert sg == GroupId
             self.revoked.append((sg, ref, port))
 
@@ -148,12 +148,25 @@ class FakeServiceDiscovery:
     def get_paginator(self, name):
         if name == "list_services":
             return Pager(lambda **kw: {"Services": [{"Id": n, "Name": n, "Arn": f"arn:{n}"} for n, _, _ in self.services]})
+        def inst(o):
+            owner, _, ip = o.partition("@")
+            return {"Id": "i", "Attributes": {"ECS_SERVICE_NAME": owner, **({"AWS_INSTANCE_IPV4": ip} if ip else {})}}
         return Pager(lambda ServiceId: {"Instances": [
-            {"Id": "i", "Attributes": {"ECS_SERVICE_NAME": o}} for n, _, owners in self.services if n == ServiceId for o in owners]})
+            inst(o) for n, _, owners in self.services if n == ServiceId for o in owners]})
 
     def list_tags_for_resource(self, ResourceARN):
         team = next(t for n, t, _ in self.services if f"arn:{n}" == ResourceARN)
         return {"Tags": [{"Key": "team", "Value": team}]}
+
+
+class FakeRoute53:
+    def __init__(self, records=()):
+        self.records = list(records)  # (name, type, [values])
+
+    def get_paginator(self, name):
+        return Pager(lambda HostedZoneId: {"ResourceRecordSets": [
+            {"Name": f"{n}.", "Type": t, "ResourceRecords": [{"Value": v} for v in vals]}
+            for n, t, vals in self.records]})
 
 
 class FakeECS:
@@ -168,13 +181,15 @@ class FakeECS:
             {"details": [{"name": "networkInterfaceId", "value": e}]}]} for s, e in self.tasks]}
 
 
-def load(ssm, ec2, cognito, sd=None, ecs=None, env=None):
+def load(ssm, ec2, cognito, sd=None, ecs=None, env=None, r53=None):
     clients = {"ssm": ssm, "ec2": ec2, "cognito-idp": cognito,
-               "servicediscovery": sd or FakeServiceDiscovery(), "ecs": ecs or FakeECS()}
+               "servicediscovery": sd or FakeServiceDiscovery(), "ecs": ecs or FakeECS(),
+               "route53": r53 or FakeRoute53()}
     boto3 = types.ModuleType("boto3")
     boto3.client = lambda svc, **kw: clients[svc]
     sys.modules["boto3"] = boto3
-    os.environ.update({"INTERNAL_POOL_ID": "pool", "NAMESPACE_ID": "ns-1", "INFRA_WEBHOOK_PARAM": "", **(env or {})})
+    os.environ.update({"INTERNAL_POOL_ID": "pool", "NAMESPACE_ID": "ns-1", "HOSTED_ZONE_ID": "Z1",
+                       "INFRA_WEBHOOK_PARAM": "", **(env or {})})
     path = os.path.join(os.path.dirname(__file__), "..", "app_peers_sync", "handler.py")
     spec = importlib.util.spec_from_file_location("app_peers_sync_handler", path)
     mod = importlib.util.module_from_spec(spec)
@@ -224,6 +239,8 @@ class ConsentTest(unittest.TestCase):
                          {"cupcake/cupcake-backend": "active"})
         self.assertEqual(ssm.params[f"{CALLER}/peer-moresleep-moresleep-url"],
                          "http://moresleep-moresleep.javabin.internal:8082")
+        # Only what was granted, not what was requested (talks.write is denied)
+        self.assertEqual(ssm.params[f"{CALLER}/peer-moresleep-moresleep-scopes"], "moresleep-moresleep/talks.read")
 
         (client,) = cognito.clients.values()
         self.assertEqual(client["ClientName"], "m2m.cupcake-cupcake-backend")
@@ -243,6 +260,7 @@ class ConsentTest(unittest.TestCase):
         (client,) = cognito.clients.values()
         self.assertFalse(client["AllowedOAuthFlowsUserPoolClient"])
         self.assertIn(f"{CALLER}/m2m-client-id", ssm.params)
+        self.assertEqual(ssm.params[f"{CALLER}/peer-moresleep-moresleep-scopes"], "none")
 
     def test_unknown_callee_gets_default_port_url(self):
         params = {f"{CALLER}/network": request("sg-0000000a", calls={"moresleep/moresleep": []})}
@@ -357,6 +375,16 @@ class ParametersTest(unittest.TestCase):
         self.assertIn(f"{CALLER}/peer-moresleep-moresleep-url", ssm.params)
         self.assertEqual(len(cognito.clients), 1)
 
+    def test_callee_narrowing_scopes_updates_the_scopes_parameter(self):
+        h, ssm, ec2, cognito = world(both_sides(consumer_scopes=("talks.read", "talks.write")))
+        h.handler({}, None)
+        self.assertEqual(ssm.params[f"{CALLER}/peer-moresleep-moresleep-scopes"],
+                         "moresleep-moresleep/talks.read moresleep-moresleep/talks.write")
+        ssm.params[f"{CALLEE}/network"] = request("sg-0000000b", port=8082, scopes=SCOPES,
+                                                  consumers={"cupcake/cupcake-backend": ["talks.read"]})
+        h.handler({}, None)
+        self.assertEqual(ssm.params[f"{CALLER}/peer-moresleep-moresleep-scopes"], "moresleep-moresleep/talks.read")
+
     def test_parse_rejects_bad_requests(self):
         h, *_ = world({})
         bad = [
@@ -372,6 +400,76 @@ class ParametersTest(unittest.TestCase):
         for raw in bad:
             with self.assertRaises(h.InvalidRequest, msg=raw):
                 h.parse_request(raw, "cupcake", "cupcake-backend")
+
+
+class FrozenTest(unittest.TestCase):
+    """An invalid request freezes the app; it does not cut off its peers."""
+
+    def test_invalid_callee_keeps_rule_server_and_caller_scopes(self):
+        h, ssm, ec2, cognito = world(both_sides())
+        h.handler({}, None)
+        ssm.puts.clear()
+        ssm.params[f"{CALLEE}/network"] = "not json"
+        result = h.handler({}, None)
+        self.assertIn("moresleep/moresleep", result["invalid"])
+        self.assertEqual(ec2.revoked, [])
+        self.assertEqual(len(ec2.rules), 1)
+        self.assertIn("moresleep-moresleep", cognito.servers)
+        (client,) = cognito.clients.values()
+        self.assertEqual(client["AllowedOAuthScopes"], ["moresleep-moresleep/talks.read"])
+        self.assertEqual(ssm.params[f"{CALLER}/peer-moresleep-moresleep-url"],
+                         "http://moresleep-moresleep.javabin.internal:8082")
+        self.assertEqual(ssm.params[f"{CALLER}/peer-moresleep-moresleep-scopes"], "moresleep-moresleep/talks.read")
+        self.assertEqual(json.loads(ssm.params[f"{CALLER}/peers-status"])["calls"]["moresleep/moresleep"]["state"],
+                         "callee-invalid")
+        # Only the status parameters changed
+        self.assertEqual({n for n, _ in ssm.puts}, {f"{CALLER}/peers-status", f"{CALLEE}/peers-status"})
+
+        # Fixed again: nothing to redo
+        ssm.params[f"{CALLEE}/network"] = both_sides()[f"{CALLEE}/network"]
+        ec2.authorized.clear()
+        self.assertEqual(h.handler({}, None)["status"], "ok")
+        self.assertEqual(ec2.authorized, [])
+
+    def test_valid_caller_can_still_withdraw_from_invalid_callee(self):
+        h, ssm, ec2, cognito = world(both_sides())
+        h.handler({}, None)
+        ssm.params[f"{CALLEE}/network"] = "not json"
+        ssm.params[f"{CALLER}/network"] = request("sg-0000000a")
+        h.handler({}, None)
+        self.assertEqual(ec2.rules, {})
+        self.assertEqual(cognito.clients, {})
+        self.assertIn("moresleep-moresleep", cognito.servers)  # frozen callee's own server stays
+
+    def test_valid_callee_can_still_withdraw_from_invalid_caller(self):
+        h, ssm, ec2, cognito = world(both_sides())
+        h.handler({}, None)
+        ssm.params[f"{CALLER}/network"] = "not json"
+        ssm.params[f"{CALLEE}/network"] = request("sg-0000000b", port=8082, scopes=SCOPES)
+        self.assertEqual(h.handler({}, None)["status"], "ok")
+        self.assertEqual(ec2.rules, {})
+        (client,) = cognito.clients.values()  # kept, but without the withdrawn scope
+        self.assertFalse(client["AllowedOAuthFlowsUserPoolClient"])
+
+    def test_invalid_caller_keeps_its_edge(self):
+        h, ssm, ec2, cognito = world(both_sides())
+        h.handler({}, None)
+        ssm.params[f"{CALLER}/network"] = "not json"
+        h.handler({}, None)
+        self.assertEqual(ec2.revoked, [])
+        (client,) = cognito.clients.values()
+        self.assertEqual(client["AllowedOAuthScopes"], ["moresleep-moresleep/talks.read"])
+        self.assertEqual(json.loads(ssm.params[f"{CALLEE}/peers-status"])["consumers"],
+                         {"cupcake/cupcake-backend": "caller-invalid"})
+
+    def test_deleted_request_is_removed_for_real(self):
+        h, ssm, ec2, cognito = world(both_sides())
+        h.handler({}, None)
+        del ssm.params[f"{CALLEE}/network"]
+        h.handler({}, None)
+        self.assertEqual(ec2.rules, {})
+        self.assertEqual(cognito.servers, {})
+        self.assertEqual(ssm.params[f"{CALLER}/peer-moresleep-moresleep-scopes"], "none")
 
 
 class AuditTest(unittest.TestCase):
@@ -390,6 +488,20 @@ class AuditTest(unittest.TestCase):
         findings = h.handler({"action": "reconcile"}, None)["findings"]
         self.assertEqual(len(findings), 3, findings)
         self.assertTrue(any("evil-thing" in f and "security group" in f for f in findings))
+
+    def test_reconcile_reports_records_cloud_map_did_not_write(self):
+        sd = FakeServiceDiscovery([("cupcake-cupcake", "cupcake", ["cupcake-cupcake@10.0.1.5"])])
+        r53 = FakeRoute53([
+            ("javabin.internal", "SOA", ["x"]), ("javabin.internal", "NS", ["x"]),
+            ("cupcake-cupcake.javabin.internal", "A", ["10.0.1.5"]),        # fine
+            ("cupcake-cupcake.javabin.internal", "A", ["10.0.9.9"]),        # hijacked
+            ("moresleep-moresleep.javabin.internal", "A", ["10.0.9.9"]),    # no service
+            ("x.javabin.internal", "CNAME", ["evil.example.com"]),
+        ])
+        h, *_ = world({}, sd=sd, r53=r53)
+        findings = h.handler({"action": "reconcile"}, None)["findings"]
+        self.assertEqual(len(findings), 3, findings)
+        self.assertTrue(any("10.0.9.9" in f and "cupcake-cupcake" in f for f in findings))
 
     def test_audits_only_run_on_reconcile(self):
         sd = FakeServiceDiscovery([("moresleep-moresleep", "cupcake", [])])

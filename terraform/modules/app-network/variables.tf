@@ -54,3 +54,9 @@ variable "internal_pool_name" {
   type        = string
   default     = "javabin-internal"
 }
+
+variable "internal_pool_domain" {
+  description = "Cognito hosted-domain prefix of the internal pool (its OAuth2 token endpoint). Today the same as the pool name; change both here if the domain ever changes"
+  type        = string
+  default     = "javabin-internal"
+}

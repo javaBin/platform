@@ -258,7 +258,7 @@ All parameters are in `eu-central-1`. Use `--profile javabin --region eu-central
 | `/javabin/apps/{team}/{app}/auth` | String | app.yaml `auth:` request (written by app TF, read by app-auth-sync) |
 | `/javabin/apps/{team}/{app}/cognito-client-{id,secret}` | String / SecureString | Written by app-auth-sync, read by ECS execution role |
 | `/javabin/apps/{team}/{app}/network` | String | app.yaml `calls:`/`provides:` request (written by app TF, read by app-peers-sync) |
-| `/javabin/apps/{team}/{app}/peer-{t}-{a}-url`, `m2m-client-{id,secret}` | String / SecureString | Written by app-peers-sync, read by ECS execution role |
+| `/javabin/apps/{team}/{app}/peer-{t}-{a}-{url,scopes}`, `m2m-client-{id,secret}` | String / SecureString | Written by app-peers-sync, read by ECS execution role |
 | `/javabin/apps/{team}/{app}/peers-status` | String | Written by app-peers-sync: state of the app's calls and consumers |
 
 ## GCP Connection

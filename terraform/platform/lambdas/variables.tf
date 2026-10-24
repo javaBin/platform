@@ -160,3 +160,8 @@ variable "service_discovery_namespace_id" {
   description = "Private app-to-app Cloud Map namespace ID (audited by app-peers-sync)"
   type        = string
 }
+
+variable "service_discovery_zone_id" {
+  description = "Route53 private zone of the app-to-app namespace (app-peers-sync audits its records)"
+  type        = string
+}

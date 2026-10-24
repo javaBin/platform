@@ -264,7 +264,7 @@ class PeersGenerationTest(unittest.TestCase):
         self.assertIn('"cupcake/cupcake"     = []', main)
         self.assertRegex(main, r'SP_BASE_URL\s+= module.network.peer_url_arns\["moresleep/moresleep"\]')
         self.assertRegex(main, r'CUPCAKE_URL\s+= module.network.peer_url_arns\["cupcake/cupcake"\]')
-        self.assertRegex(main, r'SP_BASE_SCOPES\s+= "moresleep-moresleep/talks.read"')
+        self.assertRegex(main, r'SP_BASE_SCOPES\s+= module\.network\.peer_scopes_arns\["moresleep/moresleep"\]')
         self.assertNotIn("CUPCAKE_SCOPES", main)
         self.assertRegex(main, r"PEER_AUTH_TOKEN_URL\s+= module.network.token_url")
         self.assertRegex(main, r"PEER_AUTH_CLIENT_SECRET\s+= module.network.m2m_client_secret_arn")

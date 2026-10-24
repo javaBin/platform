@@ -623,13 +623,15 @@ def generate(app, account_id, region, platform_ref):
         secret_map.update(auth_secrets)
 
     # App-to-app env: the peer URL (a parameter, since the callee's port lives
-    # in another team's state), the scope string to request, and M2M creds.
+    # in another team's state), the scopes actually granted (a parameter too:
+    # Cognito refuses the whole token if one requested scope is not granted,
+    # and a change restarts the caller through app-secret-rollout), and M2M creds.
     peer_env, peer_secrets = {}, {}
     peer_names = [n for c in calls for n in (c["url_env"], c["scopes_env"] if c["scopes"] else None) if n]
     for c in calls:
         peer_secrets[c["url_env"]] = Ref(f'module.network.peer_url_arns["{c["key"]}"]')
         if c["scopes"]:
-            peer_env[c["scopes_env"]] = " ".join(f'{c["team"]}-{c["app"]}/{s}' for s in c["scopes"])
+            peer_secrets[c["scopes_env"]] = Ref(f'module.network.peer_scopes_arns["{c["key"]}"]')
     if any(c["scopes"] for c in calls):
         peer_env["PEER_AUTH_TOKEN_URL"] = Ref("module.network.token_url")
         peer_secrets["PEER_AUTH_CLIENT_ID"] = Ref("module.network.m2m_client_id_arn")

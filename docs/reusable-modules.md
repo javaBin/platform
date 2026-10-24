@@ -162,12 +162,13 @@ app port when routed, all egress, tag `javabin-network=app`), its Cloud Map serv
 in the shared `{project}.internal` namespace, and the app-to-app request
 `/{project}/apps/{team}/{name}/network` (security group, port, `calls`, `provides`). The platform
 `app-peers-sync` Lambda turns the requests into security group rules, Cognito M2M clients and the
-caller's `peer-*-url` / `m2m-client-*` parameters. See
+caller's `peer-*-url` / `peer-*-scopes` / `m2m-client-*` parameters. See
 [app-yaml-reference.md#calls--provides-app-to-app](app-yaml-reference.md#calls--provides-app-to-app).
 
 **Inputs:** `name`, `team`, `project`, `vpc_id`, `port`, `alb_ingress`, `calls` (`"team/app"` => scopes),
-`provides_scopes` (scope => description), `consumers` (`"team/app"` => scopes), `internal_pool_name`
-**Outputs:** `security_group_id`, `registry_arn`, `dns_name`, `request_parameter_name`, `peer_url_arns`,
+`provides_scopes` (scope => description), `consumers` (`"team/app"` => scopes), `internal_pool_name`,
+`internal_pool_domain` (Cognito domain prefix for `token_url`, default `javabin-internal`)
+**Outputs:** `security_group_id`, `registry_arn`, `dns_name`, `request_parameter_name`, `peer_url_arns`, `peer_scopes_arns`,
 `m2m_client_id_arn`, `m2m_client_secret_arn`, `token_url`, `issuer_url`, `jwks_url`, `scope_prefix`
 
 ## Policy Composition Pattern

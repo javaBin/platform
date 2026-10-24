@@ -25,9 +25,10 @@
 #     internal pool;
 #   - writes into the caller's own path:
 #       peer-{t}-{a}-url    (String)       http://{t}-{a}.{project}.internal:{port}
+#       peer-{t}-{a}-scopes (String)       granted scopes ("none" if none), calls with scopes
 #       m2m-client-id       (String)
 #       m2m-client-secret   (SecureString)
-#       peers-status        (String JSON)  active / pending-consent / callee-missing
+#       peers-status        (String JSON)  active / pending-consent / callee-missing / callee-invalid
 #
 # Those parameter ARNs are deterministic, so the task definition references
 # them up front (outputs below); deriving them from the request parameter's

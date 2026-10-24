@@ -84,6 +84,11 @@ variable "service_registry_arns" {
   description = "Cloud Map service ARNs to register the tasks in (at most one; from app-network)"
   type        = list(string)
   default     = []
+
+  validation {
+    condition     = length(var.service_registry_arns) <= 1
+    error_message = "ECS Fargate services support at most one service registry."
+  }
 }
 
 variable "desired_count" {
