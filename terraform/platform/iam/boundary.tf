@@ -104,14 +104,19 @@ locals {
           "elasticloadbalancing:DeleteLoadBalancer", "elasticloadbalancing:ModifyLoadBalancerAttributes",
           "s3:DeleteBucket", "s3:PutBucketPolicy", "s3:DeleteBucketPolicy",
           "s3:PutBucketVersioning", "s3:PutEncryptionConfiguration",
-          "dynamodb:DeleteTable", "dynamodb:UpdateTable"
+          "dynamodb:DeleteTable", "dynamodb:UpdateTable",
+          # App-to-app private zone (Cloud Map writes it via its service role):
+          # Change*/Create*/Delete*/Disassociate*/Disable*, reads still allowed
+          "route53:C*", "route53:D*",
         ]
+        # Single-region account: *:* region/account saves bytes for the zone ARN
         Resource = [
-          "arn:aws:ecs:${var.region}:${var.aws_account_id}:cluster/${var.project}-platform",
-          "arn:aws:elasticloadbalancing:${var.region}:${var.aws_account_id}:loadbalancer/app/${var.project}-*",
+          "arn:aws:ecs:*:*:cluster/${var.project}-platform",
+          "arn:aws:elasticloadbalancing:*:*:loadbalancer/app/${var.project}-*",
           "arn:aws:s3:::${var.project}-terraform-*",
           "arn:aws:s3:::${var.project}-ci-*",
-          "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/${var.project}-terraform-*",
+          "arn:aws:dynamodb:*:*:table/${var.project}-terraform-*",
+          "arn:aws:route53:::hostedzone/${var.app_dns_zone_id}",
         ]
       },
       {

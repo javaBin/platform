@@ -46,6 +46,7 @@ module "iam" {
   ci_broker_role_arn       = module.lambdas.ci_broker_role_arn
   ci_broker_function_arn   = module.lambdas.ci_broker_function_arn
   plan_review_function_arn = module.lambdas.plan_review_function_arn
+  app_dns_zone_id          = module.networking.service_discovery_hosted_zone_id
 }
 
 module "compute" {
@@ -109,6 +110,7 @@ module "lambdas" {
   vpc_id                         = module.networking.vpc_id
   vpc_arn                        = module.networking.vpc_arn
   service_discovery_namespace_id = module.networking.service_discovery_namespace_id
+  service_discovery_zone_id      = module.networking.service_discovery_hosted_zone_id
 }
 
 module "identity" {

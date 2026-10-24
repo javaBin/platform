@@ -44,3 +44,8 @@ variable "plan_review_function_arn" {
   description = "ARN of the plan review Lambda (broker role may invoke it)"
   type        = string
 }
+
+variable "app_dns_zone_id" {
+  description = "Route53 private zone of the app-to-app Cloud Map namespace; teams may not change it"
+  type        = string
+}

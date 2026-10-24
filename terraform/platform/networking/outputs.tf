@@ -42,3 +42,8 @@ output "service_discovery_namespace_name" {
   description = "Name of the private app-to-app Cloud Map namespace"
   value       = aws_service_discovery_private_dns_namespace.internal.name
 }
+
+output "service_discovery_hosted_zone_id" {
+  description = "Route53 private hosted zone Cloud Map created for the namespace (protected in the developer boundary)"
+  value       = aws_service_discovery_private_dns_namespace.internal.hosted_zone
+}
