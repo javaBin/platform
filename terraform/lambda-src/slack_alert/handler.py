@@ -1172,6 +1172,57 @@ def format_budget_alert(parsed):
     return {"blocks": blocks, "text": fallback}
 
 
+def format_ecs_service_impaired(parsed):
+    """ECS service cannot start tasks (SERVICE_TASK_START_IMPAIRED) — Block Kit.
+
+    ECS keeps emitting this event while a service crash-loops, so alert at most
+    once per service per UTC day (persistent DynamoDB dedup). A crash loop
+    burns Fargate starts, image pulls and AWS Config items until someone acts.
+    """
+    detail = parsed.get("detail", {})
+    if detail.get("eventName") != "SERVICE_TASK_START_IMPAIRED":
+        return None
+
+    resources = parsed.get("resources") or []
+    service_arn = resources[0] if resources else "unknown"
+    service = service_arn.rsplit("/", 1)[-1]
+    cluster = detail.get("clusterArn", "").rsplit("/", 1)[-1] or "unknown"
+    region = parsed.get("region", "")
+
+    day = (parsed.get("time") or datetime.now(timezone.utc).isoformat())[:10]
+    dedup_key = f"ecs-start-impaired:{service_arn}:{day}"
+    if is_finding_already_alerted(dedup_key):
+        logger.info("Suppressed repeat ECS start-impaired alert: %s", dedup_key)
+        return None
+    record_finding_alert(dedup_key)
+
+    events_url = (f"https://{region}.console.aws.amazon.com/ecs/v2/clusters/{cluster}"
+                  f"/services/{service}/events?region={region}")
+
+    blocks = [
+        {"type": "header",
+         "text": {"type": "plain_text", "text": ":warning: ECS service cannot start tasks",
+                  "emoji": True}},
+        {"type": "section",
+         "text": {"type": "mrkdwn",
+                  "text": (f"*{service}* keeps failing to start tasks and ECS is backing off. "
+                           "Usual causes: missing image, failing health check, bad secret. "
+                           "Fix the deploy or scale the service to 0.")}},
+        {"type": "section", "fields": [
+            {"type": "mrkdwn", "text": f"*Service*\n`{service}`"},
+            {"type": "mrkdwn", "text": f"*Cluster*\n`{cluster}`"},
+        ]},
+        {"type": "section",
+         "text": {"type": "mrkdwn", "text": f"<{events_url}|Service events in the ECS console>"}},
+        {"type": "divider"},
+        {"type": "context", "elements": [
+            {"type": "mrkdwn", "text": "Source: ECS Service Action (alerts once per service per day)"}
+        ]},
+    ]
+
+    return {"blocks": blocks, "text": f"ECS service {service} cannot start tasks"}
+
+
 # ---------------------------------------------------------------------------
 # Weekly Security Hub summary
 # ---------------------------------------------------------------------------
@@ -1381,6 +1432,10 @@ def format_structured_alert(subject, parsed):
     # Cost Anomaly
     if "anomalyId" in parsed or "rootCauses" in parsed:
         return format_cost_anomaly(parsed)
+
+    # ECS service crash loop (EventBridge "ECS Service Action")
+    if parsed.get("detail-type") == "ECS Service Action":
+        return format_ecs_service_impaired(parsed)
 
     # EventBridge / CloudTrail events
     if "detail-type" in parsed:
