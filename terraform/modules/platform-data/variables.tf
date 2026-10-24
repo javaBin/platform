@@ -16,6 +16,12 @@ variable "domain" {
   default     = "javazone.no"
 }
 
+variable "app_domains" {
+  description = "Domains apps may be hosted under; each needs a public Route53 zone"
+  type        = list(string)
+  default     = ["javazone.no", "java.no", "javabin.no"]
+}
+
 variable "team" {
   description = "Owning team — selects the team's ECS execution role"
   type        = string

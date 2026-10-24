@@ -63,6 +63,11 @@ output "route53_zone_id" {
   value       = data.aws_route53_zone.main.zone_id
 }
 
+output "route53_zone_ids" {
+  description = "Route53 hosted zone ID per app domain (e.g. route53_zone_ids[\"java.no\"])"
+  value       = { for d, z in data.aws_route53_zone.app : d => z.zone_id }
+}
+
 output "domain" {
   description = "Base domain"
   value       = var.domain

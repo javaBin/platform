@@ -47,7 +47,7 @@ variable "listener_rule_priority" {
 }
 
 variable "host_header" {
-  description = "Host header value for routing (e.g. 'moresleep.javazone.no')"
+  description = "Host header value for routing (e.g. 'moresleep.javazone.no' or 'app.java.no')"
   type        = string
 }
 

@@ -52,6 +52,50 @@ resource "aws_route53_record" "acm_validation" {
 }
 
 ################################################################################
+# Wildcard certs for the other app domains (*.java.no, *.javabin.no), served
+# by SNI alongside the default *.javazone.no cert
+################################################################################
+
+resource "aws_acm_certificate" "extra" {
+  for_each          = var.extra_domains
+  domain_name       = "*.${each.key}"
+  validation_method = "DNS"
+
+  tags = {
+    Name = "${each.key}-wildcard"
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_route53_record" "extra_acm_validation" {
+  for_each = {
+    for d, cert in aws_acm_certificate.extra : d => one(cert.domain_validation_options)
+  }
+
+  zone_id         = var.extra_domains[each.key]
+  name            = each.value.resource_record_name
+  type            = each.value.resource_record_type
+  ttl             = 60
+  records         = [each.value.resource_record_value]
+  allow_overwrite = true
+}
+
+resource "aws_acm_certificate_validation" "extra" {
+  for_each                = aws_acm_certificate.extra
+  certificate_arn         = each.value.arn
+  validation_record_fqdns = [aws_route53_record.extra_acm_validation[each.key].fqdn]
+}
+
+resource "aws_lb_listener_certificate" "extra" {
+  for_each        = aws_acm_certificate_validation.extra
+  listener_arn    = aws_lb_listener.https.arn
+  certificate_arn = each.value.certificate_arn
+}
+
+################################################################################
 # Application Load Balancer
 ################################################################################
 

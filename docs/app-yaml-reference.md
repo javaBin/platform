@@ -104,12 +104,13 @@ ALB routing configuration.
 
 ```yaml
 routing:
-  host: moresleep.javazone.no  # required if routing is specified
+  host: moresleep.javazone.no  # required if routing is specified; also java.no / javabin.no
   priority: 100                # required, unique 1-50000
   deregistration_delay: 30     # default: 30 (seconds)
 ```
 
-- `host` creates a Route53 A record pointing to the platform ALB and an ALB listener rule matching the Host header.
+- `host` must be exactly one label under `javazone.no`, `java.no` or `javabin.no` (e.g. `moresleep.javazone.no`, `medlem.java.no`, `styret.javabin.no`). Those are the domains with a wildcard cert on the platform ALB; deeper names like `a.b.java.no` are rejected because the wildcard cert does not cover them.
+- `host` creates a Route53 A record (in the zone matching the host's domain) pointing to the platform ALB and an ALB listener rule matching the Host header.
 - `priority` determines listener rule evaluation order. Must be unique across all apps. Coordinate via the registry.
 
 ### resources

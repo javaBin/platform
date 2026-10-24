@@ -34,11 +34,11 @@ ALB, ACM wildcard certificate, Route53 DNS.
 | Resource | Name Pattern |
 |----------|-------------|
 | ALB | `javabin-alb` (public subnets) |
-| ACM cert | `*.javazone.no` (DNS validation) |
+| ACM certs | `*.javazone.no` (default) plus `*.java.no` and `*.javabin.no` attached by SNI (DNS validation) |
 | HTTPS listener | Port 443, default action = fixed 404 |
 | Route53 | Validation records for ACM |
 
-**Inputs:** `public_subnet_ids`, `alb_sg_id` from networking
+**Inputs:** `public_subnet_ids`, `alb_sg_id` from networking; `extra_domains` (domain → zone ID) from dns
 **Outputs:** `alb_arn`, `https_listener_arn`, `alb_dns_name`, `alb_zone_id`
 
 ## iam

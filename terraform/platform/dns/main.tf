@@ -404,17 +404,28 @@ resource "aws_route53_record" "teknologihuset_no_carddav_txt" {
 }
 
 # ==============================================================================
-# aws.javabin.no → IAM Identity Center SSO portal redirect
+# aws.javabin.no, aws.java.no, aws.javazone.no → IAM Identity Center SSO portal
 #
 # CloudFront + ACM for HTTPS. CloudFront Function handles the 302 redirect.
 # No S3 bucket needed — dummy origin since the function intercepts all requests.
 # ==============================================================================
 
+locals {
+  # SSO redirect hostname => zone it lives in. Keep aws.javabin.no as the
+  # cert's domain_name below; the others are SANs.
+  sso_redirect_hosts = {
+    "aws.javabin.no"  = aws_route53_zone.javabin_no.zone_id
+    "aws.java.no"     = aws_route53_zone.java_no.zone_id
+    "aws.javazone.no" = var.javazone_zone_id
+  }
+}
+
 # ACM certificate in us-east-1 (required for CloudFront)
 resource "aws_acm_certificate" "sso_redirect" {
-  provider          = aws.us_east_1
-  domain_name       = "aws.javabin.no"
-  validation_method = "DNS"
+  provider                  = aws.us_east_1
+  domain_name               = "aws.javabin.no"
+  subject_alternative_names = ["aws.java.no", "aws.javazone.no"]
+  validation_method         = "DNS"
 
   tags = {
     Name = "aws.javabin.no"
@@ -434,7 +445,7 @@ resource "aws_route53_record" "sso_redirect_cert_validation" {
     }
   }
 
-  zone_id         = aws_route53_zone.javabin_no.zone_id
+  zone_id         = local.sso_redirect_hosts[each.key]
   name            = each.value.name
   type            = each.value.type
   ttl             = 300
@@ -470,8 +481,8 @@ resource "aws_cloudfront_function" "sso_redirect" {
 # CloudFront distribution — uses function for redirect (not S3)
 resource "aws_cloudfront_distribution" "sso_redirect" {
   enabled         = true
-  aliases         = ["aws.javabin.no"]
-  comment         = "aws.javabin.no → SSO portal redirect"
+  aliases         = keys(local.sso_redirect_hosts)
+  comment         = "aws.javabin.no, aws.java.no, aws.javazone.no → SSO portal redirect"
   is_ipv6_enabled = true
   price_class     = "PriceClass_100"
 
@@ -533,9 +544,10 @@ resource "aws_cloudfront_distribution" "sso_redirect" {
 
 # Route53 alias → CloudFront (instead of S3 directly)
 resource "aws_route53_record" "sso_redirect" {
-  zone_id = aws_route53_zone.javabin_no.zone_id
-  name    = "aws.javabin.no"
-  type    = "A"
+  for_each = local.sso_redirect_hosts
+  zone_id  = each.value
+  name     = each.key
+  type     = "A"
 
   alias {
     name                   = aws_cloudfront_distribution.sso_redirect.domain_name
@@ -545,13 +557,24 @@ resource "aws_route53_record" "sso_redirect" {
 }
 
 resource "aws_route53_record" "sso_redirect_aaaa" {
-  zone_id = aws_route53_zone.javabin_no.zone_id
-  name    = "aws.javabin.no"
-  type    = "AAAA"
+  for_each = local.sso_redirect_hosts
+  zone_id  = each.value
+  name     = each.key
+  type     = "AAAA"
 
   alias {
     name                   = aws_cloudfront_distribution.sso_redirect.domain_name
     zone_id                = aws_cloudfront_distribution.sso_redirect.hosted_zone_id
     evaluate_target_health = false
   }
+}
+
+moved {
+  from = aws_route53_record.sso_redirect
+  to   = aws_route53_record.sso_redirect["aws.javabin.no"]
+}
+
+moved {
+  from = aws_route53_record.sso_redirect_aaaa
+  to   = aws_route53_record.sso_redirect_aaaa["aws.javabin.no"]
 }
