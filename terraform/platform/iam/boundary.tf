@@ -94,16 +94,6 @@ locals {
         ]
         Resource = "*"
       },
-      {
-        # App-to-app private zone: only Cloud Map (its service role) writes it.
-        # Route53 ignores tag conditions, hence the record-name condition; the
-        # last VPC of a private zone cannot be disassociated.
-        Sid       = "DenyAppDNS"
-        Effect    = "Deny"
-        Action    = "route53:ChangeResourceRecordSets"
-        Resource  = "*"
-        Condition = { "ForAnyValue:StringLike" = { "route53:ChangeResourceRecordSetsNormalizedRecordNames" = "*${var.project}.internal" } }
-      },
       # -- PLATFORM PROTECTION --
       # Platform SGs: covered by DenyMutateShared (team=shared) + DenyTagStrip
       # Platform ACM: covered by DenyCrossTeam (team=platform)
@@ -267,6 +257,17 @@ locals {
           "arn:aws:events:*:*:rule/$${aws:PrincipalTag/team}-*",
           "arn:aws:states:*:*:stateMachine:$${aws:PrincipalTag/team}-*",
         ]
+      },
+      # -- APP-TO-APP DNS (last, so plan diffs show an append) --
+      {
+        # App-to-app private zone: only Cloud Map (its service role) writes it.
+        # Route53 ignores tag conditions, hence the record-name condition; the
+        # last VPC of a private zone cannot be disassociated.
+        Sid       = "DenyAppDNS"
+        Effect    = "Deny"
+        Action    = "route53:ChangeResourceRecordSets"
+        Resource  = "*"
+        Condition = { "ForAnyValue:StringLike" = { "route53:ChangeResourceRecordSetsNormalizedRecordNames" = "*${var.project}.internal" } }
       },
     ]
   })
