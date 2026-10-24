@@ -88,6 +88,14 @@ class SyncTest(unittest.TestCase):
             ("add", "new-kodesmia", "b1"),
         ])
 
+    def test_all_java_no_accounts_adds_every_managed_java_no_account(self):
+        admin = self.admin()
+        admin._users = [*admin._users, user("x1", "cfo@java.no"), user("d1", "drift@java.no", managed=False),
+                        {**user("s1", "gone@java.no"), "accountStatus": "inactive"}]
+        results = atlassian.sync(admin, [{"name": "styret", "members": [], "all_java_no_accounts": True}])
+        self.assertEqual(results["styret"]["add"], ["anne.a@java.no", "bob.b@java.no", "cfo@java.no"])
+        self.assertEqual(results["styret"]["remove"], ["bob@gmail.com (personal)"])
+
     def test_refuses_protected_and_idp_synced_groups(self):
         admin = self.admin()
         results = atlassian.sync(admin, [

@@ -88,7 +88,8 @@ Queries Security Hub for active findings at HIGH and CRITICAL severity, aggregat
 Invoked by the registry's `provision-groups.yml` via `scripts/provision-atlassian.py`, which resolves
 `groups/atlassian.yaml` to members' java.no emails. `atlassian.py` makes each declared Atlassian group
 contain exactly those accounts (creates missing groups, adds members, removes everyone else, including
-personal-email accounts). Undeclared groups are never touched; `org-admins`, `site-admins` and
+personal-email accounts). A group with `all_java_no_accounts: true` also gets every active managed
+`@java.no` account — everyone with a java.no Google account. Undeclared groups are never touched; `org-admins`, `site-admins` and
 IdP-synced groups are refused.
 
 **Report-only by default.** Writes happen only when the `lambdas` module's `atlassian_sync_apply` is

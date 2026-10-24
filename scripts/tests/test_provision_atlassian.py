@@ -29,6 +29,11 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(got["confluence-admins-javabin"]["members"], ["anne.a@java.no", "bob.b@java.no"])
         self.assertEqual(got["empty"]["members"], [])
 
+    def test_passes_all_java_no_accounts_flag(self):
+        atl = {"groups": [{"name": "confluence-users", "all_java_no_accounts": True}, {"name": "x", "from": ["drift"]}]}
+        got = pa.resolve_atlassian_groups(atl, MEMBERS)
+        self.assertEqual([(g["all_java_no_accounts"], g["members"]) for g in got], [(True, []), (False, ["bob.b@java.no"])])
+
     def test_personal_emails_never_reach_the_payload(self):
         atl = {"groups": [{"name": "confluence-users", "from": ["helter"]}]}
         emails = pa.resolve_atlassian_groups(atl, MEMBERS)[0]["members"]
