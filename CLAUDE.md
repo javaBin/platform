@@ -222,7 +222,9 @@ EventBridge ──► javabin-security SNS ──► slack-alert Lambda:
   Security Hub findings (NEW only) ──► #platform-security-alerts
   GuardDuty findings              ──► #platform-security-alerts
   IAM / resource / login events   ──► #javabin-infra-alerts
-Cost Anomaly / account budget ──► javabin-alerts SNS ──► slack-alert Lambda ──► #javabin-cost-alerts
+Cost Anomaly ──► javabin-alerts SNS ──► slack-alert Lambda ──► #javabin-cost-alerts
+
+Account budget (FORECASTED >100%, ACTUAL >100%) ──► javabin-alerts SNS ──► #javabin-cost-alerts
 
 Scheduled:
   Monday 08:00 UTC ──► cost-report ──► #javabin-cost-alerts
