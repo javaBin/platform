@@ -144,8 +144,10 @@ class AuthClaimsTest(unittest.TestCase):
         self.assertEqual(groups_of(result), ["admins", "helter"])
 
     def test_user_outside_allowed_groups_is_refused(self):
-        with self.assertRaises(self.h.AccessDenied):
+        with self.assertRaises(self.h.AccessDenied), self.assertLogs(self.h.logger, "INFO") as logs:
             self.h.handler(event("grace.hopper@java.no"), None)
+        # Denials log a masked address, never the full email
+        self.assertNotIn("grace.hopper@java.no", "\n".join(logs.output))
 
     def test_client_without_restriction_accepts_anyone(self):
         result = self.h.handler(event("grace.hopper@java.no", client_id="other-app"), None)

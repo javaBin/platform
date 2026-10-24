@@ -216,6 +216,10 @@ auth:
     COGNITO_ISSUER_URL: NUXT_PUBLIC_OIDC_AUTHORITY
 ```
 
+#### `scopes`
+
+Any of `openid`, `email`, `profile`, `phone`, `aws.cognito.signin.user.admin`. The `internal` pool refuses `aws.cognito.signin.user.admin`: it lets a signed-in user change their own attributes, including the email the platform uses to look up group membership. A request with it is rejected and the client is not created or changed.
+
 #### `client`
 
 | Value | For | You get |

@@ -63,6 +63,11 @@ CLIENT_TYPES = ("confidential", "public")
 # Cognito allows plain http only for localhost, for local development
 LOCAL_URL = re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?(/.*)?$")
 ALLOWED_SCOPES = {"openid", "email", "profile", "phone", "aws.cognito.signin.user.admin"}
+# aws.cognito.signin.user.admin lets the signed-in user call UpdateUserAttributes
+# with their access token. In the internal pool, auth-claims trusts a federated
+# user's email and looks up registry groups by it, so a user who could rewrite
+# their own email could take another user's groups.
+POOL_FORBIDDEN_SCOPES = {"internal": {"aws.cognito.signin.user.admin"}}
 
 APPS_PREFIX = f"/{PROJECT}/apps/"
 REQUEST_RE = re.compile(rf"^/{re.escape(PROJECT)}/apps/(?P<team>[a-z]{{1,12}})/(?P<app>[a-z][a-z0-9-]{{0,19}})/auth$")
@@ -116,6 +121,9 @@ def parse_request(raw):
     scopes = req.get("scopes") or DEFAULT_SCOPES
     if not isinstance(scopes, list) or not set(scopes) <= ALLOWED_SCOPES:
         raise InvalidRequest(f"scopes must be a subset of {sorted(ALLOWED_SCOPES)}")
+    forbidden = set(scopes) & POOL_FORBIDDEN_SCOPES.get(pool, set())
+    if forbidden:
+        raise InvalidRequest(f"scopes {sorted(forbidden)} are not allowed in the {pool} pool")
 
     client_type = req.get("client_type") or "confidential"
     if client_type not in CLIENT_TYPES:

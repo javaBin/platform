@@ -26,7 +26,6 @@ pool; the IdP's hosted-domain hint is only a UI hint.
 """
 
 import json
-
 import logging
 import os
 import time
@@ -135,7 +134,7 @@ def handler(event, context):
 
     allowed = allowed_groups(client_id) if client_id else set()
     if allowed and not allowed & set(groups):
-        logger.info("Denied %s for client %s: needs one of %s", email or "<no email>", client_id, sorted(allowed))
+        logger.info("Denied %s for client %s: needs one of %s", _masked(email), client_id, sorted(allowed))
         raise AccessDenied("You are not in a group that has access to this app.")
 
     event["response"] = {

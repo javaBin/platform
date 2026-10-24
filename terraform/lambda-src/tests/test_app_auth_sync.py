@@ -207,6 +207,21 @@ class AppAuthSyncTest(unittest.TestCase):
             self.assertEqual(self.h.handler(event(REQ, "Update"), None)["status"], "invalid")
         self.assertEqual(self.cognito.clients, {})
 
+    def test_internal_pool_refuses_the_user_admin_scope(self):
+        # The scope would let a user rewrite their own email, which auth-claims
+        # trusts for federated users when it looks up registry groups.
+        self.put_request({**REQUEST, "pool": "internal",
+                          "scopes": ["openid", "email", "aws.cognito.signin.user.admin"]})
+        result = self.h.handler(event(REQ, "Create"), None)
+        self.assertEqual(result["status"], "invalid")
+        self.assertIn("aws.cognito.signin.user.admin", result["error"])
+        self.assertEqual(self.cognito.clients, {})
+
+    def test_external_pool_still_allows_the_user_admin_scope(self):
+        self.put_request({**REQUEST, "pool": "external",
+                          "scopes": ["openid", "email", "aws.cognito.signin.user.admin"]})
+        self.assertEqual(self.h.handler(event(REQ, "Create"), None)["status"], "synced")
+
     def test_reconcile_syncs_requests_and_removes_orphans(self):
         self.put_request()
         other = "/javabin/apps/core/moresleep/auth"

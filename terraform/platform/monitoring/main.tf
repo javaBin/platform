@@ -50,6 +50,17 @@ resource "aws_sns_topic_policy" "alerts" {
         Principal = { Service = "events.amazonaws.com" }
         Action    = "SNS:Publish"
         Resource  = aws_sns_topic.alerts.arn
+      },
+      {
+        Sid       = "AllowCloudWatchAlarmsPublish"
+        Effect    = "Allow"
+        Principal = { Service = "cloudwatch.amazonaws.com" }
+        Action    = "SNS:Publish"
+        Resource  = aws_sns_topic.alerts.arn
+        Condition = {
+          StringEquals = { "aws:SourceAccount" = var.aws_account_id }
+          ArnLike      = { "aws:SourceArn" = "arn:aws:cloudwatch:${var.region}:${var.aws_account_id}:alarm:*" }
+        }
       }
     ]
   })
