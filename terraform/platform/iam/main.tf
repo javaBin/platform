@@ -331,6 +331,24 @@ resource "aws_iam_role_policy" "ci_app_broker" {
 # tagged with the correct team name.
 ################################################################################
 
+locals {
+  state_bucket_arn = "arn:aws:s3:::${var.project}-terraform-state-${var.aws_account_id}"
+
+  # State keys a team's CI roles must not touch: the platform's own state
+  # (infra/ holds the Google OAuth client secret) and every other team's
+  # apps/{team}/ prefix. A Deny with NotResource would also hit every other
+  # S3 object in the account, so the forbidden prefixes are listed instead.
+  # The boundary's DenyXTeam exempts the state bucket, and AllowAll /
+  # ReadOnlyAccess cover every key, so without this Deny a team role could
+  # read (ci_plan) or overwrite (ci_team) any state in the bucket.
+  foreign_state_keys = {
+    for team in var.registered_teams : team => concat(
+      [for prefix in ["infra", "org", "state", "env:"] : "${local.state_bucket_arn}/${prefix}/*"],
+      [for other in var.registered_teams : "${local.state_bucket_arn}/apps/${other}/*" if other != team],
+    )
+  }
+}
+
 resource "aws_iam_role" "ci_team" {
   for_each = toset(var.registered_teams)
 
@@ -410,6 +428,12 @@ resource "aws_iam_role_policy" "ci_team_allow" {
         ]
       },
       {
+        Sid      = "DenyForeignTerraformState"
+        Effect   = "Deny"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"]
+        Resource = local.foreign_state_keys[each.key]
+      },
+      {
         # Terraform locking: DynamoDB scoped to team's state paths.
         Sid    = "AllowTerraformLocking"
         Effect = "Allow"
@@ -485,7 +509,8 @@ resource "aws_iam_role_policy" "ci_plan" {
     Version = "2012-10-17"
     Statement = [
       {
-        # Terraform state: read-only, team's key prefix. Plan never writes state.
+        # Terraform state: read-only. Plan never writes state. The Deny
+        # below is what keeps plan off other keys.
         Sid    = "ReadTerraformState"
         Effect = "Allow"
         Action = ["s3:GetObject", "s3:ListBucket"]
@@ -493,6 +518,14 @@ resource "aws_iam_role_policy" "ci_plan" {
           "arn:aws:s3:::${var.project}-terraform-state-${var.aws_account_id}",
           "arn:aws:s3:::${var.project}-terraform-state-${var.aws_account_id}/apps/${each.key}/*",
         ]
+      },
+      {
+        # ReadOnlyAccess grants s3:Get* on every key, so the Allow above does
+        # not limit reads by itself. See local.foreign_state_keys.
+        Sid      = "DenyForeignTerraformState"
+        Effect   = "Deny"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
+        Resource = local.foreign_state_keys[each.key]
       },
       {
         # Plan takes the state lock. Same scoping as ci_team.

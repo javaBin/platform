@@ -20,15 +20,22 @@ class FakeSTS:
 
 
 def load(sts):
-    os.environ["AWS_ACCOUNT_ID"] = "123456789012"
-    os.environ["PROJECT"] = "javabin"
+    """Import the handler against a stub boto3 without leaking it.
+
+    The handler reads env and builds its STS client at import time, so the
+    patches only need to hold during exec_module. patch.dict restores
+    sys.modules afterwards, so later tests that import boto3 (or shared.*)
+    get the real modules regardless of test order.
+    """
     boto3 = types.ModuleType("boto3")
     boto3.client = lambda svc, **kw: sts if svc == "sts" else mock.MagicMock()
-    sys.modules["boto3"] = boto3
-    sys.path.insert(0, SRC)
-    spec = importlib.util.spec_from_file_location("ci_broker_handler", os.path.join(SRC, "ci_broker", "handler.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    env = {"AWS_ACCOUNT_ID": "123456789012", "PROJECT": "javabin"}
+    with mock.patch.dict(os.environ, env), \
+            mock.patch.dict(sys.modules, {"boto3": boto3}), \
+            mock.patch.object(sys, "path", [SRC] + sys.path):
+        spec = importlib.util.spec_from_file_location("ci_broker_handler", os.path.join(SRC, "ci_broker", "handler.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
     mod.verify = lambda token, aud: ({"repository": "javaBin/cupcake"} if token == "good"
                                      else (_ for _ in ()).throw(mod.TokenError("bad")))
     mod.resolve_team = lambda repo, requested: "cupcake"
