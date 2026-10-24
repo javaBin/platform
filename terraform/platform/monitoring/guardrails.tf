@@ -94,6 +94,17 @@ resource "aws_cloudwatch_event_rule" "security_tampering" {
         "DisableImageBlockPublicAccess",
         "UpdateServiceSetting",
         "Disable",
+        # Changes that hide findings or narrow recording rather than turn a
+        # service off. Platform applies that touch these also alert, which
+        # is the intended audit trail.
+        "CreateFilter",
+        "UpdateFilter",
+        "CreateAutomationRules",
+        "BatchUpdateAutomationRules",
+        "UpdateStandardsControl",
+        "BatchUpdateStandardsControlAssociations",
+        "PutConfigurationRecorder",
+        "EnableSnapshotBlockPublicAccess",
       ]
     }
   })
