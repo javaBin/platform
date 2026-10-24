@@ -93,6 +93,8 @@ module "lambdas" {
   auth_memberships_table_arn     = module.identity.auth_memberships_table_arn
   internal_identity_providers    = module.identity.internal_identity_providers
   external_identity_providers    = module.identity.external_identity_providers
+  internal_user_pool_domain      = module.identity.internal_user_pool_domain
+  external_user_pool_domain      = module.identity.external_user_pool_domain
   identity_store_id              = var.identity_store_id
   sso_instance_arn               = var.sso_instance_arn
   alert_dedup_table_name         = module.monitoring.alert_dedup_table_name

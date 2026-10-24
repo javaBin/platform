@@ -148,6 +148,17 @@ variable "external_identity_providers" {
   type        = list(string)
 }
 
+variable "internal_user_pool_domain" {
+  description = "Hosted-UI domain of the internal pool (reported in auth-status for probes)"
+  type        = string
+}
+
+variable "external_user_pool_domain" {
+  description = "Hosted-UI domain of the external pool, empty if none"
+  type        = string
+  default     = ""
+}
+
 variable "atlassian_sync_apply" {
   description = "Let team-provisioner write Atlassian group memberships; false = report the plan only"
   type        = bool

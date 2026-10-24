@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from registry import (
@@ -63,7 +64,7 @@ SCHEMA = {
     "routing": {"host", "priority", "deregistration_delay"},
     "domain": None,
     "resources": {"buckets", "databases", "secrets", "queues"},
-    "auth": {"pool", "client", "callback_urls", "logout_urls", "scopes", "groups", "env"},
+    "auth": {"pool", "client", "callback_urls", "logout_urls", "scopes", "groups", "env", "extra_hosts"},
     "environment": None,
     "alarms": {"enabled", "cpu_threshold", "memory_threshold", "error_5xx_threshold"},
 }
@@ -91,6 +92,8 @@ TEAM_RE = re.compile(r"^[a-z]{1,12}$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 HOST_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+LOCAL_HOSTS = ("localhost", "127.0.0.1")
 
 
 def host_zone(host):
@@ -234,6 +237,98 @@ def module_block(name, source, attrs):
     lines.extend(attr_lines(attrs, 2))
     lines.append("}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
+
+def _check_auth_urls(key, urls, allowed_hosts):
+    """Callback/logout URLs: https (http only for localhost), no fragment, and a
+    host the app serves, so a typo fails here instead of as redirect_mismatch."""
+    if not isinstance(urls, list) or not all(isinstance(u, str) and u for u in urls):
+        raise AppYamlError(f"auth.{key} must be a list of URLs")
+    for u in urls:
+        parts = urlsplit(u)
+        host = (parts.hostname or "").lower()
+        local = host in LOCAL_HOSTS
+        if parts.scheme not in ("https", "http") or not host:
+            raise AppYamlError(f"auth.{key}: {u!r} is not an absolute https:// URL")
+        if parts.scheme == "http" and not local:
+            raise AppYamlError(f"auth.{key}: {u!r} must use https:// (plain http is only allowed for localhost)")
+        if "#" in u:
+            raise AppYamlError(f"auth.{key}: {u!r} must not contain a #fragment (OAuth forbids it)")
+        if not local and host not in allowed_hosts:
+            where = f"routing.host ({', '.join(sorted(allowed_hosts))})" if allowed_hosts else "routing.host"
+            raise AppYamlError(
+                f"auth.{key}: host {host!r} in {u!r} is not this app's {where}; "
+                f"list other hosts the app serves in auth.extra_hosts"
+            )
+
+
+def resolve_auth(app, routing=None):
+    """The app's validated auth settings with defaults applied, or None.
+
+    {pool, client, callback_urls, logout_urls, scopes, scopes_set, groups,
+    aliases}. scripts/auth-doctor.py uses this to know what the request
+    parameter should contain.
+    """
+    routing = routing if routing is not None else dict(app.get("routing") or {})
+    if app.get("domain") and not routing.get("host"):
+        routing = {**routing, "host": app["domain"]}
+    auth_raw = app.get("auth")
+    if not auth_raw or auth_raw == "none":
+        return None
+    # Accept shorthand: auth: internal -> {pool: internal}
+    auth = {"pool": auth_raw} if isinstance(auth_raw, str) else auth_raw
+    pool = auth.get("pool", "internal")
+    if pool == "both":
+        raise AppYamlError(
+            "auth.pool: 'both' is not supported yet — pick 'internal' or 'external'."
+        )
+    if pool not in ("internal", "external"):
+        raise AppYamlError(f"auth.pool must be 'internal' or 'external' (got {pool!r})")
+
+    client = auth.get("client", "confidential")
+    if client not in AUTH_CLIENT_TYPES:
+        raise AppYamlError(f"auth.client must be one of {', '.join(AUTH_CLIENT_TYPES)} (got {client!r})")
+
+    groups = auth.get("groups") or []
+    if not isinstance(groups, list) or not all(isinstance(g, str) and g for g in groups):
+        raise AppYamlError("auth.groups must be a list of group names")
+
+    aliases = auth.get("env") or {}
+    if not isinstance(aliases, dict):
+        raise AppYamlError("auth.env must map injected names to extra variable names")
+
+    if client == "none":
+        # Validate-only apps get no client; these settings would be silently ignored
+        ignored = [k for k in ("callback_urls", "logout_urls", "scopes", "extra_hosts") if k in auth]
+        if ignored:
+            raise AppYamlError(
+                f"auth.client: none requests no Cognito client, so {', '.join(ignored)} would be ignored — "
+                f"remove them, or use client: public / confidential"
+            )
+        return {"pool": pool, "client": client, "callback_urls": [], "logout_urls": [], "scopes": [],
+                "scopes_set": False, "groups": groups, "aliases": aliases}
+
+    extra_hosts = auth.get("extra_hosts") or []
+    if not isinstance(extra_hosts, list) or not all(isinstance(h, str) and HOSTNAME_RE.match(h) for h in extra_hosts):
+        raise AppYamlError("auth.extra_hosts must be a list of hostnames (e.g. [www.javazone.no]), no scheme or path")
+
+    host = routing.get("host")
+    if not host and not auth.get("callback_urls"):
+        raise AppYamlError("auth: requires routing.host or auth.callback_urls (callback URLs default to the host)")
+    allowed_hosts = {h.lower() for h in [host, *extra_hosts] if h}
+    callback_urls = auth.get("callback_urls") or [f"https://{host}/", f"https://{host}/auth/callback"]
+    logout_urls = auth.get("logout_urls") or ([f"https://{host}/"] if host else [])
+    _check_auth_urls("callback_urls", callback_urls, allowed_hosts)
+    _check_auth_urls("logout_urls", logout_urls, allowed_hosts)
+
+    scopes = auth.get("scopes")
+    return {"pool": pool, "client": client, "callback_urls": callback_urls, "logout_urls": logout_urls,
+            "scopes": scopes or ["openid", "email", "profile"], "scopes_set": bool(scopes),
+            "groups": groups, "aliases": aliases}
 
 
 # ---------------------------------------------------------------------------
@@ -407,46 +502,23 @@ def generate(app, account_id, region, platform_ref):
 
     # Auth (Cognito app client) — optional. The module only *requests* the
     # client; the platform app-auth-sync Lambda creates it (see module docs).
-    auth_raw = app.get("auth")
-    if auth_raw and auth_raw != "none":
-        # Accept shorthand: auth: internal -> {pool: internal}
-        auth = {"pool": auth_raw} if isinstance(auth_raw, str) else auth_raw
-        pool = auth.get("pool", "internal")
-        if pool == "both":
-            raise AppYamlError(
-                "auth.pool: 'both' is not supported yet — pick 'internal' or 'external'."
-            )
-        if pool not in ("internal", "external"):
-            raise AppYamlError(f"auth.pool must be 'internal' or 'external' (got {pool!r})")
-
-        client = auth.get("client", "confidential")
-        if client not in AUTH_CLIENT_TYPES:
-            raise AppYamlError(f"auth.client must be one of {', '.join(AUTH_CLIENT_TYPES)} (got {client!r})")
-
-        groups = auth.get("groups") or []
-        if not isinstance(groups, list) or not all(isinstance(g, str) and g for g in groups):
-            raise AppYamlError("auth.groups must be a list of group names")
-
+    auth = resolve_auth(app, routing)
+    if auth:
+        client = auth["client"]
         auth_attrs = {
             "app_name": name,
             "team": team,
-            "pool": pool,
+            "pool": auth["pool"],
             "client_type": client,
             "project": PROJECT,
         }
         if client != "none":
-            host = routing.get("host")
-            if not host and not auth.get("callback_urls"):
-                raise AppYamlError("auth: requires routing.host or auth.callback_urls (callback URLs default to the host)")
-            auth_attrs["callback_urls"] = auth.get("callback_urls") or [
-                f"https://{host}/",
-                f"https://{host}/auth/callback",
-            ]
-            auth_attrs["logout_urls"] = auth.get("logout_urls") or ([f"https://{host}/"] if host else [])
-            if groups:
-                auth_attrs["allowed_groups"] = groups
-        if auth.get("scopes"):
-            auth_attrs["allowed_oauth_scopes"] = auth["scopes"]
+            auth_attrs["callback_urls"] = auth["callback_urls"]
+            auth_attrs["logout_urls"] = auth["logout_urls"]
+            if auth["groups"]:
+                auth_attrs["allowed_groups"] = auth["groups"]
+            if auth["scopes_set"]:
+                auth_attrs["allowed_oauth_scopes"] = auth["scopes"]
 
         blocks.append(module_block("auth", src("cognito-app-client"), auth_attrs))
 
@@ -456,20 +528,20 @@ def generate(app, account_id, region, platform_ref):
             "COGNITO_ISSUER_URL": Ref("module.auth.issuer_url"),
             "COGNITO_WELL_KNOWN_URL": Ref("module.auth.well_known_url"),
         }
-        if groups:
-            auth_env["COGNITO_GROUPS"] = ",".join(groups)
+        if auth["groups"]:
+            auth_env["COGNITO_GROUPS"] = ",".join(auth["groups"])
         auth_secrets = {}
         if client != "none":
             auth_secrets["COGNITO_CLIENT_ID"] = Ref("module.auth.client_id_arn")
+            # The IdP the client signs in through (written by app-auth-sync),
+            # for apps that pass identity_provider themselves
+            auth_secrets["COGNITO_IDENTITY_PROVIDER"] = Ref("module.auth.identity_provider_arn")
         if client == "confidential":
             auth_secrets["COGNITO_CLIENT_SECRET"] = Ref("module.auth.client_secret_arn")
 
         # auth.env: expose the same values under names the app already reads,
         # e.g. {COGNITO_CLIENT_ID: NUXT_PUBLIC_OIDC_CLIENT_ID}
-        aliases = auth.get("env") or {}
-        if not isinstance(aliases, dict):
-            raise AppYamlError("auth.env must map injected names to extra variable names")
-        for source, alias in aliases.items():
+        for source, alias in auth["aliases"].items():
             if source not in auth_env and source not in auth_secrets:
                 available = ", ".join(sorted({*auth_env, *auth_secrets}))
                 raise AppYamlError(f"auth.env: {source} is not injected for this app (available: {available})")

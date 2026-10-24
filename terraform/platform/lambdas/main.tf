@@ -1638,9 +1638,10 @@ resource "aws_iam_role_policy" "app_auth_sync" {
         ]
       },
       {
+        # GetItem: report allowed groups that do not exist (auth-status)
         Sid      = "WriteClientAllowedGroups"
         Effect   = "Allow"
-        Action   = ["dynamodb:PutItem", "dynamodb:DeleteItem"]
+        Action   = ["dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:GetItem"]
         Resource = var.auth_memberships_table_arn
       },
       {
@@ -1655,6 +1656,8 @@ resource "aws_iam_role_policy" "app_auth_sync" {
         Resource = [
           "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/cognito-client-id",
           "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/cognito-client-secret",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/cognito-client-identity-provider",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*/*/auth-status",
         ]
       },
     ]
@@ -1686,6 +1689,8 @@ resource "aws_lambda_function" "app_auth_sync" {
       MEMBERSHIPS_TABLE           = var.auth_memberships_table_name
       INTERNAL_IDENTITY_PROVIDERS = join(",", var.internal_identity_providers)
       EXTERNAL_IDENTITY_PROVIDERS = join(",", var.external_identity_providers)
+      INTERNAL_POOL_DOMAIN        = var.internal_user_pool_domain
+      EXTERNAL_POOL_DOMAIN        = var.external_user_pool_domain
     }
   }
 }
@@ -1744,11 +1749,13 @@ resource "aws_lambda_permission" "app_auth_sync_reconcile" {
 # A skipped request (configured IdP missing from the pool) leaves the client
 # unchanged and returns normally, so Lambda's Errors metric does not move. Count
 # the ERROR line instead and post to javabin-alerts, so a missing IdP does not
-# silently freeze every client in the pool.
+# silently freeze every client in the pool. Reconcile also logs "Sync failed
+# for" for an app it could not sync and returns normally (raising would make
+# async invokes retry the whole reconcile twice), so count that too.
 resource "aws_cloudwatch_log_metric_filter" "app_auth_sync_skipped" {
   name           = "${var.project}-app-auth-sync-skipped"
   log_group_name = "/aws/lambda/${aws_lambda_function.app_auth_sync.function_name}"
-  pattern        = "\"client left unchanged\""
+  pattern        = "?\"client left unchanged\" ?\"Sync failed for\""
 
   metric_transformation {
     name          = "AppAuthSyncSkipped"
@@ -1760,7 +1767,7 @@ resource "aws_cloudwatch_log_metric_filter" "app_auth_sync_skipped" {
 
 resource "aws_cloudwatch_metric_alarm" "app_auth_sync_skipped" {
   alarm_name          = "${var.project}-app-auth-sync-skipped"
-  alarm_description   = "app-auth-sync skipped an app.yaml auth request because a configured identity provider is missing from the pool. See /aws/lambda/${aws_lambda_function.app_auth_sync.function_name}."
+  alarm_description   = "app-auth-sync skipped an app.yaml auth request (a configured identity provider is missing from the pool) or reconcile could not sync an app. See /aws/lambda/${aws_lambda_function.app_auth_sync.function_name}."
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 1
   metric_name         = aws_cloudwatch_log_metric_filter.app_auth_sync_skipped.metric_transformation[0].name

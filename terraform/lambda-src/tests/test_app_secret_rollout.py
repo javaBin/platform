@@ -51,11 +51,22 @@ class AppSecretRolloutTest(unittest.TestCase):
     def test_platform_managed_and_non_update_events_are_ignored(self):
         ecs = FakeECS()
         h = load(ecs)
-        for name in ("/javabin/apps/cupcake/frosting/auth", "/javabin/apps/cupcake/frosting/cognito-client-id",
-                     "/javabin/apps/core/api/db-master-password", "/javabin/platform/github-app-key"):
+        for name in ("/javabin/apps/cupcake/frosting/auth", "/javabin/apps/cupcake/frosting/auth-status",
+                     # A new secret always comes with a new ID; the ID's Update restarts
+                     "/javabin/apps/cupcake/frosting/cognito-client-secret",
+                     "/javabin/apps/core/api/db-master-password", "/javabin/platform/github-app-key",
+                     "/javabin/apps/cupcake/frosting/login-1/cognito-client-id"):
             self.assertEqual(h.handler(event(name), None)["status"], "ignored")
         self.assertEqual(h.handler(event("/javabin/apps/cupcake/frosting/x", "Create"), None)["status"], "ignored")
         self.assertEqual(ecs.calls, [])
+
+    def test_cognito_client_changes_restart_the_app(self):
+        # app-auth-sync writes these only when the value changed (new client, IdP cutover)
+        for param in ("cognito-client-id", "cognito-client-identity-provider"):
+            ecs = FakeECS()
+            result = load(ecs).handler(event(f"/javabin/apps/cupcake/cupcake/{param}"), None)
+            self.assertEqual(result["status"], "restarted", param)
+            self.assertEqual(ecs.calls, [("javabin-platform", "cupcake-cupcake", True)])
 
     def test_missing_service_is_not_an_error(self):
         ecs = FakeECS(missing={"cupcake-frosting"})

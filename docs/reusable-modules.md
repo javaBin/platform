@@ -151,7 +151,7 @@ Auto-wires: resource env vars (bucket names, table names, queue URLs), secret AR
 Requests a Cognito OAuth client for the app. It does **not** create the client: it writes the request to SSM `/{project}/apps/{team}/{app_name}/auth`, and the platform `app-auth-sync` Lambda creates the client `{team}-{app_name}` and writes its credentials next to the request (`cognito-client-id`, `cognito-client-secret`). See [app-yaml-reference.md#auth](app-yaml-reference.md#auth) for why.
 
 **Inputs:** `app_name`, `team`, `pool` (internal/external), `client_type` (confidential/public/none), `callback_urls`, `logout_urls`, `allowed_oauth_scopes`, `allowed_groups`, `external_pool_custom_domain`
-**Outputs:** `user_pool_id`, `user_pool_domain`, `issuer_url`, `well_known_url`, `client_id_arn`, `client_secret_arn` (SSM ARNs for ECS `secrets`), `request_parameter_name`
+**Outputs:** `user_pool_id`, `user_pool_domain`, `issuer_url`, `well_known_url`, `client_id_arn`, `client_secret_arn`, `identity_provider_arn` (SSM ARNs for ECS `secrets`), `auth_status_parameter_name`, `request_parameter_name`
 
 ## Policy Composition Pattern
 

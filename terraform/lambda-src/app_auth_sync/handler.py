@@ -8,18 +8,29 @@ caller-supplied identity is trusted.
 For each request this Lambda keeps one client named "{team}-{app}" in the
 requested pool, removes it from the other pool, and writes the credentials to
 
-  /{project}/apps/{team}/{app}/cognito-client-id       (String)
-  /{project}/apps/{team}/{app}/cognito-client-secret   (SecureString)
+  /{project}/apps/{team}/{app}/cognito-client-id                 (String)
+  /{project}/apps/{team}/{app}/cognito-client-secret             (SecureString)
+  /{project}/apps/{team}/{app}/cognito-client-identity-provider  (String)
 
 where the app's ECS task picks them up via its team's execution role.
 Public clients (browser apps using PKCE) get no secret and no secret parameter.
+These are written only when the value changes: app-secret-rollout restarts
+the app on every Update, so a replaced client reaches the running tasks and
+an unchanged reconcile restarts nothing.
+
+Each sync also writes /{project}/apps/{team}/{app}/auth-status (String JSON,
+team-readable, platform-written): the outcome (synced | invalid | error), the
+client ID and when it last changed, sign-in IdPs, fields a reconcile had to correct (drift), and
+allowed groups that do not exist in the memberships table. Teams have no
+cognito-idp read access, so this is how they (and scripts/auth-doctor.py)
+see what the platform did with their request.
 
 Each pool has a fixed sign-in IdP list (INTERNAL_IDENTITY_PROVIDERS /
 EXTERNAL_IDENTITY_PROVIDERS, comma-separated, set by Terraform). Every client
 in the pool gets exactly that list, so with a single IdP the hosted UI sends
 the user straight to it (no password form, no sign-up link). If a configured
-IdP does not exist in the pool, the request is skipped and logged as an error;
-the existing client is left as it is.
+IdP does not exist in the pool, the request is skipped and logged as an error
+(status "error"); the existing client is left as it is.
 
 The request's allowed groups are written to the auth memberships table as
 {pk: "client#<client_id>", allowed_groups: [...]}; the auth-claims trigger
@@ -32,6 +43,7 @@ Triggers:
     clients whose request is gone
 """
 
+import datetime
 import json
 import logging
 import os
@@ -48,6 +60,7 @@ POOL_NAMES = {
     "external": os.environ.get("EXTERNAL_POOL_NAME", f"{PROJECT}-external"),
 }
 
+
 def _idp_list(value):
     return [p.strip() for p in value.split(",") if p.strip()]
 
@@ -58,6 +71,19 @@ POOL_IDPS = {
     "external": _idp_list(os.environ.get("EXTERNAL_IDENTITY_PROVIDERS", "COGNITO")),
 }
 MEMBERSHIPS_TABLE = os.environ.get("MEMBERSHIPS_TABLE", "")
+# Hosted-UI domains, reported in auth-status for the doctor's probes
+POOL_DOMAINS = {
+    "internal": os.environ.get("INTERNAL_POOL_DOMAIN", ""),
+    "external": os.environ.get("EXTERNAL_POOL_DOMAIN", ""),
+}
+# Client fields compared for drift reporting (lists compared as sets)
+DRIFT_FIELDS = ("AllowedOAuthFlows", "AllowedOAuthFlowsUserPoolClient", "AllowedOAuthScopes", "CallbackURLs",
+                "LogoutURLs", "SupportedIdentityProviders", "ExplicitAuthFlows", "PreventUserExistenceErrors")
+# Standard-tier parameter limit: 4 KB (bytes, not characters)
+STATUS_MAX_BYTES = 4096
+# Dropped from auth-status, in order, until it fits; the doctor falls back to app.yaml
+STATUS_DROPPABLE = ("callback_urls", "logout_urls", "changed_fields", "drift_corrected", "scopes",
+                    "empty_groups", "allowed_groups", "unknown_groups", "identity_providers")
 DEFAULT_SCOPES = ["openid", "email", "profile"]
 CLIENT_TYPES = ("confidential", "public")
 # Cognito allows plain http only for localhost, for local development
@@ -114,6 +140,9 @@ def parse_request(raw):
             isinstance(u, str) and (u.startswith("https://") or LOCAL_URL.match(u)) for u in value
         ):
             raise InvalidRequest(f"{key} must be a list of https:// (or http://localhost) URLs")
+        if any("#" in u for u in value):
+            # OAuth 2.0 forbids fragments in redirect URIs; Cognito rejects them
+            raise InvalidRequest(f"{key} must not contain #fragments")
         if required and not value:
             raise InvalidRequest(f"{key} must not be empty")
         return value
@@ -174,7 +203,11 @@ _idp_cache = {}
 
 
 def identity_providers(pool, user_pool_id):
-    """The pool's configured sign-in IdPs, after checking each one exists."""
+    """The pool's configured sign-in IdPs, after checking each one exists.
+
+    With exactly one IdP on a client, the hosted UI redirects straight to it,
+    so apps need no identity_provider parameter.
+    """
     wanted = POOL_IDPS[pool]
     if not wanted:
         raise PoolMisconfigured(f"no identity providers configured for the {pool} pool")
@@ -188,6 +221,11 @@ def identity_providers(pool, user_pool_id):
     if missing:
         raise PoolMisconfigured(f"{pool} pool has no identity provider {missing}; it has {sorted(existing)}")
     return list(wanted)
+
+
+def primary_identity_provider(idps):
+    """The IdP an app passes as identity_provider: the first federated one, else COGNITO."""
+    return next((p for p in idps if p != "COGNITO"), "COGNITO")
 
 
 def client_settings(pool, user_pool_id, client_name, req):
@@ -214,6 +252,30 @@ def _cred_names(team, app):
     return f"{base}/cognito-client-id", f"{base}/cognito-client-secret"
 
 
+def _idp_name(team, app):
+    return f"{APPS_PREFIX}{team}/{app}/cognito-client-identity-provider"
+
+
+def _status_name(team, app):
+    return f"{APPS_PREFIX}{team}/{app}/auth-status"
+
+
+def _current(name):
+    """A parameter's stored value (SecureStrings come back encrypted), or None."""
+    try:
+        return ssm.get_parameter(Name=name, WithDecryption=False)["Parameter"]["Value"]
+    except ssm.exceptions.ParameterNotFound:
+        return None
+
+
+def _put_if_changed(name, value, team, app):
+    """Write a String parameter only when its value differs. Returns True if written."""
+    if _current(name) == value:
+        return False
+    _put_param(name, value, False, team, app)
+    return True
+
+
 def _put_param(name, value, secure, team, app):
     ssm.put_parameter(
         Name=name,
@@ -233,13 +295,22 @@ def _put_param(name, value, secure, team, app):
     )
 
 
-def sync(team, app, req):
-    """Make Cognito match one request. Returns the client ID."""
+def _diff(current, settings):
+    """Names of DRIFT_FIELDS where the live client differs from the settings."""
+    def norm(v):
+        return sorted(v) if isinstance(v, list) else v
+    return [f for f in DRIFT_FIELDS if norm(current.get(f, [] if isinstance(settings[f], list) else None))
+            != norm(settings[f])]
+
+
+def sync(team, app, req, reason="event"):
+    """Make Cognito match one request. Returns a status dict (see write_status)."""
     client_name = f"{team}-{app}"
     # Resolve settings first: a misconfigured pool must abort before anything
     # (including the pool-switch cleanup below) is changed.
     upid = pool_id(req["pool"])
     settings = client_settings(req["pool"], upid, client_name, req)
+    idps = settings["SupportedIdentityProviders"]
 
     # A pool switch (internal <-> external) leaves no client behind.
     for other in POOL_NAMES:
@@ -253,9 +324,11 @@ def sync(team, app, req):
 
     want_secret = req["client_type"] == "confidential"
     client_id = find_client(upid, client_name)
+    changed = []
     if client_id:
-        has_secret = bool(cognito.describe_user_pool_client(UserPoolId=upid, ClientId=client_id)
-                          ["UserPoolClient"].get("ClientSecret"))
+        current = cognito.describe_user_pool_client(UserPoolId=upid, ClientId=client_id)["UserPoolClient"]
+        has_secret = bool(current.get("ClientSecret"))
+        changed = _diff(current, settings)
         if has_secret != want_secret:
             # A client's secret setting is immutable; switching type means a new client
             cognito.delete_user_pool_client(UserPoolId=upid, ClientId=client_id)
@@ -263,21 +336,119 @@ def sync(team, app, req):
             logger.info("Replacing %s: client_type changed to %s", client_name, req["client_type"])
             client_id = None
     if client_id:
+        if changed and reason == "reconcile":
+            # The request did not change since its last sync, so someone
+            # edited the client outside the platform (e.g. the console).
+            logger.warning("WARN drift on %s (%s), correcting: %s", client_name, client_id, ", ".join(changed))
         cognito.update_user_pool_client(ClientId=client_id, **settings)
         logger.info("Updated client %s (%s) in %s pool", client_name, client_id, req["pool"])
     else:
+        changed = []
         client_id = cognito.create_user_pool_client(GenerateSecret=want_secret, **settings)["UserPoolClient"]["ClientId"]
         logger.info("Created %s client %s (%s) in %s pool", req["client_type"], client_name, client_id, req["pool"])
 
+    # The client ID goes last: its Update is what restarts the app, and the
+    # new tasks must find the matching secret and IdP already in place.
+    # (app-secret-rollout ignores the secret: a new one always comes with a
+    # new ID, so restarting on it too would deploy once with the old ID.)
     id_param, secret_param = _cred_names(team, app)
-    _put_param(id_param, client_id, False, team, app)
+    id_changed = _current(id_param) != client_id
     if want_secret:
-        secret = cognito.describe_user_pool_client(UserPoolId=upid, ClientId=client_id)["UserPoolClient"]["ClientSecret"]
-        _put_param(secret_param, secret, True, team, app)
-    else:
+        # A client's secret never changes, so a new one comes only with a new
+        # client ID; skipping the rewrite needs no decrypt permission.
+        if id_changed or _current(secret_param) is None:
+            secret = cognito.describe_user_pool_client(UserPoolId=upid, ClientId=client_id)["UserPoolClient"]["ClientSecret"]
+            _put_param(secret_param, secret, True, team, app)
+    elif _current(secret_param) is not None:
         ssm.delete_parameters(Names=[secret_param])
+    _put_if_changed(_idp_name(team, app), primary_identity_provider(idps), team, app)
+    if id_changed:
+        _put_param(id_param, client_id, False, team, app)
     _put_client_groups(client_id, req["allowed_groups"], team, app)
-    return client_id
+    unknown, empty = check_groups(req["allowed_groups"])
+    return {
+        "status": "synced",
+        "client_id": client_id,
+        "client_type": req["client_type"],
+        "pool": req["pool"],
+        "pool_domain": POOL_DOMAINS.get(req["pool"], ""),
+        "identity_providers": idps,
+        "identity_provider": primary_identity_provider(idps),
+        "callback_urls": req["callback_urls"],
+        "logout_urls": req["logout_urls"],
+        "scopes": req["scopes"],
+        "allowed_groups": req["allowed_groups"],
+        "unknown_groups": unknown,
+        "empty_groups": empty,
+        "changed_fields": changed,
+        "drift_corrected": changed if reason == "reconcile" else [],
+        "client_id_changed": id_changed,
+    }
+
+
+def check_groups(groups):
+    """(unknown, empty): allowed groups with no memberships-table entry, or no members.
+
+    A typo in auth.groups denies everyone; the restriction is still written
+    (fail closed) but reported so the team can see why.
+    """
+    unknown, empty = [], []
+    if not MEMBERSHIPS_TABLE:
+        return unknown, empty
+    for g in groups:
+        item = dynamodb.get_item(TableName=MEMBERSHIPS_TABLE, Key={"pk": {"S": f"group#{g}"}}).get("Item")
+        if item is None:
+            unknown.append(g)
+        elif not (item.get("members", {}).get("L") or item.get("members", {}).get("SS")):
+            empty.append(g)
+    return unknown, empty
+
+
+def status_value(body):
+    """auth-status JSON that fits the parameter: drop STATUS_DROPPABLE fields
+    until it does, never cut the JSON itself (the doctor parses it)."""
+    def encode(b):
+        return json.dumps(b, separators=(",", ":"))
+    body = dict(body)
+    value = encode(body)
+    for key in STATUS_DROPPABLE:
+        if len(value.encode()) <= STATUS_MAX_BYTES:
+            break
+        if key in body:
+            body.pop(key)
+            body["truncated"] = True
+            value = encode(body)
+    if len(value.encode()) > STATUS_MAX_BYTES:
+        # Only an absurd error message gets here
+        body = {k: body[k] for k in ("status", "client_id", "client_id_changed_at", "request_version",
+                                     "synced_at") if k in body}
+        body["truncated"] = True
+        value = encode(body)
+    return value
+
+
+def write_status(team, app, status, request_version=None):
+    """Publish the outcome of a sync to the team-readable auth-status parameter."""
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    body = {**status, "request_version": request_version, "synced_at": now}
+    if "client_id" in status:
+        # When the client ID last changed, so the doctor can tell tasks that
+        # still hold the old one. Carried over from the previous status.
+        changed_at = now if status.get("client_id_changed") else _previous_status(team, app).get("client_id_changed_at")
+        body["client_id_changed_at"] = changed_at
+    try:
+        _put_param(_status_name(team, app), status_value(body), False, team, app)
+    except Exception:
+        # Reporting must never turn a good sync into a failure
+        logger.exception("Could not write auth-status for %s-%s", team, app)
+
+
+def _previous_status(team, app):
+    try:
+        prev = json.loads(_current(_status_name(team, app)) or "{}")
+        return prev if isinstance(prev, dict) else {}
+    except Exception:
+        return {}
 
 
 def _put_client_groups(client_id, groups, team, app):
@@ -311,14 +482,38 @@ def remove(team, app):
             cognito.delete_user_pool_client(UserPoolId=upid, ClientId=client_id)
             _delete_client_groups(client_id)
             logger.info("Deleted client %s from %s pool", client_name, pool)
-    ssm.delete_parameters(Names=list(_cred_names(team, app)))
+    ssm.delete_parameters(Names=[*_cred_names(team, app), _idp_name(team, app), _status_name(team, app)])
 
 
 def read_request(name):
+    """(value, version) of a request parameter, or (None, None)."""
     try:
-        return ssm.get_parameter(Name=name)["Parameter"]["Value"]
+        p = ssm.get_parameter(Name=name)["Parameter"]
+        return p["Value"], p.get("Version")
     except ssm.exceptions.ParameterNotFound:
-        return None
+        return None, None
+
+
+def sync_and_report(team, app, raw, version, reason):
+    """Parse + sync one request and publish auth-status. Returns the status dict.
+
+    Invalid requests return status "invalid"; a misconfigured pool (missing
+    IdP) returns status "error" with the client untouched. Other failures are
+    reported as status "error" and re-raised so the Lambda still errors.
+    """
+    try:
+        status = sync(team, app, parse_request(raw), reason)
+    except InvalidRequest as e:
+        logger.error("Invalid auth request for %s-%s: %s", team, app, e)
+        status = {"status": "invalid", "error": str(e)}
+    except PoolMisconfigured as e:
+        logger.error("Skipped %s-%s, client left unchanged: %s", team, app, e)
+        status = {"status": "error", "error": str(e)}
+    except Exception as e:
+        write_status(team, app, {"status": "error", "error": f"{type(e).__name__}: {e}"[:500]}, version)
+        raise
+    write_status(team, app, status, version)
+    return status
 
 
 def handle_change(name, operation):
@@ -330,23 +525,16 @@ def handle_change(name, operation):
 
     # Re-read instead of trusting the event: the parameter is the source of
     # truth, and a stale Delete event must not remove a live client.
-    raw = read_request(name)
+    raw, version = read_request(name)
     if raw is None:
         remove(team, app)
         return {"status": "deleted", "client": f"{team}-{app}"}
     if operation == "Delete":
         logger.info("Delete event for %s but the parameter exists again — syncing", name)
-    try:
-        req = parse_request(raw)
-    except InvalidRequest as e:
-        logger.error("Invalid auth request %s: %s", name, e)
-        return {"status": "invalid", "error": str(e)}
-    try:
-        client_id = sync(team, app, req)
-    except PoolMisconfigured as e:
-        logger.error("Skipped %s-%s, client left unchanged: %s", team, app, e)
-        return {"status": "error", "error": str(e)}
-    return {"status": "synced", "client": f"{team}-{app}", "client_id": client_id}
+    status = sync_and_report(team, app, raw, version, "event")
+    if status["status"] != "synced":
+        return {"status": status["status"], "error": status.get("error")}
+    return {"status": "synced", "client": f"{team}-{app}", "client_id": status["client_id"]}
 
 
 def reconcile():
@@ -357,19 +545,22 @@ def reconcile():
         for p in page["Parameters"]:
             owner = parse_name(p["Name"])
             if owner:
-                wanted[owner] = p["Value"]
+                wanted[owner] = (p["Value"], p.get("Version"))
 
-    results = {"synced": [], "invalid": [], "error": [], "deleted": []}
-    for (team, app), raw in sorted(wanted.items()):
+    results = {"synced": [], "invalid": [], "deleted": [], "error": [], "drift": []}
+    for (team, app), (raw, version) in sorted(wanted.items()):
         try:
-            sync(team, app, parse_request(raw))
-            results["synced"].append(f"{team}-{app}")
-        except InvalidRequest as e:
-            logger.error("Invalid auth request for %s-%s: %s", team, app, e)
-            results["invalid"].append(f"{team}-{app}")
-        except PoolMisconfigured as e:
-            logger.error("Skipped %s-%s, client left unchanged: %s", team, app, e)
+            status = sync_and_report(team, app, raw, version, "reconcile")
+        except Exception:
+            # One broken app must not stop the others from reconciling. Not
+            # re-raised: async invokes would retry the whole reconcile twice.
+            # The javabin-app-auth-sync-skipped alarm counts this line.
+            logger.exception("Sync failed for %s-%s", team, app)
             results["error"].append(f"{team}-{app}")
+            continue
+        results[status["status"] if status["status"] in ("synced", "invalid") else "error"].append(f"{team}-{app}")
+        if status.get("drift_corrected"):
+            results["drift"].append(f"{team}-{app}")
 
     # Orphans: clients whose credential parameter exists (so this Lambda made
     # them) but whose request is gone. Clients created by other means are

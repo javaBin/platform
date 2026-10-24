@@ -14,14 +14,20 @@ variable "google_workspace_domain" {
   default     = "java.no"
 }
 
+variable "google_authorize_url_params" {
+  description = "Add hd=<workspace domain>&prompt=select_account to the internal pool's Google authorize_url (false = plain URL, for the managed-login fallback)"
+  type        = bool
+  default     = true
+}
+
 variable "google_client_id" {
-  description = "Google OAuth 2.0 client ID for Cognito IdP (from GCP console)"
+  description = "Google OAuth 2.0 client ID for the external pool's Google IdP (from GCP console)"
   type        = string
   default     = ""
 }
 
 variable "google_client_secret" {
-  description = "Google OAuth 2.0 client secret for Cognito IdP (from GCP console)"
+  description = "Google OAuth 2.0 client secret for the external pool's Google IdP (from GCP console)"
   type        = string
   sensitive   = true
   default     = ""
@@ -56,6 +62,11 @@ variable "org_boundary_arn" {
 # (Workspace-only); otherwise hd= is just a hint and a consumer Google account
 # with an @java.no address would pass. In that case map email_verified/hd and
 # check them in auth-claims before adding the IdP here.
+#
+# Google (OIDC, internal pool) is the exception auth-claims knows about: its
+# users must also have email_verified=true (mapped from Google), and the
+# identity module refuses "Google" here until its OAuth client is in SSM.
+# Cutover from GoogleSAML: ["Google"] (docs/cognito-google-setup.md).
 variable "internal_identity_providers" {
   description = "Identity providers on internal-pool app clients (GoogleSAML is created outside Terraform)"
   type        = list(string)

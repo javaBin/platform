@@ -239,6 +239,15 @@ jobs:
         working-directory: ${{ env.TF_ROOT }}
         run: terraform apply -auto-approve -lock-timeout=5m tfplan
 
+      # Re-sync app Cognito clients with the Lambda/config just applied, so
+      # parameters it adds (cognito-client-identity-provider, auth-status)
+      # exist before an app redeploys. Async; unchanged values are not
+      # rewritten, so nothing restarts. Non-blocking: the 03:30 reconcile
+      # catches up anyway.
+      - name: Reconcile app Cognito clients
+        continue-on-error: true
+        run: sh scripts/reconcile-app-auth.sh
+
   # --------------------------------------------------------------------------
   # Drift Detection — scheduled weekly, plan-only
   # --------------------------------------------------------------------------
