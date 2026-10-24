@@ -157,12 +157,17 @@ def find_client(user_pool_id, client_name):
     return None
 
 
-def identity_providers(user_pool_id):
-    """Every IdP configured on the pool (e.g. GoogleSAML) plus local users."""
+def identity_providers(user_pool_id, pool):
+    """Every IdP configured on the pool (e.g. GoogleSAML); plus local users on the external pool.
+
+    The internal pool is for Javabin heroes only, who sign in through Google
+    Workspace. Offering COGNITO there would let anyone sign up with
+    username/password through the client's hosted UI.
+    """
     names = []
     for page in cognito.get_paginator("list_identity_providers").paginate(UserPoolId=user_pool_id, MaxResults=60):
         names += [p["ProviderName"] for p in page["Providers"]]
-    return names + ["COGNITO"]
+    return names if pool == "internal" else names + ["COGNITO"]
 
 
 def client_settings(user_pool_id, client_name, req):
@@ -174,7 +179,7 @@ def client_settings(user_pool_id, client_name, req):
         "AllowedOAuthScopes": req["scopes"],
         "CallbackURLs": req["callback_urls"],
         "LogoutURLs": req["logout_urls"],
-        "SupportedIdentityProviders": identity_providers(user_pool_id),
+        "SupportedIdentityProviders": identity_providers(user_pool_id, req["pool"]),
         "ExplicitAuthFlows": ["ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_SRP_AUTH"],
         "PreventUserExistenceErrors": "ENABLED",
     }

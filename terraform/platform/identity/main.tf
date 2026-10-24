@@ -7,6 +7,8 @@
 # Identity Center lives in terraform/org/ (human-applied, not CI).
 ################################################################################
 
+data "aws_region" "current" {}
+
 ################################################################################
 # Internal Pool — Javabin heroes (@java.no accounts only)
 ################################################################################
@@ -23,6 +25,20 @@ resource "aws_cognito_user_pool" "internal" {
 
   auto_verified_attributes = ["email"]
   username_attributes      = ["email"]
+
+  # Javabin heroes come in through Google Workspace (SAML). No self sign-up:
+  # app clients on this pool offer no username/password sign-in either
+  # (app-auth-sync), so this is the second lock on the same door.
+  admin_create_user_config {
+    allow_admin_create_user_only = true
+  }
+
+  # A changed email stays pending until the new address is verified, so a
+  # user cannot claim another member's address (auth-claims grants registry
+  # groups by email).
+  user_attribute_update_settings {
+    attributes_require_verification_before_update = ["email"]
+  }
 
   password_policy {
     minimum_length    = 12
@@ -117,6 +133,11 @@ resource "aws_cognito_user_pool" "external" {
   auto_verified_attributes = ["email"]
   username_attributes      = ["email"]
 
+  # A changed email stays pending until the new address is verified
+  user_attribute_update_settings {
+    attributes_require_verification_before_update = ["email"]
+  }
+
   password_policy {
     minimum_length    = 8
     require_lowercase = true
@@ -175,13 +196,10 @@ resource "aws_cognito_identity_provider" "external_google" {
   }
 }
 
-# Cognito-managed prefix domain while no custom domain is wired up: the
-# hosted UI (and so ALB sign-in from app.yaml routing.login, and apps with
-# auth: external) needs one. A pool has at most one domain of each kind,
-# so the custom domain replaces it.
+# Cognito-managed prefix domain for the hosted UI. ALB sign-in from app.yaml
+# routing.login and apps with auth: external point at it, so it is kept even
+# when a custom domain is added below (a pool can have one of each).
 resource "aws_cognito_user_pool_domain" "external_prefix" {
-  count = var.certificate_arn == "" ? 1 : 0
-
   domain       = "${var.project}-external"
   user_pool_id = aws_cognito_user_pool.external.id
 }

@@ -140,7 +140,8 @@ class AppAuthSyncTest(unittest.TestCase):
         cid, client = self.only_client()
         self.assertEqual(client["ClientName"], "cupcake-frosting")
         self.assertEqual(client["UserPoolId"], "pool-int")
-        self.assertEqual(client["SupportedIdentityProviders"], ["GoogleSAML", "COGNITO"])
+        # Internal: Google Workspace only — no username/password sign-up
+        self.assertEqual(client["SupportedIdentityProviders"], ["GoogleSAML"])
         self.assertEqual(self.ssm.params["/javabin/apps/cupcake/frosting/cognito-client-id"], cid)
         self.assertEqual(self.ssm.params["/javabin/apps/cupcake/frosting/cognito-client-secret"], client["ClientSecret"])
         self.assertEqual(self.ssm.tags["/javabin/apps/cupcake/frosting/cognito-client-id"]["team"], "cupcake")
@@ -281,6 +282,7 @@ class LoginSlotTest(AppAuthSyncTest):
         self.assertEqual(self.ssm.params[f"{base}/cognito-client-id"], slot_id)
         self.assertEqual(self.ssm.params[f"{base}/cognito-client-secret"], self.cognito.clients[slot_id]["ClientSecret"])
         self.assertEqual(self.ssm.tags[f"{base}/cognito-client-secret"]["team"], "cupcake")
+        self.assertNotIn("COGNITO", self.cognito.clients[slot_id]["SupportedIdentityProviders"])
         item = self.dynamo.items[f"client#{slot_id}"]
         self.assertEqual([v["S"] for v in item["allowed_groups"]["L"]], ["styret"])
         self.assertEqual(item["app"]["S"], "cupcake-frosting.login-1")

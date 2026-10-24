@@ -80,6 +80,15 @@ resource "aws_lb_listener_rule" "this" {
 locals {
   login_protected = { for k, v in var.login_rules : k => v if !v.public }
   login_public    = { for k, v in var.login_rules : k => v if v.public }
+
+  # The ALB accepts any valid session cookie of the rule's name. Naming the
+  # cookie after the rule's slot, pool and groups means a change to any of
+  # them (tightened groups, a stricter rule taking over a slot after a
+  # reorder) invalidates existing sessions and forces a fresh sign-in.
+  login_cookie = {
+    for k, v in local.login_protected :
+    k => "javabin-auth-${k}-${substr(sha256(jsonencode([k, v.pool, sort(v.groups)])), 0, 10)}"
+  }
 }
 
 module "login_client" {
@@ -143,7 +152,7 @@ resource "aws_lb_listener_rule" "login" {
       client_id                  = nonsensitive(data.aws_ssm_parameter.login_client_id[each.key].value)
       client_secret              = data.aws_ssm_parameter.login_client_secret[each.key].value
       scope                      = "openid email profile"
-      session_cookie_name        = "javabin-auth-${each.key}"
+      session_cookie_name        = local.login_cookie[each.key]
       session_timeout            = var.login_session_timeout
       on_unauthenticated_request = "authenticate"
 

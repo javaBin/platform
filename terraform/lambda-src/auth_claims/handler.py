@@ -16,6 +16,11 @@ At every sign-in and token refresh this trigger:
 
 Clients without an entry, or with an empty list, accept any pool user.
 
+Registry groups are granted only for an email the pool can vouch for: a
+federated user (the IdP asserts the address at every sign-in) or a native user
+whose email is verified. Otherwise anyone able to set their own email attribute
+could claim another member's groups.
+
 The external pool runs the same code as javabin-auth-claims-external with
 REGISTRY_GROUPS=false: anyone can sign up there with any email, so registry
 membership (keyed by email) must not be granted. Only native Cognito groups
@@ -75,15 +80,25 @@ def allowed_groups(client_id):
     return set(_strings(item.get("allowed_groups"))) if item else set()
 
 
+def trusted_email(attributes):
+    """The user's email if the pool vouches for it, else ""."""
+    email = (attributes.get("email") or "").lower()
+    federated = attributes.get("cognito:user_status") == "EXTERNAL_PROVIDER"
+    verified = str(attributes.get("email_verified", "")).lower() == "true"
+    return email if federated or verified else ""
+
+
 def handler(event, context):
     request = event.get("request", {})
-    email = (request.get("userAttributes", {}).get("email") or "").lower()
+    attributes = request.get("userAttributes", {})
+    email = (attributes.get("email") or "").lower()
     client_id = event.get("callerContext", {}).get("clientId", "")
     native = (request.get("groupConfiguration") or {}).get("groupsToOverride") or []
 
     registry = []
     if REGISTRY_GROUPS:
-        registry = sorted(g for g, members in group_members().items() if email and email in members)
+        trusted = trusted_email(attributes)
+        registry = sorted(g for g, members in group_members().items() if trusted and trusted in members)
     groups = sorted(set(native) | set(registry))
 
     allowed = allowed_groups(client_id) if client_id else set()

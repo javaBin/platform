@@ -179,6 +179,21 @@ def normalize_login(routing):
         if "/*" in paths:
             catch_all = i
 
+    # /admin/* does not match /admin itself: protect the bare prefix too,
+    # unless the developer listed it somewhere explicitly.
+    for i, rule in enumerate(rules):
+        if rule["public"]:
+            continue
+        bare = [p[:-2] for p in rule["paths"] if p.endswith("/*") and p != "/*" and p[:-2] not in seen]
+        if bare:
+            seen.update(bare)
+            rule["paths"] = rule["paths"] + bare
+            if len(rule["paths"]) > LOGIN_MAX_PATHS:
+                raise AppYamlError(
+                    f"routing.login[{i}].paths: with the bare prefixes added ({', '.join(bare)} — /x/* does not "
+                    f"match /x) this rule needs more than {LOGIN_MAX_PATHS} paths; split it into several entries"
+                )
+
     priority = routing.get("priority")
     if isinstance(priority, int) and priority - len(rules) < 1:
         raise AppYamlError(
@@ -193,8 +208,9 @@ def login_warnings(rules):
     protected = [r for r in rules if not r["public"]]
     if protected and not any("/*" in r["paths"] for r in rules):
         return [
-            "routing.login protects only some paths. ALB path patterns are case-sensitive, so an app "
-            "that matches paths case-insensitively can be reached past them (e.g. /Admin vs /admin/*). "
+            "routing.login protects only some paths. The load balancer matches the raw request path, "
+            "case-sensitively and without decoding or normalizing it, so an app that does any of that can "
+            "be reached past the rule (e.g. /Admin, /%61dmin or /x/../admin vs /admin/*). "
             "Prefer protecting /* and listing the open paths with public: true."
         ]
     return []

@@ -216,7 +216,7 @@ class LoginTest(unittest.TestCase):
         self.assertIn("""  login_rules = {
     p1 = {
       groups   = ["styret"]
-      paths    = ["/admin/*"]
+      paths    = ["/admin/*", "/admin"]
       pool     = "internal"
       priority = 119
       public   = false
@@ -237,6 +237,18 @@ class LoginTest(unittest.TestCase):
     }
   }""", block)
         self.assertIn("listener_rule_priority = 120", block)
+
+    def test_bare_prefix_is_protected_with_the_wildcard(self):
+        rules = gen.normalize_login({"priority": 120, "login": [
+            {"paths": ["/admin/*", "/ops/*"], "groups": ["styret"]},
+            {"paths": ["/docs/*"], "public": True},
+            {"paths": ["/api/*"]},
+            {"paths": ["/api"], "public": True},
+        ]})
+        self.assertEqual(rules[0]["paths"], ["/admin/*", "/ops/*", "/admin", "/ops"])
+        self.assertEqual(rules[1]["paths"], ["/docs/*"])  # public rules are left alone
+        self.assertEqual(rules[2]["paths"], ["/api/*"])   # /api is listed explicitly
+        self.assertRejected({"paths": ["/a/*", "/b/*", "/c/*"]}, "split it into several entries")
 
     def test_shorthands_protect_the_whole_site(self):
         for login in ("external", {"pool": "external"}, [{"pool": "external", "paths": ["/*"]}]):

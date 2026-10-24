@@ -144,23 +144,24 @@ routing:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `paths` | `["/*"]` | 1-4 ALB path patterns. Case-sensitive; `*` and `?` are wildcards; max 128 chars. |
-| `pool` | `internal` | `internal`: Javabin heroes, signed in straight through Google Workspace (SAML). `external`: attendees, partners and other public users (Cognito email/password sign-up, plus any identity provider the platform adds to that pool). |
-| `groups` | `[]` (any pool user) | Only users in at least one of these groups get through. Internal pool: registry groups (`groups/groups.yaml` with `cognito: true`, and `team-<team>`). External pool: native Cognito groups of the external pool. |
+| `paths` | `["/*"]` | 1-4 ALB path patterns. Case-sensitive; `*` and `?` are wildcards; max 128 chars. On protected rules, `/x/*` also protects the bare `/x` (added for you unless you list `/x` yourself), and counts toward the 4. |
+| `pool` | `internal` | `internal`: Javabin heroes, signed in through Google Workspace (SAML) only. The pool has no self sign-up and its clients offer no username/password sign-in. `external`: attendees, partners and other public users. Today that means Cognito email/password sign-up; other identity providers (e.g. Google, Vipps) are not set up on that pool yet. |
+| `groups` | `[]` (any pool user) | Only users in at least one of these groups get through. Internal pool: registry groups (`groups/groups.yaml` with `cognito: true`, and `team-<team>`). External pool: native Cognito groups of the external pool. Nothing in the platform creates or fills those groups yet; until it does, an admin creates them by hand (`aws cognito-idp create-group` / `admin-add-user-to-group` on `javabin-external`), so ask the platform team. |
 | `public` | `false` | Forward without sign-in. Cannot be combined with `pool` or `groups`. |
 
 What happens:
 
-- A user without a session is redirected to the pool's sign-in page, then back to the page they asked for. A user outside `groups` is refused by Cognito at sign-in and never reaches the app (the load balancer shows a 401 page).
+- A user without a session is redirected to the pool's sign-in page, then back to the page they asked for. A user outside `groups` is refused by Cognito at sign-in ("You are not in a group that has access to this app.") and never gets a session, so the app is never reached. Where the message shows (Cognito's sign-in page or the load balancer's error page) depends on the sign-in flow.
 - Every path not matched by a rule keeps working as before, without sign-in.
 - Sessions last 8 hours. A registry change (e.g. removing someone from a group) takes effect at their next sign-in, so at most 8 hours later.
+- An app.yaml change to a rule's `pool` or `groups`, or a reorder that gives a rule a new position, renames that rule's session cookie, so everyone signs in again and the new groups apply at once. Changing only `paths` keeps existing sessions.
 - One sign-in covers all rules of the app: Cognito remembers the user, so a second rule only redirects.
 
 Rules and priorities:
 
-- Each rule becomes its own ALB listener rule at the priorities **directly below** `routing.priority`: the first rule gets `priority - 1`, the next `priority - 2`, and so on. Leave that room free: if another app already uses one of those priorities, apply fails with `PriorityInUse`. `priority` must be larger than the number of rules.
+- Each rule becomes its own ALB listener rule at the priorities **directly below** `routing.priority`: the first rule gets `priority - 1`, the next `priority - 2`, and so on. Leave that room free: if another app already uses one of those priorities, apply fails with `PriorityInUse`. `priority` must be larger than the number of rules. Nothing checks this across apps yet, so pick a `priority` with at least 10 free numbers below it (e.g. a multiple of 20 when registering a new app); apps whose priority is right next to another app's (e.g. 100 and 101) cannot add rules without moving.
 - At most 10 rules. A path may appear only once, and a rule after a `/*` rule is an error (it could never match).
-- Protect `/*` and open the exceptions with `public: true`, rather than protecting a few subpaths. Path patterns are case-sensitive, so an app that serves `/Admin` the same as `/admin` can be reached past an `/admin/*` rule. The generator warns when no rule covers `/*`.
+- Protect `/*` and open the exceptions with `public: true`, rather than protecting a few subpaths. The load balancer matches the raw request path: case-sensitively, without decoding `%xx` and without resolving `..`. An app or framework that does any of these can be reached past a subpath rule, e.g. `/Admin`, `/%61dmin/` or `/x/../admin/` past `/admin/*`. The generator warns when no rule covers `/*`.
 
 What the app receives on signed-in requests (headers added by the load balancer):
 
@@ -173,12 +174,12 @@ What the app receives on signed-in requests (headers added by the load balancer)
 Caveats:
 
 - On paths that are not protected, a client can send these headers itself. Verify the signature before trusting them anywhere.
-- The load balancer has no logout endpoint. To sign out, expire the `javabin-auth-p<N>` cookies and redirect to the pool's `/logout`.
+- The load balancer has no logout endpoint. To sign out, expire the `javabin-auth-p<N>-*` cookies and redirect to the pool's `/logout`.
 - How it works: each protected rule has its own Cognito client, `<team>-<name>.login-<N>`, requested through SSM (`/javabin/apps/<team>/<name>/login-<N>/auth`) and created by the platform's `javabin-app-auth-sync` Lambda, exactly like [`auth`](#how-the-client-is-created). The first apply waits 60 seconds for the client. If it fails with `ParameterNotFound`, the client was not created in time: re-run the pipeline.
 
 ##### Static pages behind sign-in
 
-There is no separate static-site hosting: serve the files from a small container and let `login` protect it.
+There is no separate static-site hosting: serve the files from a small container and let `login` protect it. `login` protects apps that run on the platform; it cannot proxy to a site hosted elsewhere (the load balancer only forwards to its own target groups).
 
 ```dockerfile
 FROM nginxinc/nginx-unprivileged:1.27-alpine
