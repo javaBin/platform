@@ -38,6 +38,8 @@ ALB, ACM wildcard certificate, Route53 DNS.
 | HTTPS listener | Port 443, default action = fixed 404 |
 | Route53 | Validation records for ACM |
 
+The ALB drops request headers whose names contain characters other than letters, digits and `-` (`drop_invalid_header_fields`, Security Hub ELB.4). Headers with underscores, such as `X_Api_Key`, never reach the app. Clients of an app moving onto the platform ALB must send hyphenated header names.
+
 **Inputs:** `public_subnet_ids`, `alb_sg_id` from networking; `extra_domains` (domain → zone ID) from dns
 **Outputs:** `alb_arn`, `https_listener_arn`, `alb_dns_name`, `alb_zone_id`
 
