@@ -47,10 +47,11 @@ GitHub OIDC provider (data source), CI roles, permission boundary, ECS execution
 
 | Role | Trust | Purpose |
 |------|-------|---------|
-| `javabin-ci-infra` | platform repo, main branch | Apply platform TF |
-| `javabin-ci-infra-plan` | platform repo, main branch + PRs | Read-only plan + review for platform TF |
-| `javabin-ci-app-{repo}` | Per-app, pinned to `tf-plan.yml` | App TF plan + apply |
-| `javabin-ci-deploy-{repo}` | Per-app, pinned to `tf-apply.yml` | ECR push, ECS deploy |
+| `javabin-ci-infra` | platform repo, pinned to `platform-ci.yml@refs/heads/main` | Apply platform TF (apply job only) |
+| `javabin-ci-infra-plan` | platform repo, any branch / PR (`repo:javaBin/platform:*`) | Read-only plan + review + weekly drift check for platform TF |
+| `javabin-ci-app-broker` | Any org repo, pinned to the platform's reusable workflows on `main` | Invoke the CI broker Lambda only |
+| `javabin-ci-team-{team}` | CI broker and apply gate Lambdas (not OIDC) | Team TF plan + apply, scoped to the team by the developer boundary |
+| `javabin-ci-deploy-{team}` | CI broker Lambda (not OIDC) | ECR push, ECS deploy |
 | `javabin-ci-override-approver` | Board members, pinned to `approve-override.yml` | SSM override tokens |
 | `javabin-ci-registry` | Registry repo | Team provisioning dispatch |
 | `javabin-ecs-execution` | ECS tasks | Pull images, write logs, read secrets |

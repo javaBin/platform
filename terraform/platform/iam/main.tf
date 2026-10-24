@@ -149,7 +149,7 @@ resource "aws_iam_role_policy" "ci_infra_plan_extras" {
 ################################################################################
 # 1b. javabin-ci-infra — Platform repo apply only
 #
-# Trust: GitHub OIDC, ONLY main branch (not PRs).
+# Trust: GitHub OIDC, ONLY platform-ci.yml on main (job_workflow_ref pin).
 # Permissions: Allow *:* with permission boundary + explicit deny on operations
 # that should never happen via CI (organizations, IAM users, destructive security ops).
 ################################################################################
@@ -172,13 +172,18 @@ resource "aws_iam_role" "ci_infra" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            # Main branch OR production environment — the apply job uses
-            # `environment: production`, which changes the OIDC sub claim
-            # from ref-based to environment-based.
+            # The apply job uses `environment: production`, which changes the
+            # OIDC sub claim from ref-based to environment-based. That sub
+            # carries no branch, so on its own any branch that declares the
+            # environment would match.
             "token.actions.githubusercontent.com:sub" = [
               "repo:${var.github_org}/platform:ref:refs/heads/main",
               "repo:${var.github_org}/platform:environment:production",
             ]
+            # The job_workflow_ref pin is what ties this role to main: only
+            # platform-ci.yml as committed on main can assume it, whatever
+            # the environment's branch policy says.
+            "token.actions.githubusercontent.com:job_workflow_ref" = "${var.github_org}/platform/.github/workflows/platform-ci.yml@refs/heads/main"
           }
         }
       }
