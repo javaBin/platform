@@ -110,7 +110,7 @@ jobs:
     if: |
       always() &&
       github.event_name != 'pull_request' &&
-      github.ref_name == github.event.repository.default_branch &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
       needs.detect.outputs.has_docker == 'true' &&
       (needs.build-jvm.result == 'success' || needs.build-jvm.result == 'skipped') &&
       (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped') &&
@@ -149,7 +149,7 @@ jobs:
     needs: [detect, tf-plan]
     if: >-
       github.event_name != 'pull_request' &&
-      github.ref_name == github.event.repository.default_branch &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
       needs.tf-plan.outputs.has_changes == 'true'
     uses: javaBin/platform/.github/workflows/tf-apply.yml@main
     with:
@@ -166,7 +166,7 @@ jobs:
     if: |
       always() &&
       github.event_name != 'pull_request' &&
-      github.ref_name == github.event.repository.default_branch &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
       needs.docker-build.result == 'success' &&
       (needs.tf-apply.result == 'success' || needs.tf-apply.result == 'skipped')
     uses: javaBin/platform/.github/workflows/ecs-deploy.yml@main
@@ -185,7 +185,7 @@ jobs:
     if: |
       always() &&
       github.event_name != 'pull_request' &&
-      github.ref_name == github.event.repository.default_branch &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
       needs.detect.outputs.has_eb == 'true' &&
       (needs.build-jvm.result == 'success' || needs.build-jvm.result == 'skipped') &&
       (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped')

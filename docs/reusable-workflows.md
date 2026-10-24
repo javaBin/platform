@@ -47,8 +47,9 @@ detect ──┬─ expand ──── tf-plan ── tf-apply ──┐
 - **Default branch** (push or manual run): detect → build → expand → tf-plan → tf-apply → docker-build → ecs-deploy
 
 Deploy jobs (`tf-apply`, `docker-build`, `ecs-deploy`, `eb-deploy`) run only when
-`github.ref_name` is the repo's default branch (`github.event.repository.default_branch`) and the
-event is not a pull request. Repos whose default branch is `master` deploy from `master`; there is no
+`github.ref` is `refs/heads/<default branch>` (`github.event.repository.default_branch`) and the
+event is not a pull request. The full ref is compared, so a tag that happens to be named like the
+default branch never deploys. Repos whose default branch is `master` deploy from `master`; there is no
 need to rename it. Pushes to other branches build and plan but never apply.
 
 ## Workflow Reference
@@ -71,7 +72,8 @@ Unified entrypoint. Calls all other workflows via the nested reusable workflow p
 Set `test_postgres_image` and match database, user and password to what your tests expect. The
 container listens on `localhost:5432` and is healthy (`pg_isready`) before the build starts. The
 build step also gets `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` and `PGPASSWORD`. The password is
-for a throwaway CI container, not a secret.
+for a throwaway CI container, not a secret. Database and user must be plain identifiers (letters,
+digits, `_`), and the build fails early otherwise.
 
 ```yaml
 jobs:

@@ -42,7 +42,9 @@ jobs:
     runs-on: ubuntu-latest
     # Optional database for tests that need a real PostgreSQL. GitHub skips a
     # service whose image is an empty string, so this costs nothing when
-    # test_postgres_image is unset.
+    # test_postgres_image is unset. No input is interpolated into `options`
+    # (docker flags); pg_isready needs no user, and 127.0.0.1 skips the
+    # socket-only server the image runs while it initialises.
     services:
       postgres:
         image: ${{ inputs.test_postgres_image }}
@@ -53,7 +55,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ${{ inputs.test_postgres_user }} -d ${{ inputs.test_postgres_db }}"
+          --health-cmd "pg_isready -h 127.0.0.1"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -88,6 +90,18 @@ jobs:
           PG_USER: ${{ inputs.test_postgres_user }}
           PG_PASSWORD: ${{ inputs.test_postgres_password }}
         run: |
+          # Plain identifiers only, and no newline in the password: these
+          # values are written to $GITHUB_ENV, one variable per line.
+          for v in "$PG_DB" "$PG_USER"; do
+            if ! printf '%s' "$v" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]{0,62}$'; then
+              echo "::error::test_postgres_db and test_postgres_user must be plain identifiers (letters, digits, _): '$v'"
+              exit 1
+            fi
+          done
+          if [ "$(printf '%s' "$PG_PASSWORD" | wc -l)" -ne 0 ]; then
+            echo "::error::test_postgres_password must not contain a newline"
+            exit 1
+          fi
           {
             echo "PGHOST=localhost"
             echo "PGPORT=5432"
