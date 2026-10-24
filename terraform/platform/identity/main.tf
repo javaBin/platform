@@ -24,6 +24,12 @@ resource "aws_cognito_user_pool" "internal" {
   auto_verified_attributes = ["email"]
   username_attributes      = ["email"]
 
+  # No self sign-up: users arrive through the federated IdP (or are created
+  # by an admin). auth-claims also refuses non-@java.no accounts.
+  admin_create_user_config {
+    allow_admin_create_user_only = true
+  }
+
   password_policy {
     minimum_length    = 12
     require_lowercase = true
@@ -281,6 +287,10 @@ resource "aws_lambda_function" "auth_claims" {
   environment {
     variables = {
       MEMBERSHIPS_TABLE = aws_dynamodb_table.auth_memberships.name
+      # Internal pool only: refuse tokens for anything but verified
+      # @<workspace domain> accounts. Users from these IdPs count as verified.
+      REQUIRED_EMAIL_DOMAIN        = var.google_workspace_domain
+      FEDERATED_IDENTITY_PROVIDERS = join(",", var.internal_identity_providers)
     }
   }
 }
