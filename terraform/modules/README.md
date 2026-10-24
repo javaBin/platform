@@ -21,6 +21,8 @@ module "app" {
 | [ecs-service](ecs-service/) | ECS Fargate service + task def + logs | `service_name` |
 | [service-bucket](service-bucket/) | S3 bucket with standard security config | `bucket_name`, `access_policy_json` |
 | [service-database](service-database/) | DynamoDB table | `table_name`, `access_policy_json` |
+| [service-rds](service-rds/) | RDS PostgreSQL instance | `endpoint`, `address`, `port` |
+| [service-rds-adopted](service-rds-adopted/) | Existing RDS instance imported as-is | `endpoint`, `address`, `port` |
 | [service-secret](service-secret/) | SSM Parameter Store SecureString | `parameter_arn`, `access_policy_json` |
 | [service-queue](service-queue/) | SQS queue + DLQ | `queue_url`, `access_policy_json` |
 | [service-alarm](service-alarm/) | CloudWatch alarms for ECS | `cpu_alarm_arn` |

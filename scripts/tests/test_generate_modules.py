@@ -56,6 +56,24 @@ FULL = {
     "alarms": {"cpu_threshold": 70},
 }
 
+MORESLEEP = {  # javaBin/moresleep: existing RDS instance and hand-made DNS record
+    "name": "moresleep",
+    "team": "moresleep",
+    "compute": {"cpu": 256, "memory": 512, "port": 5000, "desired_count": 2, "health_check": "/"},
+    "routing": {"host": "sleepingpill.javazone.no", "priority": 120, "adopt_dns": True},
+    "resources": {
+        "databases": [{"name": "main", "engine": "postgres", "adopt": "dbmoresleep",
+                       "host_env": "DBHOST", "port_env": "DBPORT"}],
+        "secrets": [{"name": "db-password", "env": "DBPASSWORD"}],
+    },
+    "environment": {"DATABASE_TYPE": "POSTGRES", "ALL_OPEN_MODE": "false"},
+}
+
+
+def with_db(app, **fields):
+    db = {**app["resources"]["databases"][0], **fields}
+    return {**app, "resources": {**app["resources"], "databases": [db]}}
+
 
 def generate(app):
     return gen.generate(dict(app), ACCOUNT, REGION, REF)
@@ -178,6 +196,92 @@ class AuthFeaturesTest(unittest.TestCase):
         self.assertIn('"http://localhost:3000/"', generate(app)["main.tf"])
 
 
+class AdoptTest(unittest.TestCase):
+    def assertRejected(self, app, fragment):
+        with self.assertRaises(gen.AppYamlError) as cm:
+            generate(app)
+        self.assertIn(fragment, str(cm.exception))
+
+    def test_adopted_database_is_imported_not_created(self):
+        main = generate(MORESLEEP)["main.tf"]
+        self.assertIn('module "rds_main"', main)
+        self.assertIn("//terraform/modules/service-rds-adopted?ref=main", main)
+        self.assertIn('identifier          = "dbmoresleep"', main)
+        self.assertIn('import {\n  to = module.rds_main.aws_db_instance.this\n  id = "dbmoresleep"\n}', main)
+        self.assertNotIn("modules/service-rds?", main)
+
+    def test_adopted_database_defaults_to_deletion_protection(self):
+        self.assertRegex(generate(MORESLEEP)["main.tf"], r"deletion_protection\s+= true")
+        main = generate(with_db(MORESLEEP, deletion_protection=False))["main.tf"]
+        self.assertRegex(main, r"deletion_protection\s+= false")
+
+    def test_backup_retention_is_only_managed_when_set(self):
+        self.assertNotIn("backup_retention_period", generate(MORESLEEP)["main.tf"])
+        main = generate(with_db(MORESLEEP, backup_retention_period=14))["main.tf"]
+        self.assertRegex(main, r"backup_retention_period\s+= 14")
+
+    def test_adopted_database_gets_no_task_role_policy(self):
+        main = generate(MORESLEEP)["main.tf"]
+        self.assertNotIn("module.rds_main.access_policy_json", main)
+
+    def test_host_and_port_env_are_wired(self):
+        main = generate(MORESLEEP)["main.tf"]
+        self.assertRegex(main, r"DBHOST\s+= module.rds_main.address")
+        self.assertRegex(main, r"DBPORT\s+= module.rds_main.port")
+
+    def test_host_env_works_for_created_postgres_too(self):
+        app = with_db(MORESLEEP, adopt=None, host_env="PGHOST", env="DATABASE_URL")
+        app["resources"]["databases"][0].pop("adopt")
+        main = generate(app)["main.tf"]
+        self.assertIn("modules/service-rds?ref=main", main)
+        self.assertRegex(main, r"PGHOST\s+= module.rds_main.address")
+        self.assertRegex(main, r"DATABASE_URL\s+= module.rds_main.endpoint")
+        self.assertNotIn("import {", main)
+
+    def test_adopt_rejects_fields_mirrored_from_the_live_instance(self):
+        for field, value in (("instance_class", "db.t4g.small"), ("allocated_storage", 50),
+                             ("engine_version", "17"), ("multi_az", True)):
+            self.assertRejected(with_db(MORESLEEP, **{field: value}), "cannot be set with adopt")
+
+    def test_adopt_is_postgres_only(self):
+        app = with_db(MORESLEEP, engine="dynamodb")
+        for key in ("host_env", "port_env"):
+            app["resources"]["databases"][0].pop(key)
+        self.assertRejected(app, "adopt: only supported for engine: postgres")
+
+    def test_adopt_needs_a_valid_identifier(self):
+        self.assertRejected(with_db(MORESLEEP, adopt="db_more sleep"), "not an RDS DB instance identifier")
+
+    def test_host_env_is_postgres_only_and_a_valid_name(self):
+        self.assertRejected(with_db(MORESLEEP, engine="dynamodb", adopt=None), "only supported for engine: postgres")
+        self.assertRejected(with_db(MORESLEEP, host_env="DB-HOST"), "not a valid variable name")
+
+    def test_adopt_dns_takes_over_the_existing_record(self):
+        main = generate(MORESLEEP)["main.tf"]
+        self.assertRegex(main, r"allow_dns_overwrite\s+= true")
+        self.assertIn('module.platform.route53_zone_ids["javazone.no"]', main)
+
+    def test_without_adopt_dns_routing_output_is_unchanged(self):
+        self.assertNotIn("allow_dns_overwrite", generate(CUPCAKE)["main.tf"])
+
+    def test_adopting_a_database_needs_platform_approval(self):
+        self.assertRejected(with_db(MORESLEEP, adopt="dbcakeredux"), "not approved to adopt 'dbcakeredux'")
+        other_team = {**MORESLEEP, "team": "cupcake", "routing": {"host": "x.javazone.no", "priority": 120}}
+        self.assertRejected(other_team, "team 'cupcake' is not approved to adopt 'dbmoresleep'")
+
+    def test_adopting_a_dns_record_needs_platform_approval(self):
+        app = {**MORESLEEP, "routing": {**MORESLEEP["routing"], "host": "submit.javazone.no"}}
+        self.assertRejected(app, "routing.adopt_dns: team 'moresleep' is not approved to adopt 'submit.javazone.no'")
+
+    def test_unapproved_host_is_fine_without_adopt_dns(self):
+        routing = {"host": "submit.javazone.no", "priority": 120}
+        self.assertNotIn("allow_dns_overwrite", generate({**MORESLEEP, "routing": routing})["main.tf"])
+
+    def test_adopt_dns_must_be_a_bool(self):
+        app = {**MORESLEEP, "routing": {**MORESLEEP["routing"], "adopt_dns": "yes"}}
+        self.assertRejected(app, "routing.adopt_dns must be true or false")
+
+
 @unittest.skipUnless(shutil.which("terraform"), "terraform not installed")
 class FmtTest(unittest.TestCase):
     """tf-plan runs `terraform fmt -check`; generated files must pass it."""
@@ -185,7 +289,7 @@ class FmtTest(unittest.TestCase):
     def test_generated_files_are_fmt_clean(self):
         public = {**FROSTING, "auth": {"pool": "internal", "client": "public", "groups": ["helter"],
                                        "env": {"COGNITO_CLIENT_ID": "NUXT_PUBLIC_OIDC_CLIENT_ID"}}}
-        for app in (CUPCAKE, FROSTING, FULL, public, {"name": "worker", "team": "core"}):
+        for app in (CUPCAKE, FROSTING, FULL, MORESLEEP, public, {"name": "worker", "team": "core"}):
             with tempfile.TemporaryDirectory() as d:
                 for name, content in generate(app).items():
                     with open(os.path.join(d, name), "w") as f:

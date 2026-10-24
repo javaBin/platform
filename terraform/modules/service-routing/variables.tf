@@ -71,3 +71,9 @@ variable "deregistration_delay" {
   type        = number
   default     = 30
 }
+
+variable "allow_dns_overwrite" {
+  description = "Take over an existing A record for host_header (Route53 UPSERT) instead of failing because it exists"
+  type        = bool
+  default     = false
+}

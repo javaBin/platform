@@ -107,11 +107,13 @@ routing:
   host: moresleep.javazone.no  # required if routing is specified; also java.no / javabin.no
   priority: 100                # required, unique 1-50000
   deregistration_delay: 30     # default: 30 (seconds)
+  adopt_dns: false             # default: false — take over an existing record for host
 ```
 
 - `host` must be exactly one label under `javazone.no`, `java.no` or `javabin.no` (e.g. `moresleep.javazone.no`, `medlem.java.no`, `styret.javabin.no`). Those are the domains with a wildcard cert on the platform ALB; deeper names like `a.b.java.no` are rejected because the wildcard cert does not cover them.
 - `host` creates a Route53 A record (in the zone matching the host's domain) pointing to the platform ALB and an ALB listener rule matching the Host header.
 - `priority` determines listener rule evaluation order. Must be unique across all apps. Coordinate via the registry.
+- `adopt_dns: true` takes over an A record for `host` that already exists (for example a hand-made record of an app moving onto the platform). It must be approved first: the host has to be listed for your team in `ADOPTIONS` in `scripts/registry.py` (a javaBin/platform PR), otherwise generation fails. Route53 records are not protected by team permissions, so this is what stops one team from taking over a hostname another app serves. Without `adopt_dns`, the apply fails because the record exists. With it, Route53 overwrites the record (UPSERT) to point at the platform ALB, and from then on Terraform manages it. The plan shows the record as a *create*. Changing `host` later replaces the record, and removing routing deletes it, as for any managed record. See [Adopting existing resources](#adopting-existing-resources).
 
 ### resources
 
@@ -148,12 +150,39 @@ resources:
       backup_retention_period: 7    # days, RDS only, default: 7
       multi_az: false               # RDS only, default: false
       deletion_protection: true     # RDS only, default: true
-      env: DATABASE_URL
+      env: DATABASE_URL             # host:port
+      host_env: DB_HOST             # optional, postgres only: hostname alone
+      port_env: DB_PORT             # optional, postgres only: port alone
 ```
 
 DynamoDB and PostgreSQL entries can coexist in the same `databases` list. Entries without `engine` (or with `engine: dynamodb`) use the DynamoDB module. Entries with `engine: postgres` or `engine: postgresql` use the RDS module.
 
 RDS instances generate a master password at creation time, stored in SSM Parameter Store at `/{project}/apps/{name}/db-master-password`. The ECS task role automatically receives IAM policies for `rds-db:connect` and `ssm:GetParameter` on the password parameter.
+
+`env` gets the endpoint as `host:port`. Apps that read host and port separately use `host_env` and `port_env` (PostgreSQL only, created or adopted).
+
+##### Adopting an existing PostgreSQL instance
+
+An app that moves onto the platform can keep its existing RDS instance instead of getting a new one:
+
+```yaml
+resources:
+  databases:
+    - name: main
+      engine: postgres
+      adopt: dbmoresleep            # DB instance identifier of the existing instance
+      host_env: DBHOST
+      port_env: DBPORT
+      deletion_protection: true     # default: true
+      backup_retention_period: 14   # optional; unset = keep the instance's current value
+```
+
+- The generated `main.tf` gets an `import {}` block, and the instance is imported into the app's Terraform state on the first apply. Nothing is created or moved. Once the instance is in state, Terraform skips the block, so it stays in the generated file.
+- The `service-rds-adopted` module manages only tags, `deletion_protection` and (when set) `backup_retention_period`. Engine, version, class, storage, network placement, security groups, parameter group, password and monitoring stay as they are in AWS; `instance_class`, `allocated_storage`, `engine_version` and `multi_az` are rejected with `adopt`. The first plan shows `1 to import`, an in-place update of tags and deletion protection, one `random_id` (the suffix of the final snapshot name), and nothing replaced.
+- The app keeps connecting the way it did, with its own credentials (put them in `secrets:`). No IAM policy or platform-managed password is added.
+- The instance has `prevent_destroy`. To stop managing it without deleting it, add a hand-written file next to the generated ones, e.g. `terraform/release-db.tf`, with `removed { from = module.rds_main.aws_db_instance.this  lifecycle { destroy = false } }`, and remove the entry from `app.yaml` in the same change.
+- Approval: each adoption is approved in a javaBin/platform PR that lists the identifier for your team in `ADOPTIONS` in `scripts/registry.py`; without it generation fails. Legacy instances are often untagged, and the team permission boundary only protects resources tagged with another team, so an unapproved `adopt` could take over (and tag away) another team's database. After the first apply the instance carries `team=<team>`.
+- Network: platform tasks run in the platform VPC's private subnets and reach the internet through its NAT gateway (all database traffic then pays NAT data processing). An adopted instance in another VPC must be reachable from there. If that means a public endpoint, its security group should allow only the NAT address (and any legacy clients that still need it), never `0.0.0.0/0`. The platform does not change its security group, so tighten it yourself.
 
 #### secrets
 
