@@ -7,8 +7,11 @@
 #   Glue database       Catalog for CUR data
 #   Glue crawler        Auto-discovers CUR Parquet schema daily
 #   Athena workgroup    Scoped workgroup for cost queries
-#   Billing alarm       CloudWatch alarm on EstimatedCharges (~4-6h delay)
-#   Account budget      Monthly budget with notifications at 80% and 100%
+#   Account budget      Monthly budget: forecast >100%, actual >100%, actual >150%
+#
+# There is no CloudWatch EstimatedCharges alarm: the AWS/Billing metric is not
+# enabled for this account (alarm sat in INSUFFICIENT_DATA from 2026-03 until it
+# was removed). The budget's FORECASTED notification is the early warning.
 ################################################################################
 
 terraform {
@@ -285,40 +288,6 @@ resource "aws_athena_workgroup" "cur" {
 }
 
 ################################################################################
-# Billing protection — CloudWatch billing alarm (us-east-1)
-################################################################################
-
-# SNS topic in us-east-1 — CloudWatch billing alarms can only target same-region SNS.
-# A Lambda forwarder (us-east-1 → eu-central-1) can be added later for Slack integration.
-# For now, the budget notifications below go directly to the main alerts topic.
-resource "aws_sns_topic" "billing_alarm" {
-  provider = aws.us_east_1
-  name     = "${var.project}-billing-alarm"
-}
-
-resource "aws_cloudwatch_metric_alarm" "billing" {
-  provider = aws.us_east_1
-
-  alarm_name          = "${var.project}-billing-alarm"
-  alarm_description   = "Account estimated charges exceeded $${var.billing_alarm_threshold_usd}"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 1
-  metric_name         = "EstimatedCharges"
-  namespace           = "AWS/Billing"
-  period              = 21600 # 6 hours
-  statistic           = "Maximum"
-  threshold           = var.billing_alarm_threshold_usd
-  treat_missing_data  = "missing"
-
-  dimensions = {
-    Currency = "USD"
-  }
-
-  alarm_actions = [aws_sns_topic.billing_alarm.arn]
-  ok_actions    = [aws_sns_topic.billing_alarm.arn]
-}
-
-################################################################################
 # Billing protection — account-level AWS Budget (notifications only)
 ################################################################################
 
@@ -329,20 +298,29 @@ resource "aws_budgets_budget" "account" {
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 
-  # 80% warning
+  # Early warning: AWS forecasts the month will end above the budget.
   notification {
     comparison_operator       = "GREATER_THAN"
-    notification_type         = "ACTUAL"
-    threshold                 = 80
+    notification_type         = "FORECASTED"
+    threshold                 = 100
     threshold_type            = "PERCENTAGE"
     subscriber_sns_topic_arns = [var.alerts_topic_arn]
   }
 
-  # 100% critical
+  # Budget exceeded.
   notification {
     comparison_operator       = "GREATER_THAN"
     notification_type         = "ACTUAL"
     threshold                 = 100
+    threshold_type            = "PERCENTAGE"
+    subscriber_sns_topic_arns = [var.alerts_topic_arn]
+  }
+
+  # Critical: spend is 50% over budget. Something is running away.
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    notification_type         = "ACTUAL"
+    threshold                 = 150
     threshold_type            = "PERCENTAGE"
     subscriber_sns_topic_arns = [var.alerts_topic_arn]
   }

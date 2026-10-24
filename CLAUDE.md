@@ -82,6 +82,7 @@ Migration happens later per-app at developer's pace — apps move from old ALB/E
 | `docs/org-runbook.md` | AWS Organizations setup procedure |
 | `docs/cognito-google-setup.md` | Cognito + Google Workspace IdP setup |
 | `docs/apply-gate.md` | Apply gate: credential broker, HMAC overrides, security model |
+| `docs/cost-management.md` | Budgets, anomaly detection, cost-allocation tags, CUR, Config recording, log retention |
 
 ### Terraform — Platform (CI-applied)
 ```
@@ -223,6 +224,8 @@ EventBridge ──► javabin-security SNS ──► slack-alert Lambda:
   IAM / resource / login events   ──► #javabin-infra-alerts
 Cost Anomaly ──► javabin-alerts SNS ──► slack-alert Lambda ──► #javabin-cost-alerts
 
+Account budget (FORECASTED >100%, ACTUAL >100%) ──► javabin-alerts SNS ──► #javabin-cost-alerts
+
 Scheduled:
   Monday 08:00 UTC ──► cost-report ──► #javabin-cost-alerts
   Monday 08:00 UTC ──► securityhub-summary ──► #platform-security-alerts
@@ -301,7 +304,7 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 - **App databases share one network path**: service-rds allows ingress from the shared ECS tasks SG, so every team's tasks can reach every team's DB port (password still required). Fix: per-app security groups
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
 - **`registered_app_repos` manually managed**: Being replaced with team-scoped IAM roles (repo→team resolved via GitHub API at runtime)
-- **Cost allocation tags pending activation**: `repo`, `created-by`, `commit` tags need activation in Billing console (requires billing data to appear first)
+- **Cost allocation tags**: `team`, `service`, `environment`, `managed-by`, `repo` are active (Terraform). `created-by` and `commit` stay inactive on purpose (no cost signal)
 - **Platform-test-app naming migration**: Existing resources have old `javabin-` prefix names, needs state migration to `{team}-{service}` naming
 
 ## Agent Guidelines

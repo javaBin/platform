@@ -75,7 +75,8 @@ SNS topics, EventBridge rules, Config, GuardDuty, Security Hub.
 | `javabin-alerts` SNS | Cost anomalies, budgets |
 | `javabin-security` SNS | IAM changes, GuardDuty, Config, Security Hub |
 | EventBridge rules | IAM key creation, root login, console sign-in, resource creation |
-| AWS Config | Configuration recorder + S3 delivery |
+| AWS Config | Configuration recorder (ENIs excluded, VPC/Subnet daily) + S3 delivery (730-day expiry) |
+| Cost Anomaly Detection | SERVICE monitor, >= $10 impact → `javabin-alerts` |
 | GuardDuty | Threat detection |
 | Security Hub | Findings aggregation |
 | `javabin-alert-dedup` DynamoDB | Deduplication table used by slack-alert Lambda |
