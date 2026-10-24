@@ -100,6 +100,14 @@ resource "aws_ecs_service" "this" {
     }
   }
 
+  # Cloud Map registration (app-network), so peers reach the tasks privately
+  dynamic "service_registries" {
+    for_each = var.service_registry_arns
+    content {
+      registry_arn = service_registries.value
+    }
+  }
+
   # Roll back a deployment whose tasks never become healthy, instead of
   # leaving ecs-deploy waiting for services-stable to time out.
   deployment_circuit_breaker {

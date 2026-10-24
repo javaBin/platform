@@ -66,7 +66,14 @@ SCHEMA = {
     "auth": {"pool", "client", "callback_urls", "logout_urls", "scopes", "groups", "env"},
     "environment": None,
     "alarms": {"enabled", "cpu_threshold", "memory_threshold", "error_5xx_threshold"},
+    "calls": None,
+    "provides": {"scopes", "consumers"},
 }
+
+# App-to-app calls (see docs/app-yaml-reference.md#app-to-app-calls)
+CALL_SCHEMA = {"app", "team", "scopes", "env"}
+CONSUMER_SCHEMA = {"app", "team", "scopes"}
+MAX_CALLS, MAX_CONSUMERS, MAX_SCOPES = 20, 50, 25
 
 RESOURCE_SCHEMA = {
     "buckets": {"name", "env", "versioning", "expire_days"},
@@ -91,6 +98,12 @@ TEAM_RE = re.compile(r"^[a-z]{1,12}$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 HOST_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+# Cognito scope names may not contain "/", quotes, backslashes or spaces
+SCOPE_RE = re.compile(r"^[a-z][a-z0-9._-]{0,39}$")
+
+# Injected when the app calls a peer with scopes / provides scopes
+PEER_CALLER_AUTH_ENV = ("PEER_AUTH_TOKEN_URL", "PEER_AUTH_CLIENT_ID", "PEER_AUTH_CLIENT_SECRET")
+PEER_CALLEE_AUTH_ENV = ("PEER_AUTH_ISSUER", "PEER_AUTH_JWKS_URL", "PEER_AUTH_SCOPE_PREFIX")
 
 
 def host_zone(host):
@@ -160,6 +173,116 @@ def validate(app):
                 raise AppYamlError(f"environment: {k!r} is not a valid variable name")
             if isinstance(v, (dict, list)):
                 raise AppYamlError(f"environment.{k}: values must be strings, numbers or booleans")
+
+    parse_peers(app)
+
+
+def _scope_list(section, value, allowed=None):
+    """A list of unique scope names; each must be in `allowed` when given."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(s, str) for s in value):
+        raise AppYamlError(f"{section}: expected a list of scope names")
+    for s in value:
+        if not SCOPE_RE.match(s):
+            raise AppYamlError(
+                f"{section}: {s!r} is not a valid scope name "
+                "(lowercase letters, digits, '.', '_' and '-', max 40 chars)"
+            )
+        if allowed is not None and s not in allowed:
+            raise AppYamlError(f"{section}: {s!r} is not listed in provides.scopes")
+    if len(set(value)) != len(value):
+        raise AppYamlError(f"{section}: duplicate scope names")
+    return list(value)
+
+
+def _peer_ref(section, item, own_team):
+    """Resolve {app, team?} to (team, app)."""
+    peer_app, peer_team = item.get("app"), item.get("team", own_team)
+    if not NAME_RE.match(str(peer_app or "")):
+        raise AppYamlError(f"{section}.app: {peer_app!r} must be an app name (lowercase letters, digits, hyphens)")
+    if not TEAM_RE.match(str(peer_team or "")):
+        raise AppYamlError(f"{section}.team: {peer_team!r} must be a team name (lowercase letters)")
+    return peer_team, peer_app
+
+
+def peer_env_names(peer_app, env=None):
+    """(URL variable, scopes variable) for a call."""
+    url_env = env or f"{peer_app.upper().replace('-', '_')}_URL"
+    scopes_env = url_env[:-len("_URL")] + "_SCOPES" if url_env.endswith("_URL") else f"{url_env}_SCOPES"
+    return url_env, scopes_env
+
+
+def parse_peers(app):
+    """Validate and normalise `calls:` and `provides:`.
+
+    Returns (calls, provides_scopes, consumers):
+      calls:           [{team, app, key: "team/app", scopes, url_env, scopes_env}]
+      provides_scopes: {scope: description}
+      consumers:       {"team/app": [scope, ...]}
+    """
+    own = (app.get("team"), app.get("name"))
+
+    calls, seen = [], set()
+    raw_calls = app.get("calls")
+    if raw_calls is not None:
+        if not isinstance(raw_calls, list):
+            raise AppYamlError("calls: expected a list of {app, team, scopes, env}")
+        if len(raw_calls) > MAX_CALLS:
+            raise AppYamlError(f"calls: at most {MAX_CALLS} entries")
+        for i, item in enumerate(raw_calls):
+            section = f"calls[{i}]"
+            _check_keys(section, item, CALL_SCHEMA)
+            ref = _peer_ref(section, item, own[0])
+            if ref == own:
+                raise AppYamlError(f"{section}: an app cannot call itself")
+            if ref in seen:
+                raise AppYamlError(f"{section}: {ref[0]}/{ref[1]} is listed twice")
+            seen.add(ref)
+            if item.get("env") is not None and not ENV_RE.match(str(item["env"])):
+                raise AppYamlError(f"{section}.env: {item['env']!r} is not a valid variable name")
+            url_env, scopes_env = peer_env_names(ref[1], item.get("env"))
+            calls.append({
+                "team": ref[0], "app": ref[1], "key": f"{ref[0]}/{ref[1]}",
+                "scopes": _scope_list(f"{section}.scopes", item.get("scopes")),
+                "url_env": url_env, "scopes_env": scopes_env,
+            })
+
+    provides = app.get("provides")
+    provides_scopes, consumers = {}, {}
+    if provides is not None:
+        _check_keys("provides", provides, SCHEMA["provides"])
+        raw_scopes = provides.get("scopes")
+        if isinstance(raw_scopes, list):
+            raw_scopes = {s: s for s in _scope_list("provides.scopes", raw_scopes)}
+        if raw_scopes is not None:
+            if not isinstance(raw_scopes, dict):
+                raise AppYamlError("provides.scopes: expected a mapping of scope: description (or a list of names)")
+            if len(raw_scopes) > MAX_SCOPES:
+                raise AppYamlError(f"provides.scopes: at most {MAX_SCOPES} scopes")
+            for s, desc in raw_scopes.items():
+                _scope_list("provides.scopes", [s])
+                if not isinstance(desc, str) or not 1 <= len(desc) <= 256:
+                    raise AppYamlError(f"provides.scopes.{s}: description must be a string of 1-256 characters")
+                provides_scopes[s] = desc
+
+        raw_consumers = provides.get("consumers") or []
+        if not isinstance(raw_consumers, list):
+            raise AppYamlError("provides.consumers: expected a list of {app, team, scopes}")
+        if len(raw_consumers) > MAX_CONSUMERS:
+            raise AppYamlError(f"provides.consumers: at most {MAX_CONSUMERS} entries")
+        for i, item in enumerate(raw_consumers):
+            section = f"provides.consumers[{i}]"
+            _check_keys(section, item, CONSUMER_SCHEMA)
+            ref = _peer_ref(section, item, own[0])
+            if ref == own:
+                raise AppYamlError(f"{section}: an app cannot consume itself")
+            key = f"{ref[0]}/{ref[1]}"
+            if key in consumers:
+                raise AppYamlError(f"{section}: {key} is listed twice")
+            consumers[key] = _scope_list(f"{section}.scopes", item.get("scopes"), allowed=provides_scopes)
+
+    return calls, provides_scopes, consumers
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +436,25 @@ def generate(app, account_id, region, platform_ref):
             "deregistration_delay": routing.get("deregistration_delay", 30),
         }))
 
+    # Per-app network: own security group, Cloud Map registration and the
+    # app-to-app request read by the platform app-peers-sync Lambda (always).
+    calls, provides_scopes, consumers = parse_peers(app)
+    network_attrs = {
+        "name": name,
+        "team": team,
+        "project": PROJECT,
+        "vpc_id": Ref("module.platform.vpc_id"),
+        "port": compute.get("port", 8000),
+        "alb_ingress": bool(routing.get("host")),
+    }
+    if calls:
+        network_attrs["calls"] = {c["key"]: c["scopes"] for c in calls}
+    if provides_scopes:
+        network_attrs["provides_scopes"] = provides_scopes
+    if consumers:
+        network_attrs["consumers"] = consumers
+    blocks.append(module_block("network", src("app-network"), network_attrs))
+
     # Collection modules (buckets, databases, secrets, queues)
     policy_map = {}  # name -> module output ref for access_policy_json
     env_map = {}     # env var name -> module output ref
@@ -347,7 +489,7 @@ def generate(app, account_id, region, platform_ref):
                 "allocated_storage": db.get("allocated_storage", 20),
                 "subnet_ids": Ref("module.platform.private_subnet_ids"),
                 "vpc_id": Ref("module.platform.vpc_id"),
-                "allowed_security_group_ids": Ref("[module.platform.ecs_tasks_security_group_id]"),
+                "allowed_security_group_ids": Ref("[module.network.security_group_id]"),
                 "backup_retention_period": db.get("backup_retention_period", 7),
                 "multi_az": db.get("multi_az", False),
                 "deletion_protection": db.get("deletion_protection", True),
@@ -480,6 +622,42 @@ def generate(app, account_id, region, platform_ref):
         env_map.update(auth_env)
         secret_map.update(auth_secrets)
 
+    # App-to-app env: the peer URL (a parameter, since the callee's port lives
+    # in another team's state), the scopes actually granted (a parameter too:
+    # Cognito refuses the whole token if one requested scope is not granted,
+    # and a change restarts the caller through app-secret-rollout), and M2M creds.
+    peer_env, peer_secrets = {}, {}
+    peer_names = [n for c in calls for n in (c["url_env"], c["scopes_env"] if c["scopes"] else None) if n]
+    for c in calls:
+        peer_secrets[c["url_env"]] = Ref(f'module.network.peer_url_arns["{c["key"]}"]')
+        if c["scopes"]:
+            peer_secrets[c["scopes_env"]] = Ref(f'module.network.peer_scopes_arns["{c["key"]}"]')
+    if any(c["scopes"] for c in calls):
+        peer_env["PEER_AUTH_TOKEN_URL"] = Ref("module.network.token_url")
+        peer_secrets["PEER_AUTH_CLIENT_ID"] = Ref("module.network.m2m_client_id_arn")
+        peer_secrets["PEER_AUTH_CLIENT_SECRET"] = Ref("module.network.m2m_client_secret_arn")
+    if provides_scopes:
+        peer_env["PEER_AUTH_ISSUER"] = Ref("module.network.issuer_url")
+        peer_env["PEER_AUTH_JWKS_URL"] = Ref("module.network.jwks_url")
+        peer_env["PEER_AUTH_SCOPE_PREFIX"] = f"{team}-{name}/"
+
+    if any(c["scopes"] for c in calls):
+        peer_names += PEER_CALLER_AUTH_ENV
+    if provides_scopes:
+        peer_names += PEER_CALLEE_AUTH_ENV
+    if len(set(peer_names)) != len(peer_names):
+        dup = sorted({n for n in peer_names if peer_names.count(n) > 1})
+        raise AppYamlError(f"calls: variable name(s) {', '.join(dup)} used twice — set env: on the calls")
+    taken = {*(app.get("environment") or {}), *env_map, *secret_map}
+    clash = sorted(set(peer_names) & taken)
+    if clash:
+        raise AppYamlError(
+            f"calls/provides: {', '.join(clash)} is injected by the platform but also set by "
+            "environment:, resources or auth — remove it there or set env: on the call"
+        )
+    env_map.update(peer_env)
+    secret_map.update(peer_secrets)
+
     # Task role (always)
     blocks.append(module_block("task_role", src("service-role"), {
         "name": name,
@@ -510,7 +688,8 @@ def generate(app, account_id, region, platform_ref):
         "execution_role_arn": Ref("module.platform.execution_role_arn"),
         "task_role_arn": Ref("module.task_role.role_arn"),
         "subnet_ids": Ref("module.platform.private_subnet_ids"),
-        "security_group_ids": Ref("[module.platform.ecs_tasks_security_group_id]"),
+        "security_group_ids": Ref("[module.network.security_group_id]"),
+        "service_registry_arns": Ref("[module.network.registry_arn]"),
         "region": region,
         "container_user": str(compute.get("user", "1000")),
         "readonly_root_filesystem": compute.get("readonly_root_filesystem", True),

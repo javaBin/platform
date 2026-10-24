@@ -143,3 +143,25 @@ variable "atlassian_sync_apply" {
   type        = bool
   default     = false
 }
+
+# --- App-to-app (app-peers-sync) ---
+
+variable "vpc_id" {
+  description = "Platform VPC ID (app-peers-sync only edits app security groups in it)"
+  type        = string
+}
+
+variable "vpc_arn" {
+  description = "Platform VPC ARN (IAM condition for app-peers-sync security group edits)"
+  type        = string
+}
+
+variable "service_discovery_namespace_id" {
+  description = "Private app-to-app Cloud Map namespace ID (audited by app-peers-sync)"
+  type        = string
+}
+
+variable "service_discovery_zone_id" {
+  description = "Route53 private zone of the app-to-app namespace (app-peers-sync audits its records)"
+  type        = string
+}

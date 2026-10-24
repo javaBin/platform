@@ -86,10 +86,11 @@ locals {
         Action = [
           "ec2:CreateVpc", "ec2:DeleteVpc", "ec2:ModifyVpcAttribute",
           "ec2:CreateSubnet", "ec2:DeleteSubnet",
-          "ec2:CreateInternetGateway", "ec2:DeleteInternetGateway",
-          "ec2:AttachInternetGateway", "ec2:DetachInternetGateway",
-          "ec2:CreateNatGateway", "ec2:DeleteNatGateway",
-          "ec2:CreateRouteTable", "ec2:DeleteRouteTable"
+          # Create/Delete/Attach/Detach (also egress-only IGWs); saves bytes
+          "ec2:*InternetGateway", "ec2:*NatGateway",
+          "ec2:CreateRouteTable", "ec2:DeleteRouteTable",
+          # Teams only write records; zones are platform-managed
+          "route53:DeleteHostedZone",
         ]
         Resource = "*"
       },
@@ -106,12 +107,13 @@ locals {
           "s3:PutBucketVersioning", "s3:PutEncryptionConfiguration",
           "dynamodb:DeleteTable", "dynamodb:UpdateTable"
         ]
+        # Single-region account: *:* region/account saves bytes
         Resource = [
-          "arn:aws:ecs:${var.region}:${var.aws_account_id}:cluster/${var.project}-platform",
-          "arn:aws:elasticloadbalancing:${var.region}:${var.aws_account_id}:loadbalancer/app/${var.project}-*",
+          "arn:aws:ecs:*:*:cluster/${var.project}-platform",
+          "arn:aws:elasticloadbalancing:*:*:loadbalancer/app/${var.project}-*",
           "arn:aws:s3:::${var.project}-terraform-*",
           "arn:aws:s3:::${var.project}-ci-*",
-          "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/${var.project}-terraform-*",
+          "arn:aws:dynamodb:*:*:table/${var.project}-terraform-*",
         ]
       },
       {
@@ -149,9 +151,11 @@ locals {
           "ecs:DeleteCluster", "ecs:UpdateCluster", "ecs:UpdateClusterSettings",
           "iam:DeleteRole", "iam:UpdateRole", "iam:DeleteRolePolicy", "iam:UpdateAssumeRolePolicy",
           "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy",
-          "route53:DeleteHostedZone", "sns:DeleteTopic", "sns:SetTopicAttributes",
+          "sns:DeleteTopic", "sns:SetTopicAttributes",
           # Shared SGs (ECS tasks, ALB): a team rule here opens or cuts every app
           "ec2:AuthorizeSecurityGroup*", "ec2:RevokeSecurityGroup*",
+          # Shared Cloud Map namespace for app-to-app DNS
+          "servicediscovery:Delete*",
         ]
         Resource  = "*"
         Condition = { StringEquals = { "aws:ResourceTag/team" = "shared" } }
@@ -167,6 +171,7 @@ locals {
           "elasticloadbalancing:AddTags", "elasticloadbalancing:RemoveTags",
           "iam:TagRole", "iam:UntagRole",
           "sns:TagResource", "sns:UntagResource",
+          "servicediscovery:TagResource", "servicediscovery:UntagResource",
         ]
         Resource  = "*"
         Condition = { StringEquals = { "aws:ResourceTag/team" = ["shared", "platform"] } }
@@ -252,6 +257,17 @@ locals {
           "arn:aws:events:*:*:rule/$${aws:PrincipalTag/team}-*",
           "arn:aws:states:*:*:stateMachine:$${aws:PrincipalTag/team}-*",
         ]
+      },
+      # -- APP-TO-APP DNS (last, so plan diffs show an append) --
+      {
+        # App-to-app private zone: only Cloud Map (its service role) writes it.
+        # Route53 ignores tag conditions, hence the record-name condition; the
+        # last VPC of a private zone cannot be disassociated.
+        Sid       = "DenyAppDNS"
+        Effect    = "Deny"
+        Action    = "route53:ChangeResourceRecordSets"
+        Resource  = "*"
+        Condition = { "ForAnyValue:StringLike" = { "route53:ChangeResourceRecordSetsNormalizedRecordNames" = "*${var.project}.internal" } }
       },
     ]
   })
