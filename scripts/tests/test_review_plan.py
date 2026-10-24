@@ -110,9 +110,62 @@ class ReviewPlanTest(unittest.TestCase):
 
     def test_prompt_warns_about_hidden_unchanged_attributes(self):
         prompt = sent_prompt(plan(1))
-        self.assertIn("hides unchanged", prompt)
+        self.assertIn("shows only the\n  changed attributes", prompt)
         self.assertIn("Deny", prompt)
 
+
+    def test_complete_plan_is_declared_complete_with_its_change_count(self):
+        prompt = sent_prompt(plan(7))
+        self.assertIn("COMPLETE PLAN", prompt)
+        self.assertIn("all 7 resource change headers", prompt)
+        self.assertIn("(Plan: 0 to add, 7 to change, 0 to destroy.)", prompt)
+        self.assertIn("do not say the plan is truncated", prompt)
+
+    def test_oversized_plan_is_not_declared_complete(self):
+        section = rp.build_plan_section(plan(100, body_lines=20), limit=20_000)
+        self.assertNotIn("COMPLETE PLAN", section)
+        self.assertIn("NOTE: this plan is", section)
+
+    def test_prompt_explains_terraform_elision_markers_are_not_truncation(self):
+        prompt = sent_prompt(plan(1))
+        for marker in ("unchanged attributes hidden", "unchanged blocks hidden", "unchanged elements hidden",
+                       "(sensitive value)", "(known after apply)", "jsonencode"):
+            self.assertIn(marker, prompt)
+        self.assertIn("not truncation", prompt)
+
+    def test_no_input_cap_by_default(self):
+        self.assertIsNone(rp.MAX_PLAN_CHARS)
+        text = plan(20_000)
+        self.assertGreater(len(text), 2_000_000)
+        section = rp.build_plan_section(text)
+        self.assertIn("COMPLETE PLAN", section)
+        self.assertIn("aws_iam_role_policy.p19999 will be updated in-place", section)
+
+    def test_large_destroy_plan_is_sent_whole(self):
+        # PR #135 (2026-10-24): 231 destroys, 830k chars, was cut to 28 changes by the old 400k limit.
+        destroy = "".join(
+            f'  # module.iam.aws_iam_role.ci_deploy["team{i}"] will be destroyed\n'
+            f'  - resource "aws_iam_role" "ci_deploy" {{\n'
+            + "".join(f'      - attr_{j}                = "value-{j}" -> null\n' for j in range(66))
+            + "    }\n" for i in range(231))
+        text = "Terraform will perform the following actions:\n\n" + destroy + \
+            "\nPlan: 0 to add, 0 to change, 231 to destroy.\n"
+        self.assertGreater(len(text), 800_000)
+        section = rp.build_plan_section(text)
+        self.assertIn("COMPLETE PLAN", section)
+        self.assertIn('ci_deploy["team230"] will be destroyed', section)
+        self.assertNotIn("NOTE: this plan is", section)
+
+
+class StopReasonTest(unittest.TestCase):
+    def test_answer_cut_at_max_tokens_is_discarded(self):
+        def converse(messages, tool_config):
+            r = tool_response()
+            r["stopReason"] = "max_tokens"
+            return r
+
+        with mock.patch("sys.stderr"):
+            self.assertIsNone(rp.review_plan(plan(1), converse=converse))
 
 
 class ReviewFeedbackTest(unittest.TestCase):

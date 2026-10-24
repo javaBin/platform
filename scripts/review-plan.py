@@ -21,11 +21,14 @@ import tempfile
 MODEL_ID = "eu.anthropic.claude-haiku-5-5"
 REGION = os.environ.get("AWS_REGION", "eu-central-1")
 
-# Plan characters sent to the model. Haiku 5.5 has a 1M-token context; 400k
-# characters is roughly 100-130k tokens, so a whole plan fits with plenty of
-# room. Plans larger than this get a complete change list plus as much of the
-# diff as fits (see build_plan_section) - never a silent cut.
-MAX_PLAN_CHARS = int(os.environ.get("REVIEW_MAX_PLAN_CHARS", "400000"))
+# No input cap by default: the whole plan goes to the model (Haiku 5.5 has a
+# 1M-token context; plan text is roughly 3-4 characters per token). A fixed
+# character cap is what kept cutting real plans - first 80k, then 400k cut a
+# 231-destroy plan (830k chars; destroy diffs print every attribute) to 28 of
+# its changes. REVIEW_MAX_PLAN_CHARS can still set a cap; a plan above it gets
+# a complete change list plus as much diff as fits (see build_plan_section),
+# never a silent cut.
+MAX_PLAN_CHARS = int(os.environ["REVIEW_MAX_PLAN_CHARS"]) if os.environ.get("REVIEW_MAX_PLAN_CHARS") else None
 
 # State refresh / data source read lines: noise for review purposes. Resource
 # addresses start in column 0; diff content is always indented.
@@ -166,8 +169,16 @@ def build_plan_section(plan_text, limit=MAX_PLAN_CHARS):
     otherwise a complete change list, the diff cut at a resource boundary,
     and an exact statement of what was left out."""
     clean = strip_refresh_noise(plan_text)
-    if len(clean) <= limit:
-        return f"Terraform plan output (complete):\n```\n{clean}\n```"
+    if limit is None or len(clean) <= limit:
+        changes = resource_changes(clean)
+        totals = [line.strip() for line in clean.splitlines() if line.startswith("Plan:")]
+        return ("COMPLETE PLAN: the output below is the entire `terraform plan` output, with only "
+                "state-refresh / data-source read lines removed. Nothing was cut: it contains all "
+                f"{len(changes)} resource change headers"
+                + (f" and Terraform's own summary line ({totals[0]})" if totals else "")
+                + ". Review every change in it, and do not say the plan is truncated, partial or "
+                "incomplete.\n\n"
+                f"Terraform plan output (complete):\n```\n{clean}\n```")
 
     lines = clean.splitlines()
     changes = resource_changes(clean)
@@ -221,12 +232,20 @@ Rate HIGH only for genuinely dangerous changes: destroying databases, opening se
 to the internet, removing permission boundaries, or deleting critical infrastructure.
 Routine changes (Lambda updates, tag changes, scaling) should be LOW.
 
-Reading the diff: Terraform shows only changed attributes and hides unchanged
-ones ("# (N unchanged attributes hidden)"). In a changed IAM policy statement an
-unchanged `Effect` is usually not shown, so do not assume an added action is an
-Allow - it may be a Deny. A Sid such as "Deny*" or "Block*" is a strong hint the
-statement denies. Only call out a permission grant when the plan shows
-`Effect = "Allow"` or the statement is new.
+Reading the diff: Terraform itself elides parts of every plan by design. These
+markers are normal Terraform output, not truncation; on their own they are
+never a reason to say the plan or the review is incomplete:
+- "# (N unchanged attributes hidden)", "# (N unchanged blocks hidden)",
+  "# (N unchanged elements hidden)": for an update, Terraform shows only the
+  changed attributes. The hidden ones are not changing.
+- "(sensitive value)": the value is redacted on purpose.
+- "(known after apply)": the value is computed by AWS during apply.
+- jsonencode(...) policy diffs show only the changed statements and fields, so
+  a changed statement can appear without its Effect, Resource or Sid.
+In a changed IAM policy statement an unchanged `Effect` is usually not shown, so
+do not assume an added action is an Allow - it may be a Deny. A Sid such as
+"Deny*" or "Block*" is a strong hint the statement denies. Only call out a
+permission grant when the plan shows `Effect = "Allow"` or the statement is new.
 
 {build_plan_section(plan_text)}"""
 
@@ -234,6 +253,10 @@ statement denies. Only call out a permission grant when the plan shows
 
     response = converse(messages, REVIEW_TOOL_CONFIG)
     if not response:
+        return None
+    if response.get("stopReason") == "max_tokens":
+        # A cut-off tool call may parse but be missing findings; don't trust it.
+        print("Review stopped at the output token limit; discarding the partial answer.", file=sys.stderr)
         return None
 
     for content in response.get("output", {}).get("message", {}).get("content", []):

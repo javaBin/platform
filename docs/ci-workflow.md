@@ -19,7 +19,8 @@ Monday 08:00   ──► securityhub-summary Lambda ──► #javabin-infra-ale
 - Uploads `tfplan` + `plan-output.txt` to S3 with SHA256 hash
 - Posts plan output as PR comment on pull requests
 - Runs `scripts/review-plan.py` inline — calls Bedrock (Claude Haiku 5.5) for risk analysis
-- The model gets the whole plan with refresh/read lines stripped (up to 400k chars, ~100k tokens). A larger plan gets a list of every resource change plus as much diff as fits, cut at a resource boundary, and the prompt says exactly which diffs are missing. The PR comment's 60k cut does not affect the review.
+- The model gets the whole plan with refresh/read lines stripped; there is no input cap (Haiku 5.5 has a 1M-token context). The prompt says the plan is complete, gives its change count and `Plan:` line, and explains Terraform's own elision markers (`# (N unchanged attributes hidden)`, `(sensitive value)`, `(known after apply)`, partial `jsonencode` diffs) so the model does not report them as truncation. `REVIEW_MAX_PLAN_CHARS` can optionally set a cap: a plan above it gets a list of every resource change plus as much diff as fits, cut at a resource boundary, and the prompt says exactly which diffs are missing. A response with `stopReason: max_tokens` is discarded (FAILED / retried) rather than trusted.
+- The PR comment shows at most 60k chars of the plan (GitHub's comment limit) and says so when it cuts; this does not affect the review.
 - Structured output via Bedrock Converse tool use: `{risk: LOW|MEDIUM|HIGH, summary: ..., findings: [...]}`
 - Posts review as PR comment
 - HIGH risk on main → sends Slack notification
