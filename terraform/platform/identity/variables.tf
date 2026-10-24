@@ -43,3 +43,37 @@ variable "org_boundary_arn" {
   description = "Permissions boundary for roles created here (required by the org boundary)"
   type        = string
 }
+
+# Sign-in IdPs per pool. app-auth-sync puts exactly this list on every app
+# client; with one IdP the hosted UI redirects straight to it. "COGNITO" means
+# local username/password users. Every other name must exist in the pool, or
+# app-auth-sync skips the request (and logs an error) instead of changing it.
+#
+# Internal pool: auth-claims also trusts every IdP in this list to vouch for the
+# user's email (no email_verified check) and looks up registry groups by it. Only
+# list IdPs that release java.no Workspace accounts and nothing else: GoogleSAML
+# does. A Google OIDC IdP qualifies only if its GCP OAuth client is Internal
+# (Workspace-only); otherwise hd= is just a hint and a consumer Google account
+# with an @java.no address would pass. In that case map email_verified/hd and
+# check them in auth-claims before adding the IdP here.
+variable "internal_identity_providers" {
+  description = "Identity providers on internal-pool app clients (GoogleSAML is created outside Terraform)"
+  type        = list(string)
+  default     = ["GoogleSAML"]
+
+  validation {
+    condition     = length(var.internal_identity_providers) > 0 && !contains(var.internal_identity_providers, "COGNITO")
+    error_message = "The internal pool needs at least one federated IdP and must not offer COGNITO (local sign-up)."
+  }
+}
+
+variable "external_identity_providers" {
+  description = "Identity providers on external-pool app clients"
+  type        = list(string)
+  default     = ["COGNITO"]
+
+  validation {
+    condition     = length(var.external_identity_providers) > 0
+    error_message = "The external pool needs at least one identity provider."
+  }
+}

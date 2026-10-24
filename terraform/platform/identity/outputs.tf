@@ -53,3 +53,13 @@ output "auth_memberships_table_arn" {
   description = "ARN of the auth memberships table"
   value       = aws_dynamodb_table.auth_memberships.arn
 }
+
+output "internal_identity_providers" {
+  description = "Sign-in IdPs app-auth-sync puts on internal-pool clients"
+  value       = var.internal_identity_providers
+}
+
+output "external_identity_providers" {
+  description = "Sign-in IdPs app-auth-sync puts on external-pool clients"
+  value       = var.external_identity_providers
+}

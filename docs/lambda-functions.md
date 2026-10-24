@@ -125,7 +125,11 @@ Idempotent: skips resources that already have a `created-by` tag (preserves orig
 **Trigger:** EventBridge "Parameter Store Change" for `/javabin/apps/*/*/auth` (Create/Update/Delete), plus a daily `{"action": "reconcile"}` at 03:30 UTC
 **Purpose:** Creates, updates and deletes the Cognito app clients requested by `app.yaml` `auth:`. The request parameter's path identifies the team (only that team can write there), so no caller-supplied identity is trusted.
 
-**Flow:** Re-read the request → validate (pool, client_type, https/localhost URLs, scopes, allowed_groups) → upsert client `{team}-{app}` in the requested pool with every pool IdP + `COGNITO` (a client_type change replaces the client, since the secret setting is immutable) → remove it from the other pool → write `/javabin/apps/{team}/{app}/cognito-client-id` (String) and, for confidential clients, `cognito-client-secret` (SecureString), tagged `team={team}` → record `allowed_groups` in `javabin-auth-memberships`. A missing request deletes the client and both parameters. Reconcile also removes clients whose credential parameter exists but whose request is gone; clients created by other means are never touched.
+**Flow:** Re-read the request → validate (pool, client_type, https/localhost URLs, scopes, allowed_groups) → upsert client `{team}-{app}` in the requested pool with that pool's fixed sign-in IdP list (a client_type change replaces the client, since the secret setting is immutable) → remove it from the other pool → write `/javabin/apps/{team}/{app}/cognito-client-id` (String) and, for confidential clients, `cognito-client-secret` (SecureString), tagged `team={team}` → record `allowed_groups` in `javabin-auth-memberships`. A missing request deletes the client and both parameters. Reconcile also removes clients whose credential parameter exists but whose request is gone; clients created by other means are never touched.
+
+**Identity providers:** every client in a pool gets exactly the pool's list, from `INTERNAL_IDENTITY_PROVIDERS` / `EXTERNAL_IDENTITY_PROVIDERS` (comma-separated; set from the identity module's `internal_identity_providers` = `["GoogleSAML"]` and `external_identity_providers` = `["COGNITO"]`). With a single IdP the hosted UI redirects straight to it, so internal apps show no password form or sign-up link. Reconcile overwrites console edits to the list. If a configured IdP does not exist in the pool, the request is skipped with an `ERROR` log and status `error` (reconcile lists it under `error`): nothing is created, moved or changed, and the existing client keeps working. The CloudWatch alarm `javabin-app-auth-sync-skipped` (metric filter on `client left unchanged`) posts to `javabin-alerts` when this happens. Internal-pool requests asking for `aws.cognito.signin.user.admin` are rejected as invalid (that scope would let a user rewrite the email auth-claims trusts).
+
+**Environment vars:** `PROJECT`, `MEMBERSHIPS_TABLE`, `INTERNAL_IDENTITY_PROVIDERS`, `EXTERNAL_IDENTITY_PROVIDERS`
 
 **Concurrency:** reserved concurrency 1, so two changes to one app cannot race into duplicate clients.
 
@@ -134,7 +138,11 @@ Idempotent: skips resources that already have a `created-by` tag (preserves orig
 ## auth-claims
 
 **Trigger:** Cognito pre-token-generation (V2) on the internal pool (`javabin-internal`), every sign-in and token refresh
-**Purpose:** Puts the user's registry groups into `cognito:groups` (ID and access token), and refuses sign-in when the app client has `allowed_groups` and the user is in none of them.
+**Purpose:** Refuses tokens for accounts outside the Workspace domain, puts the user's registry groups into `cognito:groups` (ID and access token), and refuses sign-in when the app client has `allowed_groups` and the user is in none of them.
+
+**Domain check:** with `REQUIRED_EMAIL_DOMAIN` set (internal pool: `var.google_workspace_domain`, `java.no`), a token is issued only when the email ends with `@java.no` (case-insensitive) **and** the user signed in through one of `FEDERATED_IDENTITY_PROVIDERS` (the internal pool's IdP list, `GoogleSAML`) or has `email_verified=true`. Federated users are recognised by the `identities` attribute, or by their `<Provider>_` username. Anyone else gets "Sign in with your @java.no account." on the app's callback. Every IdP in that list is trusted to vouch for the email (no `email_verified` check), so it must release only Workspace accounts; see the comment on `internal_identity_providers` before adding one (for example a Google OIDC IdP). A function without `REQUIRED_EMAIL_DOMAIN` skips the check. The internal pool also has self sign-up disabled (`allow_admin_create_user_only`).
+
+**Environment vars:** `MEMBERSHIPS_TABLE`, `REQUIRED_EMAIL_DOMAIN`, `FEDERATED_IDENTITY_PROVIDERS`
 
 **Data:** `javabin-auth-memberships` (DynamoDB). `group#<name>` items (members' emails) are written by team-provisioner on registry merges; `client#<client_id>` items (`allowed_groups`) by app-auth-sync. Memberships are cached for 60 s per container.
 

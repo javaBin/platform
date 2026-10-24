@@ -1682,8 +1682,10 @@ resource "aws_lambda_function" "app_auth_sync" {
 
   environment {
     variables = {
-      PROJECT           = var.project
-      MEMBERSHIPS_TABLE = var.auth_memberships_table_name
+      PROJECT                     = var.project
+      MEMBERSHIPS_TABLE           = var.auth_memberships_table_name
+      INTERNAL_IDENTITY_PROVIDERS = join(",", var.internal_identity_providers)
+      EXTERNAL_IDENTITY_PROVIDERS = join(",", var.external_identity_providers)
     }
   }
 }
@@ -1737,6 +1739,38 @@ resource "aws_lambda_permission" "app_auth_sync_reconcile" {
   function_name = aws_lambda_function.app_auth_sync.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.app_auth_sync_reconcile.arn
+}
+
+# A skipped request (configured IdP missing from the pool) leaves the client
+# unchanged and returns normally, so Lambda's Errors metric does not move. Count
+# the ERROR line instead and post to javabin-alerts, so a missing IdP does not
+# silently freeze every client in the pool.
+resource "aws_cloudwatch_log_metric_filter" "app_auth_sync_skipped" {
+  name           = "${var.project}-app-auth-sync-skipped"
+  log_group_name = "/aws/lambda/${aws_lambda_function.app_auth_sync.function_name}"
+  pattern        = "\"client left unchanged\""
+
+  metric_transformation {
+    name          = "AppAuthSyncSkipped"
+    namespace     = "Javabin/AppAuthSync"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "app_auth_sync_skipped" {
+  alarm_name          = "${var.project}-app-auth-sync-skipped"
+  alarm_description   = "app-auth-sync skipped an app.yaml auth request because a configured identity provider is missing from the pool. See /aws/lambda/${aws_lambda_function.app_auth_sync.function_name}."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = aws_cloudwatch_log_metric_filter.app_auth_sync_skipped.metric_transformation[0].name
+  namespace           = aws_cloudwatch_log_metric_filter.app_auth_sync_skipped.metric_transformation[0].namespace
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [var.alerts_topic_arn]
 }
 
 ################################################################################

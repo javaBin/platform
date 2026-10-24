@@ -15,8 +15,17 @@ At every sign-in and token refresh this trigger:
      refuse the sign-in, so the app never receives a token.
 
 Clients without an entry, or with an empty list, accept any pool user.
+
+When REQUIRED_EMAIL_DOMAIN is set (internal pool only, e.g. java.no), the
+trigger first refuses every user whose email is not @<domain> (case-insensitive)
+or whose address is not vouched for: the user must come from one of
+FEDERATED_IDENTITY_PROVIDERS (the pool's sign-in IdPs, which only release
+Workspace accounts, e.g. GoogleSAML) or have email_verified=true. This is the
+server-side guard against self-registered or foreign-IdP users in the internal
+pool; the IdP's hosted-domain hint is only a UI hint.
 """
 
+import json
 import logging
 import os
 import time
@@ -28,6 +37,9 @@ logger.setLevel(logging.INFO)
 
 TABLE = os.environ.get("MEMBERSHIPS_TABLE", "javabin-auth-memberships")
 CACHE_SECONDS = int(os.environ.get("CACHE_SECONDS", "60"))
+REQUIRED_DOMAIN = os.environ.get("REQUIRED_EMAIL_DOMAIN", "").strip().lower().lstrip("@")
+FEDERATED_IDPS = {p.strip() for p in os.environ.get("FEDERATED_IDENTITY_PROVIDERS", "").split(",")
+                  if p.strip() and p.strip() != "COGNITO"}
 
 dynamodb = boto3.client("dynamodb")
 
@@ -64,14 +76,56 @@ def group_members():
     return _cache["groups"]
 
 
+def _masked(email):
+    """e***@java.no — enough to correlate in logs without storing the address."""
+    if "@" not in email:
+        return "<no email>"
+    local, domain = email.split("@", 1)
+    return f"{local[:1]}***@{domain}"
+
+
 def allowed_groups(client_id):
     item = dynamodb.get_item(TableName=TABLE, Key={"pk": {"S": f"client#{client_id}"}}).get("Item")
     return set(_strings(item.get("allowed_groups"))) if item else set()
 
 
+def _providers(event, attrs):
+    """Names of the federated IdPs this user signed in through (empty for native users)."""
+    names = set()
+    try:
+        identities = json.loads(attrs.get("identities") or "[]")
+    except (TypeError, ValueError):
+        identities = []
+    if isinstance(identities, list):
+        names |= {i.get("providerName") for i in identities if isinstance(i, dict) and i.get("providerName")}
+    # Federated usernames are "<ProviderName>_<id>"; covers events without
+    # identities. Not spoofable: the pool uses email as the sign-in alias, so
+    # Cognito assigns native users a UUID username.
+    user_name = event.get("userName") or ""
+    names |= {p for p in FEDERATED_IDPS if user_name.startswith(p + "_")}
+    return names
+
+
+def domain_allowed(event, attrs, email):
+    """True when the pool has no domain rule, or the user satisfies it."""
+    if not REQUIRED_DOMAIN:
+        return True
+    if not email.endswith("@" + REQUIRED_DOMAIN):
+        return False
+    if _providers(event, attrs) & FEDERATED_IDPS:
+        return True
+    return str(attrs.get("email_verified", "")).lower() == "true"
+
+
 def handler(event, context):
     request = event.get("request", {})
-    email = (request.get("userAttributes", {}).get("email") or "").lower()
+    attrs = request.get("userAttributes") or {}
+    email = (attrs.get("email") or "").lower()
+
+    if not domain_allowed(event, attrs, email):
+        logger.info("Denied %s: not a verified @%s account", _masked(email), REQUIRED_DOMAIN)
+        raise AccessDenied(f"Sign in with your @{REQUIRED_DOMAIN} account.")
+
     client_id = event.get("callerContext", {}).get("clientId", "")
     native = (request.get("groupConfiguration") or {}).get("groupsToOverride") or []
 
@@ -80,7 +134,7 @@ def handler(event, context):
 
     allowed = allowed_groups(client_id) if client_id else set()
     if allowed and not allowed & set(groups):
-        logger.info("Denied %s for client %s: needs one of %s", email or "<no email>", client_id, sorted(allowed))
+        logger.info("Denied %s for client %s: needs one of %s", _masked(email), client_id, sorted(allowed))
         raise AccessDenied("You are not in a group that has access to this app.")
 
     event["response"] = {

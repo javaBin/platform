@@ -138,6 +138,16 @@ variable "auth_memberships_table_arn" {
   type        = string
 }
 
+variable "internal_identity_providers" {
+  description = "Sign-in IdPs app-auth-sync puts on internal-pool app clients"
+  type        = list(string)
+}
+
+variable "external_identity_providers" {
+  description = "Sign-in IdPs app-auth-sync puts on external-pool app clients"
+  type        = list(string)
+}
+
 variable "atlassian_sync_apply" {
   description = "Let team-provisioner write Atlassian group memberships; false = report the plan only"
   type        = bool
