@@ -19,11 +19,46 @@ on:
         description: "Additional Gradle arguments"
         type: string
         default: ""
+      test_postgres_image:
+        description: "PostgreSQL image for a service container on localhost:5432 (e.g. postgres:17). Empty = no database."
+        type: string
+        default: ""
+      test_postgres_db:
+        description: "Database created in the test PostgreSQL container"
+        type: string
+        default: "test"
+      test_postgres_user:
+        description: "User for the test PostgreSQL container"
+        type: string
+        default: "test"
+      test_postgres_password:
+        description: "Password for the test PostgreSQL container (throwaway CI database)"
+        type: string
+        default: "test"
 
 jobs:
   build:
     name: Build JVM
     runs-on: ubuntu-latest
+    # Optional database for tests that need a real PostgreSQL. GitHub skips a
+    # service whose image is an empty string, so this costs nothing when
+    # test_postgres_image is unset. No input is interpolated into `options`
+    # (docker flags); pg_isready needs no user, and 127.0.0.1 skips the
+    # socket-only server the image runs while it initialises.
+    services:
+      postgres:
+        image: ${{ inputs.test_postgres_image }}
+        env:
+          POSTGRES_DB: ${{ inputs.test_postgres_db }}
+          POSTGRES_USER: ${{ inputs.test_postgres_user }}
+          POSTGRES_PASSWORD: ${{ inputs.test_postgres_password }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v6
 
@@ -45,6 +80,35 @@ jobs:
           distribution: temurin
           java-version: ${{ steps.java.outputs.version }}
           cache: ${{ inputs.build_tool }}
+
+      # libpq-style variables, for tests that read their connection from the
+      # environment. Apps with hardcoded test settings can ignore them.
+      - name: Export test PostgreSQL connection
+        if: inputs.test_postgres_image != ''
+        env:
+          PG_DB: ${{ inputs.test_postgres_db }}
+          PG_USER: ${{ inputs.test_postgres_user }}
+          PG_PASSWORD: ${{ inputs.test_postgres_password }}
+        run: |
+          # Plain identifiers only, and no newline in the password: these
+          # values are written to $GITHUB_ENV, one variable per line.
+          for v in "$PG_DB" "$PG_USER"; do
+            if ! printf '%s' "$v" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]{0,62}$'; then
+              echo "::error::test_postgres_db and test_postgres_user must be plain identifiers (letters, digits, _): '$v'"
+              exit 1
+            fi
+          done
+          if [ "$(printf '%s' "$PG_PASSWORD" | wc -l)" -ne 0 ]; then
+            echo "::error::test_postgres_password must not contain a newline"
+            exit 1
+          fi
+          {
+            echo "PGHOST=localhost"
+            echo "PGPORT=5432"
+            echo "PGDATABASE=$PG_DB"
+            echo "PGUSER=$PG_USER"
+            echo "PGPASSWORD=$PG_PASSWORD"
+          } >> "$GITHUB_ENV"
 
       - name: Build and test (Maven)
         if: inputs.build_tool == 'maven'

@@ -9,7 +9,7 @@ Create `.github/workflows/deploy.yml`:
 name: Deploy
 on:
   push:
-    branches: [main]
+    branches: [main]    # your default branch: main or master
   pull_request:
   workflow_dispatch:
 
@@ -44,7 +44,13 @@ detect ──┬─ expand ──── tf-plan ── tf-apply ──┐
 ```
 
 - **PRs:** detect → build → expand (commits generated TF to the PR branch) → tf-plan (plan + LLM review) → PR comment
-- **Main:** detect → build → expand → tf-plan → tf-apply → docker-build → ecs-deploy
+- **Default branch** (push or manual run): detect → build → expand → tf-plan → tf-apply → docker-build → ecs-deploy
+
+Deploy jobs (`tf-apply`, `docker-build`, `ecs-deploy`, `eb-deploy`) run only when
+`github.ref` is `refs/heads/<default branch>` (`github.event.repository.default_branch`) and the
+event is not a pull request. The full ref is compared, so a tag that happens to be named like the
+default branch never deploys. Repos whose default branch is `master` deploy from `master`; there is no
+need to rename it. Pushes to other branches build and plan but never apply.
 
 ## Workflow Reference
 
@@ -57,6 +63,28 @@ Unified entrypoint. Calls all other workflows via the nested reusable workflow p
 | `node_version` | read from `.nvmrc` / `.node-version` / `.tool-versions` / `mise.toml`, else 22 |
 | `pnpm_version` | `packageManager` in `package.json` |
 | `java_version` | read from `.java-version` / `.tool-versions` / `mise.toml`, else 21 |
+| `maven_args` / `gradle_args` | (empty) — extra arguments for `mvn verify` / `gradle build` |
+| `test_postgres_image` | (empty) — set to e.g. `postgres:17` to run a PostgreSQL service container during the JVM build |
+| `test_postgres_db` / `test_postgres_user` / `test_postgres_password` | `test` / `test` / `test` |
+
+#### Tests that need PostgreSQL
+
+Set `test_postgres_image` and match database, user and password to what your tests expect. The
+container listens on `localhost:5432` and is healthy (`pg_isready`) before the build starts. The
+build step also gets `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` and `PGPASSWORD`. The password is
+for a throwaway CI container, not a secret. Database and user must be plain identifiers (letters,
+digits, `_`), and the build fails early otherwise.
+
+```yaml
+jobs:
+  javabin:
+    uses: javaBin/platform/.github/workflows/javabin.yml@main
+    with:
+      test_postgres_image: postgres:17
+      test_postgres_db: myappunit
+      test_postgres_user: localdevuser
+      test_postgres_password: localdevuser
+```
 
 ### detect.yml
 
@@ -73,6 +101,8 @@ Maven (`mvn verify`) or Gradle (`./gradlew build`) build + test. Uploads test re
 | `build_tool` | `maven` (javabin.yml passes `gradle` when there is no `pom.xml`) |
 | `java_version` | resolved from version files, else 21 |
 | `maven_args` / `gradle_args` | (empty) |
+| `test_postgres_image` | (empty) = no database; else a PostgreSQL service container on `localhost:5432` |
+| `test_postgres_db` / `test_postgres_user` / `test_postgres_password` | `test` |
 
 ### build-ts.yml
 
