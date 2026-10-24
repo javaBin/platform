@@ -674,8 +674,18 @@ resource "aws_iam_role_policy" "team_provisioner" {
           "sso:CreatePermissionSet",
           "sso:PutInlinePolicyToPermissionSet",
           "sso:AttachCustomerManagedPolicyReferenceToPermissionSet",
+          "sso:DetachCustomerManagedPolicyReferenceFromPermissionSet",
+          "sso:ProvisionPermissionSet",
+          "sso:DescribePermissionSetProvisioningStatus",
         ]
         Resource = "*"
+      },
+      {
+        # Provisioning a permission set reads its customer-managed policies
+        Sid      = "ReadTeamGuardrails"
+        Effect   = "Allow"
+        Action   = ["iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyTags"]
+        Resource = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-team-*-guardrails"
       },
       {
         Sid    = "IAMForSSOAssignment"

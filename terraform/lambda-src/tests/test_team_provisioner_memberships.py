@@ -1,6 +1,7 @@
 """Tests for team_provisioner auth-membership recording — run: python3 -m unittest discover terraform/lambda-src/tests"""
 
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -58,6 +59,61 @@ class MembershipsTest(unittest.TestCase):
         h = load(dynamo)
         self.assertEqual(h._prune_memberships({"helter"}), ["drift"])
         self.assertEqual(set(dynamo.items), {"group#helter", "group#team-cupcake", "client#abc"})
+
+
+class TeamPermissionSetTest(unittest.TestCase):
+    def test_team_permission_set_uses_team_guardrails_and_reprovisions(self):
+        h = load(FakeDynamo([]))
+        sso = mock.MagicMock()
+        sso.exceptions.ConflictException = type("Conflict", (Exception,), {})
+        sso.exceptions.ResourceNotFoundException = type("NotFound", (Exception,), {})
+        sso.provision_permission_set.return_value = {"PermissionSetProvisioningStatus": {"RequestId": "r1"}}
+        sso.describe_permission_set_provisioning_status.return_value = {"PermissionSetProvisioningStatus": {"Status": "SUCCEEDED"}}
+        h.sso_client = sso
+        h._resolve_permission_set_arn = lambda name: "arn:ps"
+        h._create_account_assignment = lambda *a, **k: {"assigned": True}
+        h.time.sleep = lambda s: None
+        h._guardrails_state = lambda name: "ok"
+
+        result = h._ensure_team_permission_set("cupcake", "group-1")
+
+        attach = sso.attach_customer_managed_policy_reference_to_permission_set.call_args.kwargs
+        self.assertEqual(attach["CustomerManagedPolicyReference"], {"Name": "javabin-team-cupcake-guardrails"})
+        detach = sso.detach_customer_managed_policy_reference_from_permission_set.call_args.kwargs
+        self.assertEqual(detach["CustomerManagedPolicyReference"], {"Name": "javabin-developer-boundary"})
+        policy = json.loads(sso.put_inline_policy_to_permission_set.call_args.kwargs["InlinePolicy"])
+        sids = {st["Sid"] for st in policy["Statement"]}
+        self.assertTrue({"DenyPlatformManagedParameters", "DenyCreatingParameters"} <= sids)
+        self.assertEqual(result["provisioned"], {"status": "SUCCEEDED"})
+        deny = next(st for st in policy["Statement"] if st["Sid"] == "DenyCreatingParameters")
+        self.assertEqual(deny["Condition"], {"BoolIfExists": {"ssm:Overwrite": "false"}})
+
+    def _guardrails_with(self, tags=None, missing=False):
+        h = load(FakeDynamo([]))
+        iam = mock.MagicMock()
+        iam.exceptions.NoSuchEntityException = type("NoSuchEntity", (Exception,), {})
+        if missing:
+            iam.list_policy_tags.side_effect = iam.exceptions.NoSuchEntityException()
+        else:
+            iam.list_policy_tags.return_value = {"Tags": [{"Key": k, "Value": v} for k, v in (tags or {}).items()]}
+        h.iam_client = iam
+        return h
+
+    def test_guardrails_must_exist_and_be_terraform_managed(self):
+        ok = {"managed-by": "terraform", "repo": "javaBin/platform"}
+        self.assertEqual(self._guardrails_with(ok)._guardrails_state("javabin-team-x-guardrails"), "ok")
+        self.assertTrue(self._guardrails_with(missing=True)._guardrails_state("p").startswith("pending"))
+        self.assertTrue(self._guardrails_with({"managed-by": "me"})._guardrails_state("p").startswith("refused"))
+
+    def test_missing_guardrails_leave_the_permission_set_untouched(self):
+        h = load(FakeDynamo([]))
+        h.sso_client = mock.MagicMock()
+        h._resolve_permission_set_arn = lambda name: "arn:ps"
+        h._guardrails_state = lambda name: "pending: policy not created yet"
+        result = h._ensure_team_permission_set("newteam", "group-1")
+        self.assertTrue(result["guardrails"].startswith("pending"))
+        h.sso_client.detach_customer_managed_policy_reference_from_permission_set.assert_not_called()
+        h.sso_client.attach_customer_managed_policy_reference_to_permission_set.assert_not_called()
 
 
 if __name__ == "__main__":

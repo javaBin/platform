@@ -208,6 +208,7 @@ terraform/state/
 | SSM params (app) | `/javabin/apps/{team}/{service}/{name}` |
 | ECS cluster | `javabin-platform` |
 | ECS execution roles | `javabin-ecs-exec-{team}` (platform-owned, reads only `/javabin/apps/{team}/*`) |
+| SSO team guardrails | `javabin-team-{team}-guardrails` (developer boundary with the team written in, for `javabin-team-{team}` permission sets) |
 | ECR repos | `{team}-{service}` |
 | SNS topics | `javabin-{alerts,security,budget-enforcement}` |
 | Log groups | `/ecs/{team}/{service}` |
@@ -293,6 +294,7 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 ### Known Issues
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
 - **Cognito**: pools deployed; internal pool's `GoogleSAML` IdP was created outside Terraform
+- **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) instead. The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
 - **App databases share one network path**: service-rds allows ingress from the shared ECS tasks SG, so every team's tasks can reach every team's DB port (password still required). Fix: per-app security groups
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
 - **`registered_app_repos` manually managed**: Being replaced with team-scoped IAM roles (repo→team resolved via GitHub API at runtime)
