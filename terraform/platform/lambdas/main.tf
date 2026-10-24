@@ -1536,6 +1536,8 @@ resource "aws_iam_role_policy" "ci_broker" {
         Effect = "Allow"
         Action = "sts:AssumeRole"
         Resource = [
+          "arn:aws:iam::${var.aws_account_id}:role/${var.project}-ci-plan-*",
+          # Kept while the broker Lambda rolls over to ci-plan-* (one apply).
           "arn:aws:iam::${var.aws_account_id}:role/${var.project}-ci-team-*",
           "arn:aws:iam::${var.aws_account_id}:role/${var.project}-ci-deploy-*",
         ]

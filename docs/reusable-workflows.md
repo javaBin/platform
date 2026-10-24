@@ -29,7 +29,7 @@ The pipeline detects your repo contents and runs the right jobs. No repository o
 
 | Prerequisite | Why | How |
 |---|---|---|
-| Team exists in `javaBin/registry` (`teams/<team>.yaml`) | Creates the GitHub team; platform CI then creates the team's CI roles `javabin-ci-team-<team>` and `javabin-ci-deploy-<team>` | `javabin register-team`, merge the PR |
+| Team exists in `javaBin/registry` (`teams/<team>.yaml`) | Creates the GitHub team; platform CI then creates the team's CI roles `javabin-ci-plan-<team>`, `javabin-ci-team-<team>` and `javabin-ci-deploy-<team>` | `javabin register-team`, merge the PR |
 | Repo belongs to the GitHub team named in `app.yaml` `team:` | The CI broker verifies repo → team before vending team credentials | `gh api -X PUT orgs/javaBin/teams/<team>/repos/javaBin/<repo> -f permission=push` |
 | `app.yaml` at repo root | Declares the infrastructure | See [app-yaml-reference.md](app-yaml-reference.md) |
 
@@ -105,7 +105,7 @@ Docker BuildKit build + push to ECR repo `{team}-{app_name}`. Uses GitHub Action
 
 Plans the committed `terraform/` at the branch head (after expand), uploads the plan to S3 with its SHA256, has the `javabin-plan-review` Lambda review it (Bedrock Claude Haiku 5.5, platform credentials; it writes `risk.json`) and posts plan + review to the PR. A review that cannot run after retries is `FAILED`: re-run the workflow, or request an override if it persists.
 
-**AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-team-{team}`; the review step uses the broker OIDC role to invoke `javabin-plan-review`
+**AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-plan-{team}` (read-only: refresh, state read, state lock, plan upload; tf-plan runs on any branch, so it cannot change resources); the review step uses the broker OIDC role to invoke `javabin-plan-review`
 **Outputs:** `has_changes`, `plan_key`, `plan_sha256`, `risk_level`, `planned_sha`
 
 ### tf-apply.yml
