@@ -1,7 +1,11 @@
 ################################################################################
 # Cognito User Pools — Internal (java.no) + External (public)
 #
-# Pools are always created. Google IdP is added when google_client_id is set.
+# Pools are always created. The internal pool's Google IdP is added once its
+# OAuth client is stored in SSM (see below); the external pool's when
+# google_client_id is set. Which IdPs app clients use is declared per pool
+# (internal_identity_providers / external_identity_providers), so adding an IdP
+# changes no client until the list names it.
 # Custom domains require certificate_arn (must be in us-east-1 for CloudFront).
 #
 # Identity Center lives in terraform/org/ (human-applied, not CI).
@@ -62,31 +66,56 @@ resource "aws_cognito_user_pool" "internal" {
   }
 }
 
+# Google OIDC for the internal pool. The OAuth client belongs to a GCP project
+# whose consent screen is Internal, so Google itself refuses non-java.no
+# accounts, on a page that lets the user pick another account (the GoogleSAML
+# app shows a dead-end 403 instead — javaBin/platform#157). Setup:
+# docs/cognito-google-setup.md.
+#
+# An admin stores the client under /<project>/platform/google-oauth/internal/
+# (client-id String, client-secret SecureString). Until both exist this
+# creates nothing, so the code can merge before the credentials do.
+data "aws_ssm_parameters_by_path" "google_internal" {
+  path            = "/${var.project}/platform/google-oauth/internal"
+  with_decryption = true
+}
+
+locals {
+  google_internal_names = [for n in data.aws_ssm_parameters_by_path.google_internal.names : basename(n)]
+  google_internal       = zipmap(local.google_internal_names, data.aws_ssm_parameters_by_path.google_internal.values)
+  google_internal_ready = contains(local.google_internal_names, "client-id") && contains(local.google_internal_names, "client-secret")
+}
+
 resource "aws_cognito_identity_provider" "internal_google" {
-  count = var.google_client_id != "" ? 1 : 0
+  count = local.google_internal_ready ? 1 : 0
 
   user_pool_id  = aws_cognito_user_pool.internal.id
   provider_name = "Google"
   provider_type = "Google"
 
   provider_details = {
-    client_id                     = var.google_client_id
-    client_secret                 = var.google_client_secret
+    client_id                     = local.google_internal["client-id"]
+    client_secret                 = local.google_internal["client-secret"]
     authorize_scopes              = "openid email profile"
     attributes_url                = "https://people.googleapis.com/v1/people/me?personFields="
     attributes_url_add_attributes = "true"
-    # TODO: hd= is a UI hint only, not server-side enforcement. Add a pre-sign-up
-    # Lambda trigger to validate @java.no domain, or use separate GCP OAuth clients.
-    authorize_url        = "https://accounts.google.com/o/oauth2/v2/auth?hd=${var.google_workspace_domain}"
+    # hd= preselects java.no accounts and prompt=select_account always shows
+    # Google's account chooser. hd= is a hint only: the Internal consent
+    # screen (and auth-claims) enforce the domain. Cognito keeping query
+    # parameters here is not documented — verify after apply with the probe
+    # in docs/cognito-google-setup.md; if they are dropped, set
+    # google_authorize_url_params = false and use the managed-login fallback.
+    authorize_url        = "https://accounts.google.com/o/oauth2/v2/auth${var.google_authorize_url_params ? "?hd=${var.google_workspace_domain}&prompt=select_account" : ""}"
     oidc_issuer          = "https://accounts.google.com"
     token_url            = "https://www.googleapis.com/oauth2/v4/token"
     token_request_method = "POST"
   }
 
   attribute_mapping = {
-    email    = "email"
-    username = "sub"
-    name     = "name"
+    email          = "email"
+    email_verified = "email_verified"
+    username       = "sub"
+    name           = "name"
   }
 }
 

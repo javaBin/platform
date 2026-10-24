@@ -178,6 +178,75 @@ class AuthFeaturesTest(unittest.TestCase):
         self.assertIn('"http://localhost:3000/"', generate(app)["main.tf"])
 
 
+REAL_FROSTING = {  # javaBin/frosting app.yaml, verbatim
+    **FROSTING,
+    "auth": {
+        "pool": "internal", "client": "public",
+        "callback_urls": ["https://cupcake.javazone.no/", "https://cupcake.javazone.no/auth/callback",
+                          "http://localhost:3000/"],
+        "logout_urls": ["https://cupcake.javazone.no/", "http://localhost:3000/"],
+        "groups": ["helter"],
+        "env": {"COGNITO_CLIENT_ID": "NUXT_PUBLIC_OIDC_CLIENT_ID", "COGNITO_ISSUER_URL": "NUXT_PUBLIC_OIDC_AUTHORITY",
+                "COGNITO_DOMAIN": "NUXT_PUBLIC_OIDC_LOGOUT_DOMAIN"},
+    },
+}
+REAL_CUPCAKE = {**CUPCAKE, "auth": {"pool": "internal", "client": "none",
+                                    "env": {"COGNITO_WELL_KNOWN_URL": "OIDC_WELL_KNOWN_URL"}}}
+
+
+class AuthValidationTest(unittest.TestCase):
+    def assertRejected(self, auth, fragment, app=FROSTING):
+        with self.assertRaises(gen.AppYamlError) as cm:
+            generate({**app, "auth": {"pool": "internal", "client": "public", **auth}})
+        self.assertIn(fragment, str(cm.exception))
+
+    def test_live_apps_still_generate(self):
+        for app in (REAL_FROSTING, REAL_CUPCAKE):
+            generate(app)
+
+    def test_callback_on_another_host_is_rejected(self):
+        self.assertRejected({"callback_urls": ["https://cupcake.javazone.no.evil.com/cb"]}, "not this app's routing.host")
+        self.assertRejected({"logout_urls": ["https://other.javazone.no/"]}, "auth.extra_hosts")
+
+    def test_extra_hosts_allow_other_hosts(self):
+        auth = {"callback_urls": ["https://www.javazone.no/cb"], "extra_hosts": ["www.javazone.no"]}
+        self.assertIn('"https://www.javazone.no/cb"', generate({**FROSTING, "auth": {"client": "public", **auth}})["main.tf"])
+        self.assertRejected({"extra_hosts": ["https://www.javazone.no"]}, "list of hostnames")
+
+    def test_without_routing_every_host_needs_extra_hosts(self):
+        app = {"name": "spa", "team": "core"}
+        self.assertRejected({"callback_urls": ["https://spa.javazone.no/"]}, "auth.extra_hosts", app=app)
+        generate({**app, "auth": {"callback_urls": ["https://spa.javazone.no/"], "extra_hosts": ["spa.javazone.no"]}})
+
+    def test_http_only_for_localhost_and_no_fragments(self):
+        self.assertRejected({"callback_urls": ["http://cupcake.javazone.no/"]}, "must use https://")
+        self.assertRejected({"callback_urls": ["https://cupcake.javazone.no/#/cb"]}, "#fragment")
+        self.assertRejected({"callback_urls": ["cupcake.javazone.no/cb"]}, "absolute https:// URL")
+        generate({**FROSTING, "auth": {"client": "public", "callback_urls": ["http://127.0.0.1:5173/cb",
+                                                                           "https://localhost:8443/cb"]}})
+
+    def test_client_none_rejects_settings_it_would_ignore(self):
+        for key, value in (("callback_urls", ["https://cupcake.javazone.no/"]), ("scopes", ["openid"]),
+                           ("logout_urls", ["https://cupcake.javazone.no/"]), ("extra_hosts", ["a.javazone.no"])):
+            self.assertRejected({"client": "none", key: value}, f"would be ignored")
+
+    def test_identity_provider_is_injected_and_aliasable(self):
+        app = {**FROSTING, "auth": {"client": "public",
+                                    "env": {"COGNITO_IDENTITY_PROVIDER": "NUXT_PUBLIC_OIDC_IDENTITY_PROVIDER"}}}
+        main = generate(app)["main.tf"]
+        self.assertRegex(main, r"COGNITO_IDENTITY_PROVIDER\s+= module.auth.identity_provider_arn")
+        self.assertRegex(main, r"NUXT_PUBLIC_OIDC_IDENTITY_PROVIDER\s+= module.auth.identity_provider_arn")
+
+    def test_validate_only_app_gets_no_identity_provider(self):
+        self.assertNotIn("COGNITO_IDENTITY_PROVIDER", generate(REAL_CUPCAKE)["main.tf"])
+
+    def test_resolve_auth_matches_the_request(self):
+        auth = gen.resolve_auth(REAL_FROSTING)
+        self.assertEqual(auth["callback_urls"], REAL_FROSTING["auth"]["callback_urls"])
+        self.assertEqual(auth["scopes"], ["openid", "email", "profile"])
+        self.assertIsNone(gen.resolve_auth({**FROSTING, "auth": "none"}))
+
+
 @unittest.skipUnless(shutil.which("terraform"), "terraform not installed")
 class FmtTest(unittest.TestCase):
     """tf-plan runs `terraform fmt -check`; generated files must pass it."""
@@ -185,7 +254,7 @@ class FmtTest(unittest.TestCase):
     def test_generated_files_are_fmt_clean(self):
         public = {**FROSTING, "auth": {"pool": "internal", "client": "public", "groups": ["helter"],
                                        "env": {"COGNITO_CLIENT_ID": "NUXT_PUBLIC_OIDC_CLIENT_ID"}}}
-        for app in (CUPCAKE, FROSTING, FULL, public, {"name": "worker", "team": "core"}):
+        for app in (CUPCAKE, FROSTING, FULL, public, REAL_FROSTING, REAL_CUPCAKE, {"name": "worker", "team": "core"}):
             with tempfile.TemporaryDirectory() as d:
                 for name, content in generate(app).items():
                     with open(os.path.join(d, name), "w") as f:

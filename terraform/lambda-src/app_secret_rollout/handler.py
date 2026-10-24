@@ -9,8 +9,16 @@ platform does the restart:
   SSM "Parameter Store Change" Update on /javabin/apps/{team}/{app}/{name}
     -> force a new deployment of service {team}-{app} in the platform cluster
 
-Platform-managed parameters (auth request, Cognito credentials, RDS master
-password) are ignored: their consumers redeploy through their own paths.
+Cognito client parameters (cognito-client-id, -identity-provider) also
+restart the app: app-auth-sync writes them only when the value changes (a
+replaced client, or an IdP cutover), so running tasks never keep a deleted
+client ID and an unchanged reconcile restarts nothing.
+
+Ignored: the auth request (app Terraform redeploys with it), auth-status
+(rewritten on every sync), cognito-client-secret (a new secret only comes
+with a new client, and app-auth-sync writes the ID right after it, so
+restarting on the secret would deploy once with the old ID) and the RDS
+master password (the database keeps the original).
 """
 
 import logging
@@ -25,7 +33,7 @@ logger.setLevel(logging.INFO)
 PROJECT = os.environ.get("PROJECT", "javabin")
 CLUSTER = os.environ.get("CLUSTER", f"{PROJECT}-platform")
 SECRET_RE = re.compile(rf"^/{re.escape(PROJECT)}/apps/(?P<team>[a-z]{{1,12}})/(?P<app>[a-z][a-z0-9-]{{0,19}})/(?P<name>[^/]+)$")
-PLATFORM_MANAGED = re.compile(r"^(auth|cognito-client-.*|db-master-password)$")
+PLATFORM_MANAGED = re.compile(r"^(auth|auth-status|cognito-client-secret|db-master-password)$")
 
 ecs = boto3.client("ecs")
 

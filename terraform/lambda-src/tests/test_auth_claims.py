@@ -30,7 +30,7 @@ def client(cid, *groups):
     return {"pk": {"S": f"client#{cid}"}, "allowed_groups": {"L": [{"S": g} for g in groups]}}
 
 
-DOMAIN_ENV = ("REQUIRED_EMAIL_DOMAIN", "FEDERATED_IDENTITY_PROVIDERS")
+DOMAIN_ENV = ("REQUIRED_EMAIL_DOMAIN", "FEDERATED_IDENTITY_PROVIDERS", "EMAIL_VERIFIED_IDENTITY_PROVIDERS")
 
 
 def load(dynamo, **env):
@@ -116,6 +116,18 @@ class EmailDomainTest(unittest.TestCase):
     def test_other_idp_needs_a_verified_email(self):
         self.assertDenied(user("grace.hopper@java.no", provider="SomeOtherIdP", verified="false"))
         self.assertAllowed(user("grace.hopper@java.no", provider="Google", verified="true"))
+
+    def test_google_oidc_users_need_email_verified_even_when_trusted(self):
+        # After cutover Google is in FEDERATED_IDENTITY_PROVIDERS; it still has
+        # to vouch for the address with email_verified (mapped from Google).
+        h = load(self.dynamo, REQUIRED_EMAIL_DOMAIN="java.no", FEDERATED_IDENTITY_PROVIDERS="Google")
+        with self.assertRaises(h.AccessDenied):
+            h.handler(user("ada.lovelace@java.no", provider="Google", verified="false"), None)
+        with self.assertRaises(h.AccessDenied):
+            h.handler(user("ada.lovelace@java.no", provider="Google"), None)
+        h.handler(user("ada.lovelace@java.no", provider="Google", verified="true"), None)
+        with self.assertRaises(h.AccessDenied):
+            h.handler(user("someone@gmail.com", provider="Google", verified="true"), None)
 
     def test_group_rule_still_applies_after_the_domain_check(self):
         self.assertDenied(user("grace.hopper@java.no", provider="GoogleSAML", client_id="frosting"))

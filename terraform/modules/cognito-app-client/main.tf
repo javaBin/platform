@@ -11,8 +11,10 @@
 # platform's app-auth-sync Lambda reacts to the parameter (EventBridge) and
 # creates/updates/deletes the client named <team>-<app>, then writes:
 #
-#   /<project>/apps/<team>/<app>/cognito-client-id      (String)
-#   /<project>/apps/<team>/<app>/cognito-client-secret  (SecureString)
+#   /<project>/apps/<team>/<app>/cognito-client-id                 (String)
+#   /<project>/apps/<team>/<app>/cognito-client-secret             (SecureString)
+#   /<project>/apps/<team>/<app>/cognito-client-identity-provider  (String)
+#   /<project>/apps/<team>/<app>/auth-status                       (String JSON)
 #
 # Those parameters are owned by the Lambda, not by this Terraform. Their ARNs
 # are deterministic, so the ECS task definition can reference them up front;

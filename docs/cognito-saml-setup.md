@@ -1,5 +1,11 @@
 # Cognito SAML Setup — Google Workspace Federation
 
+> **Superseded.** The internal pool moves to the Google OIDC provider (account chooser, Internal
+> consent screen): see [cognito-google-setup.md](cognito-google-setup.md). This page describes the
+> `GoogleSAML` provider that was created by hand and stays only until the cutover. The live provider maps
+> `email` only — the groups attribute mapping described below was never configured; registry groups come
+> from the auth-claims trigger.
+
 ## Overview
 
 The internal Cognito pool authenticates Javabin heroes via Google Workspace SAML.

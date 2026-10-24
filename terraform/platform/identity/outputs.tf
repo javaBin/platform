@@ -28,6 +28,11 @@ output "internal_saml_entity_id" {
   value       = "urn:amazon:cognito:sp:${aws_cognito_user_pool.internal.id}"
 }
 
+output "internal_google_enabled" {
+  description = "Whether the internal pool's Google OIDC IdP exists (its OAuth client is in SSM)"
+  value       = local.google_internal_ready
+}
+
 # External pool
 output "external_user_pool_id" {
   description = "ID of the external Cognito user pool"
@@ -57,6 +62,13 @@ output "auth_memberships_table_arn" {
 output "internal_identity_providers" {
   description = "Sign-in IdPs app-auth-sync puts on internal-pool clients"
   value       = var.internal_identity_providers
+
+  # Google is trusted by auth-claims only with the domain rule in place and
+  # only once the IdP exists (else app-auth-sync would skip every request).
+  precondition {
+    condition     = !contains(var.internal_identity_providers, "Google") || (local.google_internal_ready && var.google_workspace_domain != "")
+    error_message = "internal_identity_providers names Google, but /<project>/platform/google-oauth/internal/client-id and client-secret are not in SSM yet, or google_workspace_domain is empty (auth-claims' REQUIRED_EMAIL_DOMAIN). See docs/cognito-google-setup.md."
+  }
 }
 
 output "external_identity_providers" {
