@@ -16,7 +16,8 @@
 ################################################################################
 
 resource "aws_cognito_user_pool" "internal" {
-  name = "${var.project}-internal"
+  name                = "${var.project}-internal"
+  deletion_protection = "ACTIVE" # Cognito.6
 
   lambda_config {
     pre_token_generation_config {
@@ -139,7 +140,8 @@ removed {
 ################################################################################
 
 resource "aws_cognito_user_pool" "external" {
-  name = "${var.project}-external"
+  name                = "${var.project}-external"
+  deletion_protection = "ACTIVE" # Cognito.6
 
   auto_verified_attributes = ["email"]
   username_attributes      = ["email"]

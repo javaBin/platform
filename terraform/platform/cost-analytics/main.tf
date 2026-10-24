@@ -99,6 +99,20 @@ resource "aws_s3_bucket_policy" "cur_data" {
           }
         }
       },
+      {
+        # S3.5
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.cur_data.arn,
+          "${aws_s3_bucket.cur_data.arn}/*",
+        ]
+        Condition = {
+          Bool = { "aws:SecureTransport" = "false" }
+        }
+      },
     ]
   })
 }
@@ -127,6 +141,30 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "athena_results" {
       sse_algorithm = "AES256"
     }
   }
+}
+
+# S3.5
+resource "aws_s3_bucket_policy" "athena_results" {
+  bucket = aws_s3_bucket.athena_results.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "DenyInsecureTransport"
+      Effect    = "Deny"
+      Principal = "*"
+      Action    = "s3:*"
+      Resource = [
+        aws_s3_bucket.athena_results.arn,
+        "${aws_s3_bucket.athena_results.arn}/*",
+      ]
+      Condition = {
+        Bool = { "aws:SecureTransport" = "false" }
+      }
+    }]
+  })
+
+  depends_on = [aws_s3_bucket_public_access_block.athena_results]
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "athena_results" {

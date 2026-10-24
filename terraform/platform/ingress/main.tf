@@ -106,6 +106,8 @@ resource "aws_lb" "main" {
   security_groups            = [var.alb_sg_id]
   subnets                    = var.public_subnet_ids
   enable_deletion_protection = true
+  # ELB.4: drop headers with invalid field names (request smuggling hygiene)
+  drop_invalid_header_fields = true
 
   tags = {
     Name = "${var.project}-platform-alb"
