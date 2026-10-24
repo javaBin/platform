@@ -74,11 +74,11 @@ SNS topics, EventBridge rules, Config, GuardDuty, Security Hub, account guardrai
 |----------|---------|
 | `javabin-alerts` SNS | Cost anomalies, budgets |
 | `javabin-security` SNS | IAM changes, GuardDuty, Config, Security Hub |
-| EventBridge rules | IAM key creation, root login, console sign-in, resource creation, security tampering (CloudTrail/Config/GuardDuty/Security Hub/KMS/guardrail disables) |
+| EventBridge rules | IAM key creation, root login, console sign-in, resource creation, security tampering (CloudTrail/Config/GuardDuty/Security Hub/KMS/guardrail disables, plus GuardDuty filters, Security Hub automation rules and control changes, Config recorder changes). `UpdateDetector`, `UpdateServiceSetting` and the filter/rule events also fire on benign changes, including platform applies |
 | AWS Config | Configuration recorder (service-linked role, includes global IAM types) + S3 delivery (TLS-only, 2-year expiry) |
 | Account guardrails | EBS snapshot block-public-access (block all), AMI block-public-access (block new), EBS encryption by default, SSM document public sharing off |
 | IAM Access Analyzer | `javabin-external-access`, external-access findings only (free) |
-| Inspector | ECR + Lambda package scanning (EC2 and Lambda code scanning off) |
+| Inspector | ECR + Lambda package scanning (EC2 and Lambda code scanning off). Enabling it switches ECR registry scanning from BASIC to ENHANCED, so `scan_on_push` on repositories (`compute/`, `modules/ecr-repo`) no longer has an effect. Expect a first burst of findings into Security Hub, mostly from legacy Lambdas on deprecated runtimes |
 | GuardDuty | Threat detection |
 | Security Hub | Findings aggregation |
 | `javabin-alert-dedup` DynamoDB | Deduplication table used by slack-alert Lambda |
