@@ -80,6 +80,20 @@ Queries Security Hub for active findings at HIGH and CRITICAL severity, aggregat
 | `/javabin/platform/github-app-id` | GitHub App ID for team management |
 | `/javabin/platform/github-app-key` | GitHub App private key |
 | `/javabin/platform/github-app-client-secret` | GitHub App client secret |
+| `/javabin/platform/atlassian-org-id` | Atlassian organisation ID |
+| `/javabin/platform/atlassian-api-key` | Atlassian org admin API key (unscoped — full org admin) |
+
+### Atlassian group sync (`sync_atlassian`)
+
+Invoked by the registry's `provision-groups.yml` via `scripts/provision-atlassian.py`, which resolves
+`groups/atlassian.yaml` to members' java.no emails. `atlassian.py` makes each declared Atlassian group
+contain exactly those accounts (creates missing groups, adds members, removes everyone else, including
+personal-email accounts). Undeclared groups are never touched; `org-admins`, `site-admins` and
+IdP-synced groups are refused.
+
+**Report-only by default.** Writes happen only when the `lambdas` module's `atlassian_sync_apply` is
+`true` (env `ATLASSIAN_SYNC_APPLY`); the event can't turn them on. Each run posts per-group counts
+(no email addresses) to #javabin-infra-alerts and returns the full plan in the Lambda response.
 
 ## budget-enforcer
 

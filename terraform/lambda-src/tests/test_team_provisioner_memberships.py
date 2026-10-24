@@ -34,6 +34,7 @@ def load(dynamo):
     boto3.client = lambda svc, **kw: {"dynamodb": dynamo, "cognito-idp": cognito}.get(svc, mock.MagicMock())
     sys.modules["boto3"] = boto3
     sys.path.insert(0, SRC)
+    sys.path.insert(0, os.path.join(SRC, "team_provisioner"))
     spec = importlib.util.spec_from_file_location("team_provisioner_handler", os.path.join(SRC, "team_provisioner", "handler.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

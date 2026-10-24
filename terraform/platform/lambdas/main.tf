@@ -133,6 +133,10 @@ data "archive_file" "team_provisioner" {
     filename = "handler.py"
   }
   source {
+    content  = file("${local.lambda_src_path}/team_provisioner/atlassian.py")
+    filename = "atlassian.py"
+  }
+  source {
     content  = file("${local.lambda_src_path}/shared/__init__.py")
     filename = "shared/__init__.py"
   }
@@ -745,9 +749,8 @@ resource "aws_iam_role_policy" "password_set" {
         Sid    = "SSMRead"
         Effect = "Allow"
         Action = "ssm:GetParameter"
-        Resource = [
-          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/javabin/platform/*",
-        ]
+        # Only the token signing key — /javabin/platform/* also holds org-admin keys
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/javabin/platform/password-token-signing-key"
       },
       {
         Sid    = "DynamoDBDedup"
@@ -926,6 +929,9 @@ resource "aws_lambda_function" "team_provisioner" {
       SIGNING_KEY_PARAM            = "/javabin/platform/password-token-signing-key"
       PASSWORD_SET_URL_PARAM       = "/javabin/platform/password-set-function-url"
       BUDGET_ENFORCEMENT_TOPIC_ARN = aws_sns_topic.budget_enforcement.arn
+      ATLASSIAN_ORG_ID_PARAM       = "/javabin/platform/atlassian-org-id"
+      ATLASSIAN_API_KEY_PARAM      = "/javabin/platform/atlassian-api-key"
+      ATLASSIAN_SYNC_APPLY         = tostring(var.atlassian_sync_apply)
     }
   }
 }

@@ -163,7 +163,7 @@ terraform/state/
 | `daily-cost-check` | Daily spike detection (silent if no spikes) |
 | `compliance-reporter` | Reports untagged resources to Slack (no auto-fix) |
 | `override-cleanup` | Hourly cleanup of stale SSM override tokens |
-| `team-provisioner` | Syncs Google Groups, GitHub teams, AWS Budgets from registry team YAML |
+| `team-provisioner` | Syncs Google Groups, GitHub teams, AWS Budgets from registry team YAML; Atlassian groups from `groups/atlassian.yaml` |
 | `securityhub-summary` | Weekly Security Hub findings summary (Monday 08:00 UTC) |
 | `password-set` | Self-service password-set for new hero accounts (Function URL) |
 | `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget |
@@ -185,6 +185,7 @@ terraform/state/
 | `scripts/github-oidc-token.sh` | CI: mint a GitHub OIDC token for the broker / apply gate |
 | `scripts/provision-teams.py` | CI: fetch team YAMLs from registry, invoke team-provisioner Lambda |
 | `scripts/provision-groups.py` | CI: resolve members.yaml + access.yaml, invoke team-provisioner Lambda |
+| `scripts/provision-atlassian.py` | CI: resolve atlassian.yaml to java.no emails, invoke team-provisioner `sync_atlassian` (report-only unless `atlassian_sync_apply`) |
 | `scripts/sync-members.py` | CI: sync approved heroes from Google Sheets into members.yaml |
 | `scripts/review-plan.py` | CI: LLM plan review via Bedrock (platform CI; also bundled into the plan-review Lambda) |
 | `scripts/invoke-plan-review.sh` | CI: app tf-plan → plan-review Lambda |
@@ -249,6 +250,8 @@ All parameters are in `eu-central-1`. Use `--profile javabin --region eu-central
 | `/javabin/platform/github-app-id` | SecureString | team-provisioner (GitHub App ID) |
 | `/javabin/platform/github-app-key` | SecureString | team-provisioner (GitHub App private key) |
 | `/javabin/platform/github-app-client-secret` | SecureString | team-provisioner (GitHub App client secret) |
+| `/javabin/platform/atlassian-org-id` | SecureString | team-provisioner (Atlassian organisation ID) |
+| `/javabin/platform/atlassian-api-key` | SecureString | team-provisioner (Atlassian org admin API key, unscoped — full org admin) |
 | `/javabin/platform-overrides/{repo}/{sha}` | SecureString | Risk gate override tokens (single-use) |
 | `/javabin/apps/{team}/{app}/auth` | String | app.yaml `auth:` request (written by app TF, read by app-auth-sync) |
 | `/javabin/apps/{team}/{app}/cognito-client-{id,secret}` | String / SecureString | Written by app-auth-sync, read by ECS execution role |

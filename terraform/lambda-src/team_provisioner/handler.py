@@ -9,6 +9,7 @@ Integrations:
 - AWS Budgets: Create team-level budget scoped to `team` tag
 - Cognito: Create/sync groups in internal user pool, assign members by email
 - IAM Identity Center: Create/sync groups in identity store, assign members by email
+- Atlassian: Sync Confluence groups from registry groups (atlassian.py, report-only unless enabled)
 """
 
 import base64
@@ -24,6 +25,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
+import atlassian
 import boto3
 from shared.constants import USD_TO_NOK
 from shared.slack import get_webhook_url, post_to_slack
@@ -53,6 +55,14 @@ GITHUB_APP_KEY_PARAM = os.environ.get(
 INFRA_WEBHOOK_PARAM = os.environ.get(
     "INFRA_WEBHOOK_PARAM", "/javabin/slack/platform-resource-alerts-webhook"
 )
+ATLASSIAN_ORG_ID_PARAM = os.environ.get(
+    "ATLASSIAN_ORG_ID_PARAM", "/javabin/platform/atlassian-org-id"
+)
+ATLASSIAN_API_KEY_PARAM = os.environ.get(
+    "ATLASSIAN_API_KEY_PARAM", "/javabin/platform/atlassian-api-key"
+)
+# Report-only until set to "true" in Terraform — the event can't turn writes on.
+ATLASSIAN_SYNC_APPLY = os.environ.get("ATLASSIAN_SYNC_APPLY", "false") == "true"
 ACCOUNT_ID = os.environ.get("ACCOUNT_ID", "")
 GITHUB_ORG = os.environ.get("GITHUB_ORG", "javaBin")
 ALERTS_TOPIC_ARN = os.environ.get("ALERTS_TOPIC_ARN", "")
@@ -1916,6 +1926,32 @@ def handle_sync_groups_and_heros(event):
     }
 
 
+def handle_sync_atlassian(event):
+    """Handle the sync_atlassian action — registry groups → Atlassian groups.
+
+    Event: {"action": "sync_atlassian", "groups": [{"name", "description", "members": [email]}]}
+    Writes only when ATLASSIAN_SYNC_APPLY is enabled; otherwise returns the plan.
+    """
+    admin = atlassian.AtlassianAdmin(
+        _get_ssm_param(ATLASSIAN_ORG_ID_PARAM), _get_ssm_param(ATLASSIAN_API_KEY_PARAM),
+    )
+    results = atlassian.sync(admin, event.get("groups", []), apply=ATLASSIAN_SYNC_APPLY)
+
+    try:
+        text = atlassian.summary_text(results, ATLASSIAN_SYNC_APPLY)
+        source = _format_ci_source(event.get("ci_context"))
+        if source:
+            text += f"\n{source}"
+        post_to_slack(get_webhook_url(ssm, INFRA_WEBHOOK_PARAM), {"text": text})
+    except Exception as e:
+        logger.error("Slack notification failed: %s", e)
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps({"apply": ATLASSIAN_SYNC_APPLY, "results": results}),
+    }
+
+
 def _generate_password_set_url(email):
     """Generate a signed password-set URL for a new hero account.
 
@@ -2311,6 +2347,8 @@ def handler(event, context):
         return handle_sync_groups_and_heros(payload)
     if payload.get("action") == "sync_groups":
         return handle_sync_groups(payload)
+    if payload.get("action") == "sync_atlassian":
+        return handle_sync_atlassian(payload)
 
     teams = parse_team_payload(event)
     if not teams:
