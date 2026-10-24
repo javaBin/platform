@@ -18,16 +18,10 @@ variable "alerts_topic_arn" {
   type        = string
 }
 
-variable "billing_alarm_threshold_usd" {
-  description = "CloudWatch billing alarm threshold in USD"
-  type        = number
-  default     = 200
-}
-
 variable "account_budget_usd" {
-  description = "Account-level monthly budget in USD — notifications at 80% and 100%"
+  description = "Account-level monthly budget in USD, tax included (Cost Explorer UnblendedCost incl. 25% VAT). Notifies on forecast >100%, actual >100% and actual >150%. Steady state is ~$550/mo (2026-10); lower this as the legacy cleanup in docs/cost-management.md lands."
   type        = number
-  default     = 500
+  default     = 600
 }
 
 variable "org_boundary_arn" {

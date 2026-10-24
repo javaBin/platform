@@ -228,9 +228,33 @@ resource "aws_config_configuration_recorder" "main" {
   name     = "${var.project}-recorder"
   role_arn = aws_iam_role.config_role.arn
 
+  # Cost: Fargate task churn creates and deletes ENIs in the platform subnets,
+  # and every ENI change re-records the ENI, its VPC, subnet and security group.
+  # That was ~10k configuration items/month (~$27). ENIs are ephemeral for
+  # Fargate and no Security Hub FSBP control evaluates them, so they are
+  # excluded; VPC/Subnet are recorded daily. Security groups stay continuous
+  # because SG changes are security-relevant. See docs/cost-management.md.
   recording_group {
-    all_supported                 = true
+    all_supported                 = false
     include_global_resource_types = false
+
+    exclusion_by_resource_types {
+      resource_types = ["AWS::EC2::NetworkInterface"]
+    }
+
+    recording_strategy {
+      use_only = "EXCLUSION_BY_RESOURCE_TYPES"
+    }
+  }
+
+  recording_mode {
+    recording_frequency = "CONTINUOUS"
+
+    recording_mode_override {
+      description         = "Fargate ENI churn re-records VPC and subnet relationships; daily is enough"
+      resource_types      = ["AWS::EC2::VPC", "AWS::EC2::Subnet"]
+      recording_frequency = "DAILY"
+    }
   }
 }
 
@@ -264,6 +288,22 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "config_logs" {
   rule {
     apply_server_side_encryption_by_default {
       sse_algorithm = "aws:kms"
+    }
+  }
+}
+
+# Config snapshots and history files are small and only needed for audit
+# lookback; expire after two years. The bucket is not versioned.
+resource "aws_s3_bucket_lifecycle_configuration" "config_logs" {
+  bucket = aws_s3_bucket.config_logs.id
+
+  rule {
+    id     = "expire-config-history"
+    status = "Enabled"
+    filter {}
+
+    expiration {
+      days = 730
     }
   }
 }

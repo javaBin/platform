@@ -10,7 +10,7 @@
 #   iam         GitHub OIDC, CI roles, permission boundary, ECS execution role
 #   compute     ECS cluster, public ECR images
 #   monitoring       SNS topics, EventBridge rules, Config, GuardDuty, Security Hub
-#   cost-analytics   CUR, Athena, Glue, billing alarms, account budget
+#   cost-analytics   CUR, Athena, Glue, account budget
 #   lambdas          slack-alert, cost-report, daily-cost-check, auto-tagger
 #   identity         Cognito pools (Identity Center is in terraform/org/)
 #   dns              Route53 hosted zones for java.no, javabin.no/com, teknologihuset.no
@@ -62,14 +62,13 @@ module "monitoring" {
 }
 
 module "cost_analytics" {
-  source                      = "./cost-analytics"
-  project                     = var.project
-  region                      = var.region
-  aws_account_id              = var.aws_account_id
-  alerts_topic_arn            = module.monitoring.alerts_topic_arn
-  org_boundary_arn            = module.iam.org_boundary_arn
-  billing_alarm_threshold_usd = 200
-  account_budget_usd          = 500
+  source             = "./cost-analytics"
+  project            = var.project
+  region             = var.region
+  aws_account_id     = var.aws_account_id
+  alerts_topic_arn   = module.monitoring.alerts_topic_arn
+  org_boundary_arn   = module.iam.org_boundary_arn
+  account_budget_usd = 600
 
   providers = {
     aws           = aws
