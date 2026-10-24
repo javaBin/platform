@@ -1319,9 +1319,12 @@ def _create_account_assignment(ps_arn, group_id, label=""):
 def _ensure_team_permission_set(team_name, group_id):
     """Create a per-team permission set and assign it to the team's IC group.
 
-    Uses the developer permission boundary for guardrails. The inline policy
-    allows broad access but scoped to resources tagged with the team name.
-    The boundary controls what actions are actually permitted.
+    Guardrails come from javabin-team-{team}-guardrails (platform Terraform):
+    the developer boundary's rules with the team name written in. The shared
+    developer boundary can't be used here: its rules compare resource tags
+    with ${aws:PrincipalTag/team}, and Identity Center sessions carry no team
+    tag, so it would deny every team-scoped resource. The inline policy
+    allows broad access scoped to resources tagged with the team name.
     """
     ps_name = f"{PROJECT}-team-{team_name}"
 
@@ -1347,19 +1350,29 @@ def _ensure_team_permission_set(team_name, group_id):
     if not ps_arn:
         return {"error": "could not create or find permission set"}
 
-    # Attach permission boundary
+    # Attach the team's guardrails; drop the shared boundary from older setups
+    guardrails = f"{PROJECT}-team-{team_name}-guardrails"
     try:
         sso_client.attach_customer_managed_policy_reference_to_permission_set(
             InstanceArn=SSO_INSTANCE_ARN,
             PermissionSetArn=ps_arn,
-            CustomerManagedPolicyReference={
-                "Name": DEVELOPER_BOUNDARY_NAME,
-            },
+            CustomerManagedPolicyReference={"Name": guardrails},
         )
     except sso_client.exceptions.ConflictException:
         pass  # already attached
     except Exception as e:
-        logger.error("Failed to attach boundary to %s: %s", ps_name, e)
+        logger.error("Failed to attach %s to %s: %s", guardrails, ps_name, e)
+    try:
+        sso_client.detach_customer_managed_policy_reference_from_permission_set(
+            InstanceArn=SSO_INSTANCE_ARN,
+            PermissionSetArn=ps_arn,
+            CustomerManagedPolicyReference={"Name": DEVELOPER_BOUNDARY_NAME},
+        )
+        logger.info("Detached %s from %s", DEVELOPER_BOUNDARY_NAME, ps_name)
+    except sso_client.exceptions.ResourceNotFoundException:
+        pass  # not attached
+    except Exception as e:
+        logger.error("Failed to detach %s from %s: %s", DEVELOPER_BOUNDARY_NAME, ps_name, e)
 
     # Set inline policy — broad allow scoped to team-tagged resources
     policy = {
@@ -1375,6 +1388,29 @@ def _ensure_team_permission_set(team_name, group_id):
                         "aws:ResourceTag/team": team_name,
                     }
                 },
+            },
+            {
+                # Platform-managed parameters in the team path: Cognito
+                # credentials (app-auth-sync), the auth request (app
+                # Terraform), RDS master passwords (the DB keeps the original).
+                "Sid": "DenyPlatformManagedParameters",
+                "Effect": "Deny",
+                "Action": ["ssm:PutParameter", "ssm:DeleteParameter", "ssm:DeleteParameters",
+                           "ssm:LabelParameterVersion"],
+                "Resource": [
+                    f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*/*/cognito-client-*",
+                    f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*/*/auth",
+                    f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*/*/db-master-password",
+                ],
+            },
+            {
+                # Only set secrets the platform created (tagged): a hand-made
+                # parameter makes the app's next terraform apply fail.
+                "Sid": "DenyCreatingParameters",
+                "Effect": "Deny",
+                "Action": "ssm:PutParameter",
+                "Resource": f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*",
+                "Condition": {"Null": {"aws:ResourceTag/team": "true"}},
             },
             {
                 "Sid": "AllowUntaggedReads",
@@ -1408,7 +1444,39 @@ def _ensure_team_permission_set(team_name, group_id):
     # Assign to group and wait for completion
     result = _create_account_assignment(ps_arn, group_id, ps_name)
     result["permission_set"] = ps_name
+    # Push policy changes to the role in the account (needed for existing
+    # assignments; a new assignment provisions on creation)
+    result["provisioned"] = _provision_permission_set(ps_arn, ps_name)
     return result
+
+
+def _provision_permission_set(ps_arn, label):
+    """Re-provision a permission set to the account and wait (up to ~60 s)."""
+    try:
+        resp = sso_client.provision_permission_set(
+            InstanceArn=SSO_INSTANCE_ARN,
+            PermissionSetArn=ps_arn,
+            TargetId=ACCOUNT_ID,
+            TargetType="AWS_ACCOUNT",
+        )
+    except Exception as e:
+        logger.error("Failed to provision %s: %s", label, e)
+        return {"error": str(e)[:200]}
+    request_id = resp.get("PermissionSetProvisioningStatus", {}).get("RequestId")
+    for _ in range(60):
+        time.sleep(1)
+        status = sso_client.describe_permission_set_provisioning_status(
+            InstanceArn=SSO_INSTANCE_ARN,
+            ProvisionPermissionSetRequestId=request_id,
+        ).get("PermissionSetProvisioningStatus", {})
+        if status.get("Status") == "SUCCEEDED":
+            return {"status": "SUCCEEDED"}
+        if status.get("Status") == "FAILED":
+            # e.g. the guardrails policy doesn't exist yet for a brand-new team:
+            # platform CI creates it, and the next provisioning run succeeds
+            logger.error("Provisioning %s failed: %s", label, status.get("FailureReason"))
+            return {"status": "FAILED", "reason": status.get("FailureReason", "")[:200]}
+    return {"status": "timed_out"}
 
 
 def _resolve_permission_set_arn(name):

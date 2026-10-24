@@ -156,7 +156,7 @@ RDS instances generate a master password at creation time, stored in SSM Paramet
 
 #### secrets
 
-SSM Parameter Store SecureString parameters. The platform creates each one with the value `PLACEHOLDER`; set the real value with the CLI from the app repo (needs the `javabin-developer` SSO role):
+SSM Parameter Store SecureString parameters. The platform creates each one with the value `PLACEHOLDER`; set the real value with the CLI from the app repo, signed in with your team's SSO permission set (`javabin-team-<team>`):
 
 ```bash
 javabin secret list            # which secrets still hold PLACEHOLDER

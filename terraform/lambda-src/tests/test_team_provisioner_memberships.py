@@ -1,6 +1,7 @@
 """Tests for team_provisioner auth-membership recording — run: python3 -m unittest discover terraform/lambda-src/tests"""
 
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -58,6 +59,31 @@ class MembershipsTest(unittest.TestCase):
         h = load(dynamo)
         self.assertEqual(h._prune_memberships({"helter"}), ["drift"])
         self.assertEqual(set(dynamo.items), {"group#helter", "group#team-cupcake", "client#abc"})
+
+
+class TeamPermissionSetTest(unittest.TestCase):
+    def test_team_permission_set_uses_team_guardrails_and_reprovisions(self):
+        h = load(FakeDynamo([]))
+        sso = mock.MagicMock()
+        sso.exceptions.ConflictException = type("Conflict", (Exception,), {})
+        sso.exceptions.ResourceNotFoundException = type("NotFound", (Exception,), {})
+        sso.provision_permission_set.return_value = {"PermissionSetProvisioningStatus": {"RequestId": "r1"}}
+        sso.describe_permission_set_provisioning_status.return_value = {"PermissionSetProvisioningStatus": {"Status": "SUCCEEDED"}}
+        h.sso_client = sso
+        h._resolve_permission_set_arn = lambda name: "arn:ps"
+        h._create_account_assignment = lambda *a, **k: {"assigned": True}
+        h.time.sleep = lambda s: None
+
+        result = h._ensure_team_permission_set("cupcake", "group-1")
+
+        attach = sso.attach_customer_managed_policy_reference_to_permission_set.call_args.kwargs
+        self.assertEqual(attach["CustomerManagedPolicyReference"], {"Name": "javabin-team-cupcake-guardrails"})
+        detach = sso.detach_customer_managed_policy_reference_from_permission_set.call_args.kwargs
+        self.assertEqual(detach["CustomerManagedPolicyReference"], {"Name": "javabin-developer-boundary"})
+        policy = json.loads(sso.put_inline_policy_to_permission_set.call_args.kwargs["InlinePolicy"])
+        sids = {st["Sid"] for st in policy["Statement"]}
+        self.assertTrue({"DenyPlatformManagedParameters", "DenyCreatingParameters"} <= sids)
+        self.assertEqual(result["provisioned"], {"status": "SUCCEEDED"})
 
 
 if __name__ == "__main__":
