@@ -133,13 +133,20 @@ class ReviewPlanTest(unittest.TestCase):
             self.assertIn(marker, prompt)
         self.assertIn("not truncation", prompt)
 
-    def test_no_input_cap_by_default(self):
-        self.assertIsNone(rp.MAX_PLAN_CHARS)
-        text = plan(20_000)
-        self.assertGreater(len(text), 2_000_000)
+    def test_default_ceiling_sends_real_plans_whole(self):
+        self.assertEqual(rp.MAX_PLAN_CHARS, 2_000_000)
+        text = plan(8_000)  # ~0.9M chars: larger than any real plan so far
+        self.assertLess(len(text), rp.MAX_PLAN_CHARS)
         section = rp.build_plan_section(text)
         self.assertIn("COMPLETE PLAN", section)
-        self.assertIn("aws_iam_role_policy.p19999 will be updated in-place", section)
+        self.assertIn("aws_iam_role_policy.p7999 will be updated in-place", section)
+
+    def test_pathological_plan_falls_back_to_change_list(self):
+        text = plan(20_000)
+        self.assertGreater(len(text), rp.MAX_PLAN_CHARS)
+        section = rp.build_plan_section(text)
+        self.assertNotIn("COMPLETE PLAN", section)
+        self.assertLessEqual(len(section), rp.MAX_PLAN_CHARS)
 
     def test_large_destroy_plan_is_sent_whole(self):
         # PR #135 (2026-10-24): 231 destroys, 830k chars, was cut to 28 changes by the old 400k limit.
