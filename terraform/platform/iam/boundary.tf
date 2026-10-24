@@ -169,7 +169,7 @@ locals {
           "elasticloadbalancing:AddTags", "elasticloadbalancing:RemoveTags",
           "iam:TagRole", "iam:UntagRole",
           "sns:TagResource", "sns:UntagResource",
-          "servicediscovery:*agResource",
+          "servicediscovery:TagResource", "servicediscovery:UntagResource",
         ]
         Resource  = "*"
         Condition = { StringEquals = { "aws:ResourceTag/team" = ["shared", "platform"] } }
