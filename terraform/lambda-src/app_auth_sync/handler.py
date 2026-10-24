@@ -14,6 +14,12 @@ requested pool, removes it from the other pool, and writes the credentials to
 where the app's ECS task picks them up via its team's execution role.
 Public clients (browser apps using PKCE) get no secret and no secret parameter.
 
+An app can also request extra clients in a slot, one level down:
+/{project}/apps/{team}/{app}/login-N/auth (service-routing writes these for
+app.yaml routing.login, one per ALB sign-in rule). The client is then named
+"{team}-{app}.login-N" — "." cannot occur in app names, so it never collides
+with another app's client — and its credentials go next to that request.
+
 The request's allowed groups are written to the auth memberships table as
 {pk: "client#<client_id>", allowed_groups: [...]}; the auth-claims trigger
 refuses tokens for users in none of them.
@@ -48,7 +54,13 @@ LOCAL_URL = re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?(/.*)?$")
 ALLOWED_SCOPES = {"openid", "email", "profile", "phone", "aws.cognito.signin.user.admin"}
 
 APPS_PREFIX = f"/{PROJECT}/apps/"
-REQUEST_RE = re.compile(rf"^/{re.escape(PROJECT)}/apps/(?P<team>[a-z]{{1,12}})/(?P<app>[a-z][a-z0-9-]{{0,19}})/auth$")
+SLOT = r"login-[1-9][0-9]?"
+REQUEST_RE = re.compile(
+    rf"^/{re.escape(PROJECT)}/apps/(?P<team>[a-z]{{1,12}})/(?P<app>[a-z][a-z0-9-]{{0,19}})(?:/(?P<slot>{SLOT}))?/auth$"
+)
+CRED_ID_RE = re.compile(
+    rf"^{re.escape(APPS_PREFIX)}(?P<team>[a-z]+)/(?P<app>[a-z0-9-]+)(?:/(?P<slot>{SLOT}))?/cognito-client-id$"
+)
 
 ssm = boto3.client("ssm")
 cognito = boto3.client("cognito-idp")
@@ -64,9 +76,13 @@ class InvalidRequest(ValueError):
 # ---------------------------------------------------------------------------
 
 def parse_name(name):
-    """Return (team, app) for a request parameter name, or None."""
+    """Return (team, app, slot) for a request parameter name, or None. slot is "" for the main client."""
     m = REQUEST_RE.match(name or "")
-    return (m["team"], m["app"]) if m else None
+    return (m["team"], m["app"], m["slot"] or "") if m else None
+
+
+def client_name(team, app, slot=""):
+    return f"{team}-{app}.{slot}" if slot else f"{team}-{app}"
 
 
 def parse_request(raw):
@@ -141,12 +157,17 @@ def find_client(user_pool_id, client_name):
     return None
 
 
-def identity_providers(user_pool_id):
-    """Every IdP configured on the pool (e.g. GoogleSAML) plus local users."""
+def identity_providers(user_pool_id, pool):
+    """Every IdP configured on the pool (e.g. GoogleSAML); plus local users on the external pool.
+
+    The internal pool is for Javabin heroes only, who sign in through Google
+    Workspace. Offering COGNITO there would let anyone sign up with
+    username/password through the client's hosted UI.
+    """
     names = []
     for page in cognito.get_paginator("list_identity_providers").paginate(UserPoolId=user_pool_id, MaxResults=60):
         names += [p["ProviderName"] for p in page["Providers"]]
-    return names + ["COGNITO"]
+    return names if pool == "internal" else names + ["COGNITO"]
 
 
 def client_settings(user_pool_id, client_name, req):
@@ -158,7 +179,7 @@ def client_settings(user_pool_id, client_name, req):
         "AllowedOAuthScopes": req["scopes"],
         "CallbackURLs": req["callback_urls"],
         "LogoutURLs": req["logout_urls"],
-        "SupportedIdentityProviders": identity_providers(user_pool_id),
+        "SupportedIdentityProviders": identity_providers(user_pool_id, req["pool"]),
         "ExplicitAuthFlows": ["ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_SRP_AUTH"],
         "PreventUserExistenceErrors": "ENABLED",
     }
@@ -168,18 +189,18 @@ def client_settings(user_pool_id, client_name, req):
 # Sync / delete
 # ---------------------------------------------------------------------------
 
-def _cred_names(team, app):
-    base = f"{APPS_PREFIX}{team}/{app}"
+def _cred_names(team, app, slot=""):
+    base = f"{APPS_PREFIX}{team}/{app}" + (f"/{slot}" if slot else "")
     return f"{base}/cognito-client-id", f"{base}/cognito-client-secret"
 
 
-def _put_param(name, value, secure, team, app):
+def _put_param(name, value, secure, team, app, slot=""):
     ssm.put_parameter(
         Name=name,
         Value=value,
         Type="SecureString" if secure else "String",
         Overwrite=True,
-        Description=f"Managed by {PROJECT}-app-auth-sync for {team}-{app} — do not edit",
+        Description=f"Managed by {PROJECT}-app-auth-sync for {client_name(team, app, slot)} — do not edit",
     )
     ssm.add_tags_to_resource(
         ResourceType="Parameter",
@@ -192,24 +213,24 @@ def _put_param(name, value, secure, team, app):
     )
 
 
-def sync(team, app, req):
+def sync(team, app, req, slot=""):
     """Make Cognito match one request. Returns the client ID."""
-    client_name = f"{team}-{app}"
+    name = client_name(team, app, slot)
 
     # A pool switch (internal <-> external) leaves no client behind.
     for other in POOL_NAMES:
         if other != req["pool"]:
             other_id = pool_id(other)
-            stale = find_client(other_id, client_name)
+            stale = find_client(other_id, name)
             if stale:
                 cognito.delete_user_pool_client(UserPoolId=other_id, ClientId=stale)
                 _delete_client_groups(stale)
-                logger.info("Removed %s from %s pool", client_name, other)
+                logger.info("Removed %s from %s pool", name, other)
 
     upid = pool_id(req["pool"])
-    settings = client_settings(upid, client_name, req)
+    settings = client_settings(upid, name, req)
     want_secret = req["client_type"] == "confidential"
-    client_id = find_client(upid, client_name)
+    client_id = find_client(upid, name)
     if client_id:
         has_secret = bool(cognito.describe_user_pool_client(UserPoolId=upid, ClientId=client_id)
                           ["UserPoolClient"].get("ClientSecret"))
@@ -217,27 +238,27 @@ def sync(team, app, req):
             # A client's secret setting is immutable; switching type means a new client
             cognito.delete_user_pool_client(UserPoolId=upid, ClientId=client_id)
             _delete_client_groups(client_id)
-            logger.info("Replacing %s: client_type changed to %s", client_name, req["client_type"])
+            logger.info("Replacing %s: client_type changed to %s", name, req["client_type"])
             client_id = None
     if client_id:
         cognito.update_user_pool_client(ClientId=client_id, **settings)
-        logger.info("Updated client %s (%s) in %s pool", client_name, client_id, req["pool"])
+        logger.info("Updated client %s (%s) in %s pool", name, client_id, req["pool"])
     else:
         client_id = cognito.create_user_pool_client(GenerateSecret=want_secret, **settings)["UserPoolClient"]["ClientId"]
-        logger.info("Created %s client %s (%s) in %s pool", req["client_type"], client_name, client_id, req["pool"])
+        logger.info("Created %s client %s (%s) in %s pool", req["client_type"], name, client_id, req["pool"])
 
-    id_param, secret_param = _cred_names(team, app)
-    _put_param(id_param, client_id, False, team, app)
+    id_param, secret_param = _cred_names(team, app, slot)
+    _put_param(id_param, client_id, False, team, app, slot)
     if want_secret:
         secret = cognito.describe_user_pool_client(UserPoolId=upid, ClientId=client_id)["UserPoolClient"]["ClientSecret"]
-        _put_param(secret_param, secret, True, team, app)
+        _put_param(secret_param, secret, True, team, app, slot)
     else:
         ssm.delete_parameters(Names=[secret_param])
-    _put_client_groups(client_id, req["allowed_groups"], team, app)
+    _put_client_groups(client_id, req["allowed_groups"], name)
     return client_id
 
 
-def _put_client_groups(client_id, groups, team, app):
+def _put_client_groups(client_id, groups, name):
     if not MEMBERSHIPS_TABLE:
         if groups:
             # Fail closed: without the table the restriction would silently vanish
@@ -248,7 +269,7 @@ def _put_client_groups(client_id, groups, team, app):
         Item={
             "pk": {"S": f"client#{client_id}"},
             "allowed_groups": {"L": [{"S": g} for g in groups]},
-            "app": {"S": f"{team}-{app}"},
+            "app": {"S": name},
         },
     )
 
@@ -258,17 +279,17 @@ def _delete_client_groups(client_id):
         dynamodb.delete_item(TableName=MEMBERSHIPS_TABLE, Key={"pk": {"S": f"client#{client_id}"}})
 
 
-def remove(team, app):
+def remove(team, app, slot=""):
     """Delete the client from every pool and its credential parameters."""
-    client_name = f"{team}-{app}"
+    name = client_name(team, app, slot)
     for pool in POOL_NAMES:
         upid = pool_id(pool)
-        client_id = find_client(upid, client_name)
+        client_id = find_client(upid, name)
         if client_id:
             cognito.delete_user_pool_client(UserPoolId=upid, ClientId=client_id)
             _delete_client_groups(client_id)
-            logger.info("Deleted client %s from %s pool", client_name, pool)
-    ssm.delete_parameters(Names=list(_cred_names(team, app)))
+            logger.info("Deleted client %s from %s pool", name, pool)
+    ssm.delete_parameters(Names=list(_cred_names(team, app, slot)))
 
 
 def read_request(name):
@@ -283,14 +304,15 @@ def handle_change(name, operation):
     if not owner:
         logger.info("Ignoring %s: not an app auth request", name)
         return {"status": "ignored"}
-    team, app = owner
+    team, app, slot = owner
+    client = client_name(team, app, slot)
 
     # Re-read instead of trusting the event: the parameter is the source of
     # truth, and a stale Delete event must not remove a live client.
     raw = read_request(name)
     if raw is None:
-        remove(team, app)
-        return {"status": "deleted", "client": f"{team}-{app}"}
+        remove(team, app, slot)
+        return {"status": "deleted", "client": client}
     if operation == "Delete":
         logger.info("Delete event for %s but the parameter exists again — syncing", name)
     try:
@@ -298,7 +320,7 @@ def handle_change(name, operation):
     except InvalidRequest as e:
         logger.error("Invalid auth request %s: %s", name, e)
         return {"status": "invalid", "error": str(e)}
-    return {"status": "synced", "client": f"{team}-{app}", "client_id": sync(team, app, req)}
+    return {"status": "synced", "client": client, "client_id": sync(team, app, req, slot)}
 
 
 def reconcile():
@@ -312,23 +334,24 @@ def reconcile():
                 wanted[owner] = p["Value"]
 
     results = {"synced": [], "invalid": [], "deleted": []}
-    for (team, app), raw in sorted(wanted.items()):
+    for (team, app, slot), raw in sorted(wanted.items()):
+        name = client_name(team, app, slot)
         try:
-            sync(team, app, parse_request(raw))
-            results["synced"].append(f"{team}-{app}")
+            sync(team, app, parse_request(raw), slot)
+            results["synced"].append(name)
         except InvalidRequest as e:
-            logger.error("Invalid auth request for %s-%s: %s", team, app, e)
-            results["invalid"].append(f"{team}-{app}")
+            logger.error("Invalid auth request for %s: %s", name, e)
+            results["invalid"].append(name)
 
     # Orphans: clients whose credential parameter exists (so this Lambda made
     # them) but whose request is gone. Clients created by other means are
     # never touched.
     for page in paginator.paginate(Path=APPS_PREFIX, Recursive=True):
         for p in page["Parameters"]:
-            m = re.match(rf"^{re.escape(APPS_PREFIX)}([a-z]+)/([a-z0-9-]+)/cognito-client-id$", p["Name"])
-            if m and (m[1], m[2]) not in wanted:
-                remove(m[1], m[2])
-                results["deleted"].append(f"{m[1]}-{m[2]}")
+            m = CRED_ID_RE.match(p["Name"])
+            if m and (m["team"], m["app"], m["slot"] or "") not in wanted:
+                remove(m["team"], m["app"], m["slot"] or "")
+                results["deleted"].append(client_name(m["team"], m["app"], m["slot"] or ""))
 
     logger.info("Reconcile: %s", json.dumps(results))
     return results

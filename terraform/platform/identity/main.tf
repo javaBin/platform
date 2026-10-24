@@ -7,6 +7,8 @@
 # Identity Center lives in terraform/org/ (human-applied, not CI).
 ################################################################################
 
+data "aws_region" "current" {}
+
 ################################################################################
 # Internal Pool — Javabin heroes (@java.no accounts only)
 ################################################################################
@@ -23,6 +25,20 @@ resource "aws_cognito_user_pool" "internal" {
 
   auto_verified_attributes = ["email"]
   username_attributes      = ["email"]
+
+  # Javabin heroes come in through Google Workspace (SAML). No self sign-up:
+  # app clients on this pool offer no username/password sign-in either
+  # (app-auth-sync), so this is the second lock on the same door.
+  admin_create_user_config {
+    allow_admin_create_user_only = true
+  }
+
+  # A changed email stays pending until the new address is verified, so a
+  # user cannot claim another member's address (auth-claims grants registry
+  # groups by email).
+  user_attribute_update_settings {
+    attributes_require_verification_before_update = ["email"]
+  }
 
   password_policy {
     minimum_length    = 12
@@ -106,8 +122,21 @@ removed {
 resource "aws_cognito_user_pool" "external" {
   name = "${var.project}-external"
 
+  # Native groups only — see auth_claims_external below
+  lambda_config {
+    pre_token_generation_config {
+      lambda_arn     = aws_lambda_function.auth_claims_external.arn
+      lambda_version = "V2_0"
+    }
+  }
+
   auto_verified_attributes = ["email"]
   username_attributes      = ["email"]
+
+  # A changed email stays pending until the new address is verified
+  user_attribute_update_settings {
+    attributes_require_verification_before_update = ["email"]
+  }
 
   password_policy {
     minimum_length    = 8
@@ -165,6 +194,14 @@ resource "aws_cognito_identity_provider" "external_google" {
     username = "sub"
     name     = "name"
   }
+}
+
+# Cognito-managed prefix domain for the hosted UI. ALB sign-in from app.yaml
+# routing.login and apps with auth: external point at it, so it is kept even
+# when a custom domain is added below (a pool can have one of each).
+resource "aws_cognito_user_pool_domain" "external_prefix" {
+  domain       = "${var.project}-external"
+  user_pool_id = aws_cognito_user_pool.external.id
 }
 
 resource "aws_cognito_user_pool_domain" "external" {
@@ -291,4 +328,34 @@ resource "aws_lambda_permission" "auth_claims_cognito" {
   function_name = aws_lambda_function.auth_claims.function_name
   principal     = "cognito-idp.amazonaws.com"
   source_arn    = aws_cognito_user_pool.internal.arn
+}
+
+# External pool: same code, but registry groups are never granted — anyone can
+# sign up there with any email address. Native groups and per-client allowed
+# groups still apply. A separate function (instead of the handler looking up
+# which pool called it) keeps the pool -> Lambda dependency one-way.
+resource "aws_lambda_function" "auth_claims_external" {
+  function_name    = "${var.project}-auth-claims-external"
+  role             = aws_iam_role.auth_claims.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 5
+  memory_size      = 256
+  filename         = data.archive_file.auth_claims.output_path
+  source_code_hash = data.archive_file.auth_claims.output_base64sha256
+
+  environment {
+    variables = {
+      MEMBERSHIPS_TABLE = aws_dynamodb_table.auth_memberships.name
+      REGISTRY_GROUPS   = "false"
+    }
+  }
+}
+
+resource "aws_lambda_permission" "auth_claims_external_cognito" {
+  statement_id  = "AllowCognitoExternalPool"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.auth_claims_external.function_name
+  principal     = "cognito-idp.amazonaws.com"
+  source_arn    = aws_cognito_user_pool.external.arn
 }

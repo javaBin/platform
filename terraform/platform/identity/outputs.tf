@@ -40,8 +40,8 @@ output "external_user_pool_arn" {
 }
 
 output "external_user_pool_domain" {
-  description = "Custom domain of the external Cognito user pool (empty if not configured)"
-  value       = var.certificate_arn != "" ? "auth-external.${var.domain}" : ""
+  description = "Hosted-UI domain of the external Cognito user pool (custom domain if configured, else the Cognito prefix domain)"
+  value       = var.certificate_arn != "" ? "auth-external.${var.domain}" : "${aws_cognito_user_pool_domain.external_prefix.domain}.auth.${data.aws_region.current.name}.amazoncognito.com"
 }
 
 output "auth_memberships_table_name" {

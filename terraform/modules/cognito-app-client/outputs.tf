@@ -4,7 +4,7 @@ output "user_pool_id" {
 }
 
 output "user_pool_domain" {
-  description = "Hosted-UI FQDN of the selected pool (empty for external without a custom domain)"
+  description = "Hosted-UI FQDN of the selected pool (the external custom domain when one is passed in)"
   value       = local.pool_domain
 }
 
@@ -31,4 +31,20 @@ output "client_secret_arn" {
 output "request_parameter_name" {
   description = "SSM parameter holding the client request (empty for client_type = none)"
   value       = one(aws_ssm_parameter.auth_request[*].name)
+}
+
+output "client_id_parameter_name" {
+  description = "Name of the SSM parameter the platform writes the client ID to"
+  value       = "${local.param_prefix}/cognito-client-id"
+}
+
+output "client_secret_parameter_name" {
+  description = "Name of the SSM parameter the platform writes the client secret to (confidential clients)"
+  value       = "${local.param_prefix}/cognito-client-secret"
+}
+
+output "request_value" {
+  description = "The client request JSON. Changes whenever the request does; depends on the request parameter existing."
+  value       = local.request_value
+  depends_on  = [aws_ssm_parameter.auth_request]
 }

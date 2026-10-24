@@ -125,7 +125,7 @@ terraform/state/
 |--------|------|
 | `terraform/modules/platform-data/` | Read-only data sources for shared infra |
 | `terraform/modules/ecr-repo/` | ECR repository with lifecycle policy |
-| `terraform/modules/service-routing/` | ALB target group + listener rule + DNS |
+| `terraform/modules/service-routing/` | ALB target group + listener rule + DNS; optional per-path ALB sign-in (`routing.login`) |
 | `terraform/modules/service-role/` | ECS task IAM role with composable policies |
 | `terraform/modules/ecs-service/` | ECS Fargate service |
 | `terraform/modules/service-bucket/` | S3 bucket with IAM policy output |
@@ -169,8 +169,8 @@ terraform/state/
 | `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget |
 | `resource-tagger` | EventBridge-triggered, auto-tags created-by + commit on new resources |
 | `ci-broker` | Verifies the job's GitHub OIDC token (repo from signed claims), checks repo ∈ app.yaml team, vends short-lived team role credentials |
-| `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` (SSM request → client + credentials + allowed groups) |
-| `auth-claims` | Internal pool pre-token trigger: registry groups → `cognito:groups`, enforces app `auth.groups` (in `identity/`) |
+| `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` and `routing.login` (SSM request → client + credentials + allowed groups) |
+| `auth-claims` | Pre-token trigger: registry groups → `cognito:groups` (internal pool only), enforces per-client allowed groups; runs as `auth-claims-external` on the external pool (in `identity/`) |
 | `plan-review` | LLM review of app Terraform plans with platform credentials; writes `risk.json` (invoked by app tf-plan) |
 | `app-secret-rollout` | Restarts `{team}-{app}` when one of its secrets in `/javabin/apps/` changes (ECS reads secrets only at task start) |
 
