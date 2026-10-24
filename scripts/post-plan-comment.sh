@@ -33,6 +33,7 @@ PLAN_CLEAN_FILE="$(dirname "$PLAN_FILE")/plan-clean.txt"
 if [ ! -f "$PLAN_CLEAN_FILE" ]; then
   # Fallback: filter inline
   PLAN_CLEAN_FILE=$(mktemp)
+  trap 'rm -f "$PLAN_CLEAN_FILE"' EXIT
   grep -v -E '^(module\.|data\.|\s+#).*: (Refreshing state|Reading|Read complete)' "$PLAN_FILE" > "$PLAN_CLEAN_FILE" 2>/dev/null || true
 fi
 PLAN=$(head -c "$PLAN_COMMENT_CHARS" "$PLAN_CLEAN_FILE")
