@@ -6,7 +6,10 @@ CI workflows assume a lightweight broker role (can only invoke this Lambda),
 then receive team-scoped credentials if the repo belongs to a registered team.
 
 Actions:
-  - plan:   Returns credentials for javabin-ci-team-{team} (Terraform plan/apply)
+  - plan:   Returns credentials for javabin-ci-plan-{team} (read-only Terraform
+            plan: refresh, state lock, plan upload). Write access comes only
+            from the apply gate, which vends javabin-ci-team-{team} for a
+            reviewed plan.
   - deploy: Returns credentials for javabin-ci-deploy-{team} (Docker build/ECS deploy)
 """
 
@@ -31,7 +34,9 @@ PLAN_DURATION = 3600   # 1 hour for plan
 DEPLOY_DURATION = 900  # 15 minutes for deploy
 
 ROLE_MAP = {
-    "plan": f"{PROJECT}-ci-team-",
+    # Read-only: any branch of a team repo can run tf-plan, so plan
+    # credentials must not be able to change the team's resources.
+    "plan": f"{PROJECT}-ci-plan-",
     "deploy": f"{PROJECT}-ci-deploy-",
 }
 

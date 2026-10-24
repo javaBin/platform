@@ -319,15 +319,35 @@ resource "aws_iam_role_policy" "ci_app_broker" {
 }
 
 ################################################################################
-# 2. javabin-ci-team-{team} — Per-team Terraform role (plan + apply)
+# 2. javabin-ci-team-{team} — Per-team Terraform role (apply)
 #
 # Trust: ONLY the CI broker Lambda and apply-gate Lambda can assume these roles.
+# The broker vends javabin-ci-plan-{team} for plan (2b); the broker trust here
+# stays so a broker Lambda still on the old code keeps working during rollout.
 # No direct OIDC trust — the broker validates repo→team membership via GitHub
 # API before issuing credentials. This is the hard enforcement point.
 #
 # Permissions: Allow *:* with team-based tag isolation. Resources must be
 # tagged with the correct team name.
 ################################################################################
+
+locals {
+  state_bucket_arn = "arn:aws:s3:::${var.project}-terraform-state-${var.aws_account_id}"
+
+  # State keys a team's CI roles must not touch: the platform's own state
+  # (infra/ holds the Google OAuth client secret) and every other team's
+  # apps/{team}/ prefix. A Deny with NotResource would also hit every other
+  # S3 object in the account, so the forbidden prefixes are listed instead.
+  # The boundary's DenyXTeam exempts the state bucket, and AllowAll /
+  # ReadOnlyAccess cover every key, so without this Deny a team role could
+  # read (ci_plan) or overwrite (ci_team) any state in the bucket.
+  foreign_state_keys = {
+    for team in var.registered_teams : team => concat(
+      [for prefix in ["infra", "org", "state", "env:"] : "${local.state_bucket_arn}/${prefix}/*"],
+      [for other in var.registered_teams : "${local.state_bucket_arn}/apps/${other}/*" if other != team],
+    )
+  }
+}
 
 resource "aws_iam_role" "ci_team" {
   for_each = toset(var.registered_teams)
@@ -408,6 +428,12 @@ resource "aws_iam_role_policy" "ci_team_allow" {
         ]
       },
       {
+        Sid      = "DenyForeignTerraformState"
+        Effect   = "Deny"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"]
+        Resource = local.foreign_state_keys[each.key]
+      },
+      {
         # Terraform locking: DynamoDB scoped to team's state paths.
         Sid    = "AllowTerraformLocking"
         Effect = "Allow"
@@ -422,6 +448,142 @@ resource "aws_iam_role_policy" "ci_team_allow" {
             "dynamodb:LeadingKeys" = "${var.project}-terraform-state-${var.aws_account_id}/apps/${each.key}/*"
           }
         }
+      },
+    ]
+  })
+}
+
+################################################################################
+# 2b. javabin-ci-plan-{team} — Per-team read-only Terraform plan role
+#
+# Trust: ONLY the CI broker Lambda. The broker vends this role for tf-plan,
+# which runs on any branch and on pull requests. Write access to the team's
+# resources comes only from javabin-ci-team-{team}, which the apply gate
+# vends for a reviewed plan.
+#
+# Permissions: ReadOnlyAccess (refresh + data sources), the team's state
+# (read), the state lock, and the plan upload. Named ci-plan-*, not
+# ci-team-plan-*, so it cannot collide with a team called "plan-...".
+################################################################################
+
+resource "aws_iam_role" "ci_plan" {
+  for_each = toset(var.registered_teams)
+
+  name                 = "${var.project}-ci-plan-${each.key}"
+  permissions_boundary = aws_iam_policy.developer_boundary.arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowViaCIBroker"
+        Effect = "Allow"
+        Principal = {
+          AWS = var.ci_broker_role_arn
+        }
+        Action = "sts:AssumeRole"
+      },
+    ]
+  })
+
+  tags = {
+    Name = "${var.project}-ci-plan-${each.key}"
+    team = each.key
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ci_plan_readonly" {
+  for_each = toset(var.registered_teams)
+
+  role       = aws_iam_role.ci_plan[each.key].name
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+}
+
+resource "aws_iam_role_policy" "ci_plan" {
+  for_each = toset(var.registered_teams)
+
+  name = "plan-backend"
+  role = aws_iam_role.ci_plan[each.key].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # Terraform state: read-only. Plan never writes state. The Deny
+        # below is what keeps plan off other keys.
+        Sid    = "ReadTerraformState"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:ListBucket"]
+        Resource = [
+          "arn:aws:s3:::${var.project}-terraform-state-${var.aws_account_id}",
+          "arn:aws:s3:::${var.project}-terraform-state-${var.aws_account_id}/apps/${each.key}/*",
+        ]
+      },
+      {
+        # ReadOnlyAccess grants s3:Get* on every key, so the Allow above does
+        # not limit reads by itself. See local.foreign_state_keys.
+        Sid      = "DenyForeignTerraformState"
+        Effect   = "Deny"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
+        Resource = local.foreign_state_keys[each.key]
+      },
+      {
+        # Plan takes the state lock. Same scoping as ci_team.
+        Sid    = "AllowTerraformLocking"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem",
+        ]
+        Resource = "arn:aws:dynamodb:${var.region}:${var.aws_account_id}:table/${var.project}-terraform-app-locks"
+        Condition = {
+          "ForAllValues:StringLike" = {
+            "dynamodb:LeadingKeys" = "${var.project}-terraform-state-${var.aws_account_id}/apps/${each.key}/*"
+          }
+        }
+      },
+      {
+        # Refreshing aws_secretsmanager_secret_version reads the value;
+        # ReadOnlyAccess does not include it. Team-prefixed secrets only.
+        Sid      = "RefreshTeamSecrets"
+        Effect   = "Allow"
+        Action   = "secretsmanager:GetSecretValue"
+        Resource = "arn:aws:secretsmanager:${var.region}:${var.aws_account_id}:secret:${each.key}-*"
+      },
+      {
+        # SecureString / secret refresh decrypts through the owning service.
+        Sid      = "DecryptViaParameterServices"
+        Effect   = "Allow"
+        Action   = "kms:Decrypt"
+        Resource = "*" # Key ARNs are not known here; scoped by kms:ViaService
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = [
+              "ssm.${var.region}.amazonaws.com",
+              "secretsmanager.${var.region}.amazonaws.com",
+            ]
+          }
+        }
+      },
+      {
+        # upload-plan.sh stores tfplan + plan-output.txt for the apply gate.
+        Sid      = "UploadPlan"
+        Effect   = "Allow"
+        Action   = "s3:PutObject"
+        Resource = "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/plans/*"
+      },
+      {
+        # Review verdicts and overrides come only from the plan-review and
+        # apply-gate Lambdas; a plan job must not mark its own plan LOW.
+        Sid    = "DenyWriteReviewVerdicts"
+        Effect = "Deny"
+        Action = ["s3:PutObject", "s3:DeleteObject"]
+        Resource = [
+          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*/risk.json",
+          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*/review.json",
+          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*/override.json",
+        ]
       },
     ]
   })

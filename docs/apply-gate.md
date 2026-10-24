@@ -49,13 +49,29 @@ from the payload:
 Tokens are minted with `scripts/github-oidc-token.sh <audience>` and verified
 in `terraform/lambda-src/shared/github_oidc.py` (RS256 against GitHub's JWKS).
 
+Plan credentials are read-only. The broker vends `javabin-ci-plan-{team}`
+(ReadOnlyAccess, read on the team's state, the state lock, and PutObject on
+`plans/*`) to tf-plan, which runs on any branch. The only way to get the
+write-capable `javabin-ci-team-{team}` is through this gate, for a reviewed
+plan.
+
+State access is limited by an explicit Deny, not by the Allow. `ReadOnlyAccess`
+(plan) and `AllowAll` (team) cover every key in the state bucket, and the
+developer boundary's `DenyXTeam` exempts that bucket, because S3 objects carry
+no team tag. Both roles therefore carry `DenyForeignTerraformState`, which
+denies the platform's state (`infra/`, `org/`, `state/`, `env:/`) and every
+other registered team's `apps/{team}/` prefix. The list is built from
+`registered_teams`, so a new top-level prefix in the bucket must be added to
+`local.foreign_state_keys` in `terraform/platform/iam/main.tf`.
+
 ## IAM Roles
 
 | Role | Purpose | Permissions |
 |------|---------|-------------|
 | `javabin-ci-apply-gate` | OIDC role for tf-apply workflow | `lambda:InvokeFunction` on gate Lambda + `s3:GetObject` on plan bucket |
 | `javabin-apply-gate` | Lambda execution role | `ssm:GetParameter` (signing key) + `s3:Get/PutObject` (plan bucket) + `sts:AssumeRole` (app CI roles) |
-| `javabin-ci-app-{repo}` | App infrastructure role | Trusted by OIDC (plan/review) AND by gate Lambda role (apply) |
+| `javabin-ci-plan-{team}` | Read-only plan role | Vended by the CI broker for tf-plan: ReadOnlyAccess + own state read (other keys denied) + lock + plan upload |
+| `javabin-ci-team-{team}` | Team infrastructure role (write) | Vended by the gate Lambda for a reviewed plan (apply); other teams' and platform state denied |
 
 ## Credential Lifetime
 
