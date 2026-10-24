@@ -17,6 +17,8 @@ Terraform in `terraform/platform/lambdas/`.
 
 Features: GitHub OIDC attribution (extracts actor/repo/SHA from session tags), cost estimation via shared pricing module, Security Hub finding formatting.
 
+ECS `SERVICE_TASK_START_IMPAIRED` events from the platform cluster (a crash-looping service) are posted to #javabin-infra-alerts at most once per service per UTC day.
+
 Uses the `javabin-alert-dedup` DynamoDB table for deduplication of alerts (prevents repeated notifications for the same finding).
 
 ## cost-report
