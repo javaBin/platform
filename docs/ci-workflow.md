@@ -32,9 +32,11 @@ Monday 08:00   ──► securityhub-summary Lambda ──► #javabin-infra-ale
 - Downloads plan from S3, verifies SHA256 integrity
 - `terraform apply -auto-approve tfplan`
 - Uses `environment: production` (GitHub environment protection)
+- OIDC → `javabin-ci-infra`. The role's trust also pins `job_workflow_ref` to `platform-ci.yml@refs/heads/main`, because the environment-based `sub` claim carries no branch. A workflow on another branch that declares `environment: production` cannot assume it.
 
 ### drift
 - Weekly schedule (Monday 06:00 UTC)
+- OIDC → `javabin-ci-infra-plan` (read-only; drift never applies)
 - Runs `terraform plan -detailed-exitcode`
 - If drift detected, posts to Slack with plan output
 
