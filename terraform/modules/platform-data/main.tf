@@ -58,8 +58,10 @@ data "aws_ecs_cluster" "main" {
   cluster_name = "${var.project}-platform"
 }
 
+# Per-team execution role (created by platform CI for every registered team);
+# it can read only /<project>/apps/<team>/* secrets.
 data "aws_iam_role" "ecs_execution" {
-  name = "${var.project}-ecs-execution"
+  name = "${var.project}-ecs-exec-${var.team}"
 }
 
 data "aws_route53_zone" "main" {

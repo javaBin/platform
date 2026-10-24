@@ -1,5 +1,9 @@
 #!/bin/sh
-# Commit and push generated Terraform files with [skip ci].
+# Commit and push generated Terraform files.
+#
+# No [skip ci]: the push uses the caller's GITHUB_TOKEN, which never starts
+# workflows, and a [skip ci] in the message ends up in squash-merge commits,
+# silently skipping the deploy of the merged PR.
 #
 # Usage: commit-generated-tf.sh <tf_root> <branch>
 #
@@ -28,6 +32,6 @@ if [ "${FORK_PR:-false}" = "true" ]; then
   exit 0
 fi
 
-git commit -m "[skip ci] Update generated Terraform from app.yaml"
+git commit -m "chore(terraform): update generated Terraform from app.yaml"
 git push origin "HEAD:${BRANCH}"
 echo "Committed generated Terraform files."

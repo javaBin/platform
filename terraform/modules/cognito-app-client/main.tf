@@ -40,14 +40,20 @@ locals {
   pool_domain = var.pool == "internal" ? "${var.internal_pool_name}.auth.${local.region}.amazoncognito.com" : var.external_pool_custom_domain
 }
 
+# Validate-only apps (client_type = "none") only verify tokens issued to
+# other clients; they get pool metadata but request no client.
 resource "aws_ssm_parameter" "auth_request" {
+  count = var.client_type == "none" ? 0 : 1
+
   name        = "${local.param_prefix}/auth"
   description = "Cognito client request for ${var.team}-${var.app_name} — read by the platform app-auth-sync Lambda"
   type        = "String"
   value = jsonencode({
-    pool          = var.pool
-    callback_urls = var.callback_urls
-    logout_urls   = var.logout_urls
-    scopes        = var.allowed_oauth_scopes
+    pool           = var.pool
+    client_type    = var.client_type
+    callback_urls  = var.callback_urls
+    logout_urls    = var.logout_urls
+    scopes         = var.allowed_oauth_scopes
+    allowed_groups = var.allowed_groups
   })
 }

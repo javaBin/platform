@@ -34,7 +34,9 @@ logger.setLevel(logging.INFO)
 ssm = boto3.client("ssm")
 budgets_client = boto3.client("budgets")
 cognito_client = boto3.client("cognito-idp")
+dynamodb_client = boto3.client("dynamodb")
 identitystore_client = boto3.client("identitystore")
+iam_client = boto3.client("iam")
 
 GOOGLE_SA_PARAM = os.environ.get(
     "GOOGLE_SA_PARAM", "/javabin/platform/google-admin-sa"
@@ -835,6 +837,51 @@ def sync_budget(team):
 # Cognito + Identity Center — stubs with clear extension points
 # ---------------------------------------------------------------------------
 
+MEMBERSHIPS_TABLE = os.environ.get("MEMBERSHIPS_TABLE", "")
+
+
+def _write_membership(group_name, emails):
+    """Record a group's registry members for the auth-claims trigger.
+
+    Cognito has no membership for federated users until they sign in, so the
+    pre-token trigger puts groups into tokens from this table instead.
+    """
+    if not MEMBERSHIPS_TABLE:
+        return
+    dynamodb_client.put_item(
+        TableName=MEMBERSHIPS_TABLE,
+        Item={
+            "pk": {"S": f"group#{group_name}"},
+            "members": {"L": [{"S": e.lower()} for e in sorted(set(emails)) if e]},
+            "source": {"S": "registry"},
+        },
+    )
+
+
+def _prune_memberships(current_groups):
+    """Delete recorded registry groups that are gone or no longer cognito-enabled.
+
+    team-<name> rows are owned by team sync and are left alone.
+    """
+    if not MEMBERSHIPS_TABLE:
+        return []
+    pruned, kwargs = [], {"TableName": MEMBERSHIPS_TABLE, "ProjectionExpression": "pk"}
+    while True:
+        page = dynamodb_client.scan(**kwargs)
+        for item in page.get("Items", []):
+            pk = item["pk"]["S"]
+            name = pk[len("group#"):]
+            if pk.startswith("group#") and not name.startswith("team-") and name not in current_groups:
+                dynamodb_client.delete_item(TableName=MEMBERSHIPS_TABLE, Key={"pk": {"S": pk}})
+                pruned.append(name)
+        if "LastEvaluatedKey" not in page:
+            break
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    if pruned:
+        logger.info("Pruned stale auth memberships: %s", pruned)
+    return pruned
+
+
 def sync_cognito_group(team):
     """Create or update a Cognito group in the internal user pool and sync membership.
 
@@ -925,6 +972,7 @@ def sync_cognito_group(team):
             )
             logger.info("Removed %s from Cognito group %s", email, group_name)
 
+    _write_membership(group_name, desired_emails)
     return {"synced": True, "group": group_name, "member_count": len(desired_emails)}
 
 
@@ -1075,13 +1123,21 @@ def _get_google_group_members(group_email):
 
 
 def sync_group_to_cognito(group):
-    """Ensure a Cognito group exists. No member sync — JIT handles it at sign-in."""
+    """Ensure a Cognito group exists and record its registry members.
+
+    Members reach tokens through the auth-claims pre-token trigger, which
+    reads the memberships table — Cognito group membership is not synced.
+    """
     if not COGNITO_INTERNAL_POOL_ID:
         return {"skipped": True, "reason": "cognito_pool_not_configured"}
     if not group.get("cognito"):
         return {"skipped": True, "reason": "cognito_not_enabled"}
 
     group_name = group["name"]
+    # Only payloads with resolved members (sync_groups_and_heros) carry a
+    # member list; others must not wipe the recorded membership.
+    if "members" in group:
+        _write_membership(group_name, group["members"])
     google_email = group["google"]
     pool_id = COGNITO_INTERNAL_POOL_ID
 
@@ -1264,9 +1320,12 @@ def _create_account_assignment(ps_arn, group_id, label=""):
 def _ensure_team_permission_set(team_name, group_id):
     """Create a per-team permission set and assign it to the team's IC group.
 
-    Uses the developer permission boundary for guardrails. The inline policy
-    allows broad access but scoped to resources tagged with the team name.
-    The boundary controls what actions are actually permitted.
+    Guardrails come from javabin-team-{team}-guardrails (platform Terraform):
+    the developer boundary's rules with the team name written in. The shared
+    developer boundary can't be used here: its rules compare resource tags
+    with ${aws:PrincipalTag/team}, and Identity Center sessions carry no team
+    tag, so it would deny every team-scoped resource. The inline policy
+    allows broad access scoped to resources tagged with the team name.
     """
     ps_name = f"{PROJECT}-team-{team_name}"
 
@@ -1292,19 +1351,36 @@ def _ensure_team_permission_set(team_name, group_id):
     if not ps_arn:
         return {"error": "could not create or find permission set"}
 
-    # Attach permission boundary
+    # Attach the team's guardrails; drop the shared boundary from older setups.
+    # Only a policy platform Terraform created: platform CI may not have made
+    # it yet for a brand-new team (or never, for non-app teams like
+    # platform). Then leave the permission set as it is and report pending.
+    guardrails = f"{PROJECT}-team-{team_name}-guardrails"
+    state = _guardrails_state(guardrails)
+    if state != "ok":
+        logger.warning("Not switching %s to %s: %s", ps_name, guardrails, state)
+        return {"permission_set": ps_name, "guardrails": state}
     try:
         sso_client.attach_customer_managed_policy_reference_to_permission_set(
             InstanceArn=SSO_INSTANCE_ARN,
             PermissionSetArn=ps_arn,
-            CustomerManagedPolicyReference={
-                "Name": DEVELOPER_BOUNDARY_NAME,
-            },
+            CustomerManagedPolicyReference={"Name": guardrails},
         )
     except sso_client.exceptions.ConflictException:
         pass  # already attached
     except Exception as e:
-        logger.error("Failed to attach boundary to %s: %s", ps_name, e)
+        logger.error("Failed to attach %s to %s: %s", guardrails, ps_name, e)
+    try:
+        sso_client.detach_customer_managed_policy_reference_from_permission_set(
+            InstanceArn=SSO_INSTANCE_ARN,
+            PermissionSetArn=ps_arn,
+            CustomerManagedPolicyReference={"Name": DEVELOPER_BOUNDARY_NAME},
+        )
+        logger.info("Detached %s from %s", DEVELOPER_BOUNDARY_NAME, ps_name)
+    except sso_client.exceptions.ResourceNotFoundException:
+        pass  # not attached
+    except Exception as e:
+        logger.error("Failed to detach %s from %s: %s", DEVELOPER_BOUNDARY_NAME, ps_name, e)
 
     # Set inline policy — broad allow scoped to team-tagged resources
     policy = {
@@ -1320,6 +1396,30 @@ def _ensure_team_permission_set(team_name, group_id):
                         "aws:ResourceTag/team": team_name,
                     }
                 },
+            },
+            {
+                # Platform-managed parameters in the team path: Cognito
+                # credentials (app-auth-sync), the auth request (app
+                # Terraform), RDS master passwords (the DB keeps the original).
+                "Sid": "DenyPlatformManagedParameters",
+                "Effect": "Deny",
+                "Action": ["ssm:PutParameter", "ssm:DeleteParameter", "ssm:DeleteParameters",
+                           "ssm:LabelParameterVersion"],
+                "Resource": [
+                    f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*/*/cognito-client-*",
+                    f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*/*/auth",
+                    f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*/*/db-master-password",
+                ],
+            },
+            {
+                # Only overwrite secrets the platform created: a hand-made
+                # parameter makes the app's next terraform apply fail.
+                # (PutParameter supports ssm:Overwrite, not aws:ResourceTag.)
+                "Sid": "DenyCreatingParameters",
+                "Effect": "Deny",
+                "Action": "ssm:PutParameter",
+                "Resource": f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*",
+                "Condition": {"BoolIfExists": {"ssm:Overwrite": "false"}},
             },
             {
                 "Sid": "AllowUntaggedReads",
@@ -1353,7 +1453,59 @@ def _ensure_team_permission_set(team_name, group_id):
     # Assign to group and wait for completion
     result = _create_account_assignment(ps_arn, group_id, ps_name)
     result["permission_set"] = ps_name
+    # Push policy changes to the role in the account (needed for existing
+    # assignments; a new assignment provisions on creation)
+    result["provisioned"] = _provision_permission_set(ps_arn, ps_name)
     return result
+
+
+def _guardrails_state(policy_name):
+    """'ok' if the team guardrails policy exists and was created by platform
+    Terraform; otherwise a short reason (it is attached by name, so a
+    look-alike created by someone else must never be used)."""
+    arn = f"arn:aws:iam::{ACCOUNT_ID}:policy/{policy_name}"
+    try:
+        tags = {t["Key"]: t["Value"] for t in iam_client.list_policy_tags(PolicyArn=arn)["Tags"]}
+    except iam_client.exceptions.NoSuchEntityException:
+        return "pending: policy not created yet (platform CI creates it for registry teams)"
+    if tags.get("managed-by") != "terraform" or tags.get("repo") != f"{GITHUB_ORG}/platform":
+        return "refused: policy exists but was not created by platform Terraform"
+    return "ok"
+
+
+def _provision_permission_set(ps_arn, label):
+    """Re-provision a permission set to the account and wait (up to ~60 s)."""
+    try:
+        resp = sso_client.provision_permission_set(
+            InstanceArn=SSO_INSTANCE_ARN,
+            PermissionSetArn=ps_arn,
+            TargetId=ACCOUNT_ID,
+            TargetType="AWS_ACCOUNT",
+        )
+    except Exception as e:
+        logger.error("Failed to provision %s: %s", label, e)
+        return {"error": str(e)[:200]}
+    request_id = resp.get("PermissionSetProvisioningStatus", {}).get("RequestId")
+    if not request_id:
+        return {"status": "requested"}
+    for _ in range(60):
+        time.sleep(1)
+        try:
+            status = sso_client.describe_permission_set_provisioning_status(
+                InstanceArn=SSO_INSTANCE_ARN,
+                ProvisionPermissionSetRequestId=request_id,
+            ).get("PermissionSetProvisioningStatus", {})
+        except Exception as e:
+            logger.error("Provisioning status for %s unavailable: %s", label, e)
+            return {"status": "unknown", "error": str(e)[:200]}
+        if status.get("Status") == "SUCCEEDED":
+            return {"status": "SUCCEEDED"}
+        if status.get("Status") == "FAILED":
+            # e.g. the guardrails policy doesn't exist yet for a brand-new team:
+            # platform CI creates it, and the next provisioning run succeeds
+            logger.error("Provisioning %s failed: %s", label, status.get("FailureReason"))
+            return {"status": "FAILED", "reason": status.get("FailureReason", "")[:200]}
+    return {"status": "timed_out"}
 
 
 def _resolve_permission_set_arn(name):
@@ -1746,6 +1898,14 @@ def handle_sync_groups_and_heros(event):
         notify_slack(results, ci_context=event.get("ci_context"))
     except Exception as e:
         logger.error("Slack notification failed: %s", e)
+
+
+    # Full group list: drop memberships of removed / no-longer-cognito groups
+    try:
+        results["auth_memberships_pruned"] = _prune_memberships(
+            {g["name"] for g in groups if g.get("cognito")})
+    except Exception as e:
+        logger.error("Pruning auth memberships failed: %s", e)
 
     return {
         "statusCode": 200,

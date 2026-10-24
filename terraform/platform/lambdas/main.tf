@@ -609,6 +609,12 @@ resource "aws_iam_role_policy" "team_provisioner" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid      = "WriteAuthMemberships"
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Scan"]
+        Resource = var.auth_memberships_table_arn
+      },
+      {
         Sid    = "SSMRead"
         Effect = "Allow"
         Action = "ssm:GetParameter"
@@ -668,8 +674,18 @@ resource "aws_iam_role_policy" "team_provisioner" {
           "sso:CreatePermissionSet",
           "sso:PutInlinePolicyToPermissionSet",
           "sso:AttachCustomerManagedPolicyReferenceToPermissionSet",
+          "sso:DetachCustomerManagedPolicyReferenceFromPermissionSet",
+          "sso:ProvisionPermissionSet",
+          "sso:DescribePermissionSetProvisioningStatus",
         ]
         Resource = "*"
+      },
+      {
+        # Provisioning a permission set reads its customer-managed policies
+        Sid      = "ReadTeamGuardrails"
+        Effect   = "Allow"
+        Action   = ["iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyTags"]
+        Resource = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-team-*-guardrails"
       },
       {
         Sid    = "IAMForSSOAssignment"
@@ -903,6 +919,7 @@ resource "aws_lambda_function" "team_provisioner" {
       GITHUB_ORG                   = "javaBin"
       ALERTS_TOPIC_ARN             = var.alerts_topic_arn
       COGNITO_INTERNAL_POOL_ID     = var.internal_user_pool_id
+      MEMBERSHIPS_TABLE            = var.auth_memberships_table_name
       IDENTITY_STORE_ID            = var.identity_store_id
       SSO_INSTANCE_ARN             = var.sso_instance_arn
       PROJECT                      = var.project
@@ -1383,6 +1400,10 @@ data "archive_file" "apply_gate" {
     content  = file("${local.lambda_src_path}/shared/github.py")
     filename = "shared/github.py"
   }
+  source {
+    content  = file("${local.lambda_src_path}/shared/github_oidc.py")
+    filename = "shared/github_oidc.py"
+  }
 }
 
 resource "aws_iam_role" "apply_gate" {
@@ -1486,6 +1507,10 @@ data "archive_file" "ci_broker" {
   source {
     content  = file("${local.lambda_src_path}/shared/github.py")
     filename = "shared/github.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/github_oidc.py")
+    filename = "shared/github_oidc.py"
   }
 }
 
@@ -1626,6 +1651,12 @@ resource "aws_iam_role_policy" "app_auth_sync" {
         ]
       },
       {
+        Sid      = "WriteClientAllowedGroups"
+        Effect   = "Allow"
+        Action   = ["dynamodb:PutItem", "dynamodb:DeleteItem"]
+        Resource = var.auth_memberships_table_arn
+      },
+      {
         Sid    = "WriteClientCredentials"
         Effect = "Allow"
         Action = [
@@ -1664,7 +1695,8 @@ resource "aws_lambda_function" "app_auth_sync" {
 
   environment {
     variables = {
-      PROJECT = var.project
+      PROJECT           = var.project
+      MEMBERSHIPS_TABLE = var.auth_memberships_table_name
     }
   }
 }
@@ -1718,4 +1750,229 @@ resource "aws_lambda_permission" "app_auth_sync_reconcile" {
   function_name = aws_lambda_function.app_auth_sync.function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.app_auth_sync_reconcile.arn
+}
+
+################################################################################
+# Plan Review — LLM risk review of app Terraform plans (javabin-plan-review)
+#
+# App tf-plan jobs run with team CI roles, which the developer boundary keeps
+# away from Bedrock. tf-plan invokes this Lambda (via the broker OIDC role)
+# with its GitHub OIDC token; the Lambda reviews the plan text in the plan
+# bucket and writes risk.json, which team roles cannot write themselves.
+################################################################################
+
+locals {
+  plan_bucket = "${var.project}-ci-plan-artifacts-${var.aws_account_id}"
+}
+
+data "archive_file" "plan_review" {
+  type             = "zip"
+  output_path      = "${path.module}/builds/plan_review.zip"
+  output_file_mode = "0644"
+
+  source {
+    content  = file("${local.lambda_src_path}/plan_review/handler.py")
+    filename = "handler.py"
+  }
+  # Same prompt and schema as platform CI's own review
+  source {
+    content  = file("${path.module}/../../../scripts/review-plan.py")
+    filename = "review_plan.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/__init__.py")
+    filename = "shared/__init__.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/github_oidc.py")
+    filename = "shared/github_oidc.py"
+  }
+  source {
+    content  = file("${local.lambda_src_path}/shared/slack.py")
+    filename = "shared/slack.py"
+  }
+}
+
+resource "aws_iam_role" "plan_review" {
+  name = "${var.project}-plan-review"
+  # The org boundary denies creating any role without one
+  permissions_boundary = var.org_boundary_arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "plan_review" {
+  name = "${var.project}-plan-review"
+  role = aws_iam_role.plan_review.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ReadPlanText"
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "arn:aws:s3:::${local.plan_bucket}/plans/*/plan-output.txt"
+      },
+      {
+        Sid    = "WriteReview"
+        Effect = "Allow"
+        Action = "s3:PutObject"
+        Resource = [
+          "arn:aws:s3:::${local.plan_bucket}/plans/*/risk.json",
+          "arn:aws:s3:::${local.plan_bucket}/plans/*/review.json",
+        ]
+      },
+      {
+        Sid      = "BedrockInferenceProfile"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:Converse"]
+        Resource = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
+      },
+      {
+        # Cross-region inference profiles route to EU foundation models;
+        # the condition only allows them via our inference profiles.
+        Sid      = "BedrockFoundationModels"
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:Converse"]
+        Resource = "arn:aws:bedrock:eu-*::foundation-model/anthropic.*"
+        Condition = {
+          StringLike = {
+            "bedrock:InferenceProfileArn" = "arn:aws:bedrock:${var.region}:${var.aws_account_id}:inference-profile/eu.anthropic.*"
+          }
+        }
+      },
+      {
+        Sid      = "SlackWebhook"
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/slack/platform-override-alerts-webhook"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "plan_review_logs" {
+  role       = aws_iam_role.plan_review.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_function" "plan_review" {
+  function_name    = "${var.project}-plan-review"
+  role             = aws_iam_role.plan_review.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 300
+  memory_size      = 256
+  filename         = data.archive_file.plan_review.output_path
+  source_code_hash = data.archive_file.plan_review.output_base64sha256
+
+  environment {
+    variables = {
+      PROJECT     = var.project
+      PLAN_BUCKET = local.plan_bucket
+    }
+  }
+}
+
+################################################################################
+# App Secret Rollout — restart an app when one of its secrets changes
+#
+# ECS reads task secrets only at task start. Teams can set their own secret
+# values (javabin secret set) but have no ecs:UpdateService, so this Lambda
+# forces a new deployment of {team}-{app} on every secret update.
+################################################################################
+
+data "archive_file" "app_secret_rollout" {
+  type             = "zip"
+  output_path      = "${path.module}/builds/app_secret_rollout.zip"
+  output_file_mode = "0644"
+  source_dir       = "${local.lambda_src_path}/app_secret_rollout"
+}
+
+resource "aws_iam_role" "app_secret_rollout" {
+  name = "${var.project}-app-secret-rollout"
+  # The org boundary denies creating any role without one
+  permissions_boundary = var.org_boundary_arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "app_secret_rollout" {
+  name = "${var.project}-app-secret-rollout"
+  role = aws_iam_role.app_secret_rollout.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "RestartAppServices"
+      Effect   = "Allow"
+      Action   = "ecs:UpdateService"
+      Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:service/${var.project}-platform/*"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "app_secret_rollout_logs" {
+  role       = aws_iam_role.app_secret_rollout.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_lambda_function" "app_secret_rollout" {
+  function_name    = "${var.project}-app-secret-rollout"
+  role             = aws_iam_role.app_secret_rollout.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 30
+  memory_size      = 128
+  filename         = data.archive_file.app_secret_rollout.output_path
+  source_code_hash = data.archive_file.app_secret_rollout.output_base64sha256
+
+  environment {
+    variables = {
+      PROJECT = var.project
+    }
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "app_secret_rollout_trigger" {
+  name        = "${var.project}-app-secret-rollout-trigger"
+  description = "An app secret value was changed"
+
+  event_pattern = jsonencode({
+    source      = ["aws.ssm"]
+    detail-type = ["Parameter Store Change"]
+    detail = {
+      name      = [{ prefix = "/${var.project}/apps/" }]
+      operation = ["Update"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "app_secret_rollout" {
+  rule      = aws_cloudwatch_event_rule.app_secret_rollout_trigger.name
+  target_id = "invoke-app-secret-rollout"
+  arn       = aws_lambda_function.app_secret_rollout.arn
+}
+
+resource "aws_lambda_permission" "app_secret_rollout_eventbridge" {
+  statement_id  = "AllowEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.app_secret_rollout.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.app_secret_rollout_trigger.arn
 }

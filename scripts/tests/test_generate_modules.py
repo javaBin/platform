@@ -122,12 +122,56 @@ class GenerationTest(unittest.TestCase):
         self.assertNotIn('module "alarms"', main)
 
 
+class AuthFeaturesTest(unittest.TestCase):
+    def test_public_client_gets_id_but_no_secret(self):
+        app = {**FROSTING, "auth": {**FROSTING["auth"], "client": "public"}}
+        main = generate(app)["main.tf"]
+        self.assertIn('"public"', main)
+        self.assertIn("COGNITO_CLIENT_ID", main)
+        self.assertNotIn("COGNITO_CLIENT_SECRET", main)
+
+    def test_validate_only_injects_issuer_without_client_or_host(self):
+        app = {"name": "api", "team": "core", "auth": {"pool": "internal", "client": "none"}}
+        main = generate(app)["main.tf"]
+        self.assertIn("module.auth.well_known_url", main)
+        self.assertNotIn("COGNITO_CLIENT_ID", main)
+        self.assertNotIn("callback_urls", main)
+
+    def test_env_aliases_expose_values_under_app_names(self):
+        app = {**FROSTING, "auth": {"pool": "internal", "client": "public",
+                                    "env": {"COGNITO_CLIENT_ID": "NUXT_PUBLIC_OIDC_CLIENT_ID",
+                                            "COGNITO_ISSUER_URL": "NUXT_PUBLIC_OIDC_AUTHORITY"}}}
+        main = generate(app)["main.tf"]
+        self.assertRegex(main, r"NUXT_PUBLIC_OIDC_CLIENT_ID\s+= module.auth.client_id_arn")
+        self.assertRegex(main, r"NUXT_PUBLIC_OIDC_AUTHORITY\s+= module.auth.issuer_url")
+
+    def test_alias_of_value_not_injected_is_rejected(self):
+        app = {**FROSTING, "auth": {"pool": "internal", "client": "public",
+                                    "env": {"COGNITO_CLIENT_SECRET": "SECRET"}}}
+        with self.assertRaises(gen.AppYamlError) as cm:
+            generate(app)
+        self.assertIn("not injected", str(cm.exception))
+
+    def test_groups_restrict_the_client(self):
+        app = {**CUPCAKE, "auth": {"pool": "internal", "groups": ["helter"]}}
+        main = generate(app)["main.tf"]
+        self.assertIn('allowed_groups', main)
+        self.assertIn('["helter"]', main)
+
+    def test_localhost_callbacks_are_passed_through(self):
+        app = {**FROSTING, "auth": {"pool": "internal", "client": "public",
+                                    "callback_urls": ["https://cupcake.javazone.no/", "http://localhost:3000/"]}}
+        self.assertIn('"http://localhost:3000/"', generate(app)["main.tf"])
+
+
 @unittest.skipUnless(shutil.which("terraform"), "terraform not installed")
 class FmtTest(unittest.TestCase):
     """tf-plan runs `terraform fmt -check`; generated files must pass it."""
 
     def test_generated_files_are_fmt_clean(self):
-        for app in (CUPCAKE, FROSTING, FULL, {"name": "worker", "team": "core"}):
+        public = {**FROSTING, "auth": {"pool": "internal", "client": "public", "groups": ["helter"],
+                                       "env": {"COGNITO_CLIENT_ID": "NUXT_PUBLIC_OIDC_CLIENT_ID"}}}
+        for app in (CUPCAKE, FROSTING, FULL, public, {"name": "worker", "team": "core"}):
             with tempfile.TemporaryDirectory() as d:
                 for name, content in generate(app).items():
                     with open(os.path.join(d, name), "w") as f:

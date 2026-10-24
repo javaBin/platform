@@ -70,7 +70,8 @@ jobs:
       risk_level: ${{ steps.review.outputs.risk_level }}
     steps:
       - name: Set session name
-        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | head -c 64)" >> "$GITHUB_ENV"
+        # Bot actors (renovate[bot]) contain characters STS rejects in session names
+        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | tr -c 'A-Za-z0-9+=,.@_\n-' '-' | head -c 64)" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v6
         with:
@@ -154,7 +155,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: lambda-zips
-          path: ${{ env.TF_ROOT }}/lambdas/builds/
+          # Every module's archive_file output (lambdas/, identity/, ...).
+          # Paths are kept relative to TF_ROOT, the part before the wildcard.
+          path: ${{ env.TF_ROOT }}/*/builds/*.zip
+          if-no-files-found: error
           retention-days: 1
 
       # ----------------------------------------------------------------
@@ -192,7 +196,8 @@ jobs:
     environment: production
     steps:
       - name: Set session name
-        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | head -c 64)" >> "$GITHUB_ENV"
+        # Bot actors (renovate[bot]) contain characters STS rejects in session names
+        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | tr -c 'A-Za-z0-9+=,.@_\n-' '-' | head -c 64)" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v6
 
@@ -216,7 +221,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: lambda-zips
-          path: ${{ env.TF_ROOT }}/lambdas/builds/
+          path: ${{ env.TF_ROOT }}/
 
       - name: Download plan from S3
         working-directory: ${{ env.TF_ROOT }}
@@ -243,7 +248,8 @@ jobs:
     if: github.event_name == 'schedule'
     steps:
       - name: Set session name
-        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | head -c 64)" >> "$GITHUB_ENV"
+        # Bot actors (renovate[bot]) contain characters STS rejects in session names
+        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | tr -c 'A-Za-z0-9+=,.@_\n-' '-' | head -c 64)" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v6
 

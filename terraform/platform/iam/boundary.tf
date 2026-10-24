@@ -19,13 +19,8 @@
 
 locals {
   org_boundary_arn = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-org-boundary"
-}
 
-resource "aws_iam_policy" "developer_boundary" {
-  name        = "${var.project}-developer-boundary"
-  description = "Permission boundary for all non-platform roles. Self-replicating: roles with this boundary can only create roles that also carry it."
-
-  policy = jsonencode({
+  developer_boundary_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       # -- BASELINE --
@@ -43,9 +38,15 @@ resource "aws_iam_policy" "developer_boundary" {
           "iam:DeletePolicy",
           "iam:DeletePolicyVersion",
           "iam:CreatePolicyVersion",
-          "iam:SetDefaultPolicyVersion"
+          "iam:SetDefaultPolicyVersion",
+          # Stops pre-creating a not-yet-registered team's guardrails with
+          # Allow * before team-provisioner attaches them by name
+          "iam:CreatePolicy", "iam:TagPolicy", "iam:UntagPolicy",
         ]
-        Resource = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary"
+        Resource = [
+          "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary",
+          "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-team-*-guardrails",
+        ]
       },
       {
         Sid      = "DenyNoBnd"
@@ -146,9 +147,11 @@ resource "aws_iam_policy" "developer_boundary" {
           "ec2:Delete*", "ec2:Modify*",
           "elasticloadbalancing:Delete*", "elasticloadbalancing:Modify*",
           "ecs:DeleteCluster", "ecs:UpdateCluster", "ecs:UpdateClusterSettings",
-          "iam:DeleteRole", "iam:UpdateRole", "iam:DeleteRolePolicy",
+          "iam:DeleteRole", "iam:UpdateRole", "iam:DeleteRolePolicy", "iam:UpdateAssumeRolePolicy",
           "iam:PutRolePolicy", "iam:AttachRolePolicy", "iam:DetachRolePolicy",
           "route53:DeleteHostedZone", "sns:DeleteTopic", "sns:SetTopicAttributes",
+          # Shared SGs (ECS tasks, ALB): a team rule here opens or cuts every app
+          "ec2:AuthorizeSecurityGroup*", "ec2:RevokeSecurityGroup*",
         ]
         Resource  = "*"
         Condition = { StringEquals = { "aws:ResourceTag/team" = "shared" } }
@@ -184,7 +187,7 @@ resource "aws_iam_policy" "developer_boundary" {
         Action = "iam:PassRole"
         NotResource = [
           "arn:aws:iam::*:role/$${aws:PrincipalTag/team}-*",
-          "arn:aws:iam::*:role/${var.project}-ecs-execution",
+          "arn:aws:iam::*:role/${var.project}-ecs-exec-$${aws:PrincipalTag/team}",
         ]
       },
       {
@@ -252,8 +255,44 @@ resource "aws_iam_policy" "developer_boundary" {
       },
     ]
   })
+}
+
+resource "aws_iam_policy" "developer_boundary" {
+  name        = "${var.project}-developer-boundary"
+  description = "Permission boundary for all non-platform roles. Self-replicating: roles with this boundary can only create roles that also carry it."
+
+  policy = local.developer_boundary_policy
 
   tags = {
     Name = "${var.project}-developer-boundary"
+  }
+}
+
+################################################################################
+# Per-team guardrails: javabin-team-{team}-guardrails
+#
+# The same rules as the developer boundary with the team name written in.
+# Identity Center sessions carry no usable team tag (the ABAC attribute is
+# never set on users), so ${aws:PrincipalTag/team} is empty for humans and
+# DenyXTeam would deny everything team-scoped. Each per-team permission set
+# (javabin-team-{team}, created by team-provisioner) knows its team, so it
+# attaches this rendered copy instead. Multi-team heroes pick the team by
+# picking the permission set.
+#
+# Self-protected by DenyBndMod in the developer boundary (team CI roles
+# cannot create new versions).
+################################################################################
+
+resource "aws_iam_policy" "team_guardrails" {
+  for_each = toset(var.registered_teams)
+
+  name        = "${var.project}-team-${each.key}-guardrails"
+  description = "Developer boundary rules for team ${each.key}, for its Identity Center permission set"
+  policy      = replace(local.developer_boundary_policy, "$${aws:PrincipalTag/team}", each.key)
+
+  tags = {
+    Name     = "${var.project}-team-${each.key}-guardrails"
+    team     = "shared"
+    for-team = each.key
   }
 }

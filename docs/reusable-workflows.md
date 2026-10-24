@@ -85,7 +85,7 @@ pnpm install + `build` + `test`. `build` and `test` are skipped when `package.js
 
 ### expand-terraform.yml
 
-Runs `scripts/generate-modules.py`: validates `app.yaml` (unknown or unsupported fields fail with a message), writes `terraform/` and commits it back to the branch with `scripts/commit-generated-tf.sh`. The push uses the caller's `GITHUB_TOKEN`, so it never triggers another run. On PRs from forks the push is skipped.
+Runs `scripts/generate-modules.py`: validates `app.yaml` (unknown or unsupported fields fail with a message), writes `terraform/` and commits it back to the branch with `scripts/commit-generated-tf.sh`. The push uses the caller's `GITHUB_TOKEN`, so it never triggers another run. The commit message (`chore(terraform): update generated Terraform from app.yaml`) deliberately has no skip-CI marker: squash merges copy commit messages, and the marker would skip the merged PR's deploy. On PRs from forks the push is skipped.
 
 ### docker-build.yml
 
@@ -103,9 +103,9 @@ Docker BuildKit build + push to ECR repo `{team}-{app_name}`. Uses GitHub Action
 
 ### tf-plan.yml
 
-Plans the committed `terraform/` at the branch head (after expand), uploads the plan to S3 with its SHA256, runs the LLM review (`scripts/review-plan.py`, Bedrock Claude Haiku 5.5) and posts plan + review to the PR.
+Plans the committed `terraform/` at the branch head (after expand), uploads the plan to S3 with its SHA256, has the `javabin-plan-review` Lambda review it (Bedrock Claude Haiku 5.5, platform credentials; it writes `risk.json`) and posts plan + review to the PR. A review that cannot run after retries is `FAILED`: re-run the workflow, or request an override if it persists.
 
-**AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-team-{team}`
+**AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-team-{team}`; the review step uses the broker OIDC role to invoke `javabin-plan-review`
 **Outputs:** `has_changes`, `plan_key`, `plan_sha256`, `risk_level`, `planned_sha`
 
 ### tf-apply.yml

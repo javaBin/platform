@@ -306,12 +306,14 @@ resource "aws_iam_role_policy" "ci_app_broker" {
   name = "invoke-ci-broker-only"
   role = aws_iam_role.ci_app_broker.id
 
+  # The broker vends team credentials; plan-review reviews app plans with
+  # platform credentials (team roles have no Bedrock access).
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
       Action   = "lambda:InvokeFunction"
-      Resource = var.ci_broker_function_arn
+      Resource = [var.ci_broker_function_arn, var.plan_review_function_arn]
     }]
   })
 }
@@ -377,6 +379,18 @@ resource "aws_iam_role_policy" "ci_team_allow" {
         Effect   = "Allow"
         Action   = "*"
         Resource = "*"
+      },
+      {
+        # Review verdicts and overrides come only from the plan-review and
+        # apply-gate Lambdas; a plan job must not mark its own plan LOW.
+        Sid    = "DenyWriteReviewVerdicts"
+        Effect = "Deny"
+        Action = ["s3:PutObject", "s3:DeleteObject"]
+        Resource = [
+          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*/risk.json",
+          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*/review.json",
+          "arn:aws:s3:::${var.project}-ci-plan-artifacts-${var.aws_account_id}/*/override.json",
+        ]
       },
       {
         # Terraform state: S3 scoped to team's key prefix.
@@ -522,7 +536,7 @@ resource "aws_iam_role_policy" "ci_deploy_ecs" {
         Effect = "Allow"
         Action = ["iam:PassRole"]
         Resource = [
-          aws_iam_role.ecs_execution.arn,
+          aws_iam_role.ecs_exec_team[each.key].arn,
           "arn:aws:iam::${var.aws_account_id}:role/${each.key}-*",
         ]
       }
@@ -754,6 +768,8 @@ resource "aws_iam_role_policy" "ci_apply_gate" {
 # Individual task roles are created per-app via the service-role module.
 ################################################################################
 
+# Deprecated shared execution role. Kept (image pull + logs only, no secrets)
+# until no task definition references it; teams can no longer pass it.
 resource "aws_iam_role" "ecs_execution" {
   name = "${var.project}-ecs-execution"
 
@@ -781,25 +797,68 @@ resource "aws_iam_role_policy_attachment" "ecs_execution_base" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-resource "aws_iam_role_policy" "ecs_execution_secrets" {
-  name = "secrets-read"
-  role = aws_iam_role.ecs_execution.id
+################################################################################
+# Per-team ECS execution roles — javabin-ecs-exec-{team}
+#
+# The execution role pulls the image and resolves the task's `secrets` at
+# launch. One shared role that can read every /<project>/apps/* parameter let
+# any team mount another team's secrets in its own task definition. Each team
+# now gets a role that reads only its own path, and the developer boundary's
+# DenyPassRole only lets a team pass its own role.
+#
+# Tagged team=shared so DenyShared/DenyTagStrip stop teams from editing them.
+################################################################################
 
-  # /<project>/apps/<team>/<service>/... holds service-secret params and the
-  # Cognito client credentials written by app-auth-sync. The execution role
-  # fetches them at task launch via the ECS `secrets` block.
+resource "aws_iam_role" "ecs_exec_team" {
+  for_each = toset(var.registered_teams)
+
+  name = "${var.project}-ecs-exec-${each.key}"
+  # The org boundary denies creating any role without one
+  permissions_boundary = local.org_boundary_arn
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "ecs-tasks.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      }
+    ]
+  })
+
+  tags = {
+    Name     = "${var.project}-ecs-exec-${each.key}"
+    team     = "shared"
+    for-team = each.key
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_exec_team_base" {
+  for_each = toset(var.registered_teams)
+
+  role       = aws_iam_role.ecs_exec_team[each.key].name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy" "ecs_exec_team_secrets" {
+  for_each = toset(var.registered_teams)
+
+  name = "team-secrets-read"
+  role = aws_iam_role.ecs_exec_team[each.key].id
+
+  # Service-secret params and Cognito client credentials (app-auth-sync)
+  # under the team's own path only.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "SSMAppSecrets"
-        Effect = "Allow"
-        Action = [
-          "ssm:GetParameters",
-        ]
-        Resource = [
-          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*",
-        ]
+        Sid      = "SSMTeamSecrets"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameters"]
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/${each.key}/*"
       }
     ]
   })

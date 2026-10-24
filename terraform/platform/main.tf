@@ -31,15 +31,16 @@ module "ingress" {
 }
 
 module "iam" {
-  source                 = "./iam"
-  project                = var.project
-  region                 = var.region
-  aws_account_id         = var.aws_account_id
-  registered_teams       = var.registered_teams
-  github_org             = var.github_org
-  apply_gate_role_arn    = module.lambdas.apply_gate_role_arn
-  ci_broker_role_arn     = module.lambdas.ci_broker_role_arn
-  ci_broker_function_arn = module.lambdas.ci_broker_function_arn
+  source                   = "./iam"
+  project                  = var.project
+  region                   = var.region
+  aws_account_id           = var.aws_account_id
+  registered_teams         = var.registered_teams
+  github_org               = var.github_org
+  apply_gate_role_arn      = module.lambdas.apply_gate_role_arn
+  ci_broker_role_arn       = module.lambdas.ci_broker_role_arn
+  ci_broker_function_arn   = module.lambdas.ci_broker_function_arn
+  plan_review_function_arn = module.lambdas.plan_review_function_arn
 }
 
 module "compute" {
@@ -83,6 +84,8 @@ module "lambdas" {
   internal_user_pool_id          = module.identity.internal_user_pool_id
   internal_user_pool_arn         = module.identity.internal_user_pool_arn
   external_user_pool_arn         = module.identity.external_user_pool_arn
+  auth_memberships_table_name    = module.identity.auth_memberships_table_name
+  auth_memberships_table_arn     = module.identity.auth_memberships_table_arn
   identity_store_id              = var.identity_store_id
   sso_instance_arn               = var.sso_instance_arn
   alert_dedup_table_name         = module.monitoring.alert_dedup_table_name
@@ -108,6 +111,7 @@ module "identity" {
   google_client_id     = var.google_client_id
   google_client_secret = var.google_client_secret
   certificate_arn      = var.certificate_arn
+  org_boundary_arn     = module.iam.org_boundary_arn
 }
 
 module "dns" {

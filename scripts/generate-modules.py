@@ -63,7 +63,7 @@ SCHEMA = {
     "routing": {"host", "priority", "deregistration_delay"},
     "domain": None,
     "resources": {"buckets", "databases", "secrets", "queues"},
-    "auth": {"pool", "callback_urls", "logout_urls", "scopes", "groups"},
+    "auth": {"pool", "client", "callback_urls", "logout_urls", "scopes", "groups", "env"},
     "environment": None,
     "alarms": {"enabled", "cpu_threshold", "memory_threshold", "error_5xx_threshold"},
 }
@@ -83,6 +83,8 @@ UNSUPPORTED = {
     "environments": "multi-environment apps are not supported yet; deploy one environment per app.yaml",
     "budget_alert_nok": "budgets are per team — set budget_nok in javaBin/registry teams/<team>.yaml",
 }
+
+AUTH_CLIENT_TYPES = ("confidential", "public", "none")
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
 TEAM_RE = re.compile(r"^[a-z]{1,12}$")
@@ -271,6 +273,7 @@ def generate(app, account_id, region, platform_ref):
     blocks.append(module_block("platform", src("platform-data"), {
         "project": PROJECT,
         "domain": DOMAIN,
+        "team": team,
     }))
 
     # ECR (always)
@@ -403,37 +406,66 @@ def generate(app, account_id, region, platform_ref):
         if pool not in ("internal", "external"):
             raise AppYamlError(f"auth.pool must be 'internal' or 'external' (got {pool!r})")
 
-        host = routing.get("host")
-        if not host:
-            raise AppYamlError("auth: requires routing.host (callback URLs default to it)")
+        client = auth.get("client", "confidential")
+        if client not in AUTH_CLIENT_TYPES:
+            raise AppYamlError(f"auth.client must be one of {', '.join(AUTH_CLIENT_TYPES)} (got {client!r})")
 
-        callback_urls = auth.get("callback_urls") or [
-            f"https://{host}/",
-            f"https://{host}/auth/callback",
-        ]
-        logout_urls = auth.get("logout_urls") or [f"https://{host}/"]
+        groups = auth.get("groups") or []
+        if not isinstance(groups, list) or not all(isinstance(g, str) and g for g in groups):
+            raise AppYamlError("auth.groups must be a list of group names")
 
         auth_attrs = {
             "app_name": name,
             "team": team,
             "pool": pool,
-            "callback_urls": callback_urls,
-            "logout_urls": logout_urls,
+            "client_type": client,
             "project": PROJECT,
         }
+        if client != "none":
+            host = routing.get("host")
+            if not host and not auth.get("callback_urls"):
+                raise AppYamlError("auth: requires routing.host or auth.callback_urls (callback URLs default to the host)")
+            auth_attrs["callback_urls"] = auth.get("callback_urls") or [
+                f"https://{host}/",
+                f"https://{host}/auth/callback",
+            ]
+            auth_attrs["logout_urls"] = auth.get("logout_urls") or ([f"https://{host}/"] if host else [])
+            if groups:
+                auth_attrs["allowed_groups"] = groups
         if auth.get("scopes"):
             auth_attrs["allowed_oauth_scopes"] = auth["scopes"]
 
         blocks.append(module_block("auth", src("cognito-app-client"), auth_attrs))
 
-        env_map["COGNITO_USER_POOL_ID"] = Ref("module.auth.user_pool_id")
-        env_map["COGNITO_DOMAIN"] = Ref("module.auth.user_pool_domain")
-        env_map["COGNITO_ISSUER_URL"] = Ref("module.auth.issuer_url")
-        secret_map["COGNITO_CLIENT_ID"] = Ref("module.auth.client_id_arn")
-        secret_map["COGNITO_CLIENT_SECRET"] = Ref("module.auth.client_secret_arn")
+        auth_env = {
+            "COGNITO_USER_POOL_ID": Ref("module.auth.user_pool_id"),
+            "COGNITO_DOMAIN": Ref("module.auth.user_pool_domain"),
+            "COGNITO_ISSUER_URL": Ref("module.auth.issuer_url"),
+            "COGNITO_WELL_KNOWN_URL": Ref("module.auth.well_known_url"),
+        }
+        if groups:
+            auth_env["COGNITO_GROUPS"] = ",".join(groups)
+        auth_secrets = {}
+        if client != "none":
+            auth_secrets["COGNITO_CLIENT_ID"] = Ref("module.auth.client_id_arn")
+        if client == "confidential":
+            auth_secrets["COGNITO_CLIENT_SECRET"] = Ref("module.auth.client_secret_arn")
 
-        if auth.get("groups"):
-            env_map["COGNITO_GROUPS"] = ",".join(auth["groups"])
+        # auth.env: expose the same values under names the app already reads,
+        # e.g. {COGNITO_CLIENT_ID: NUXT_PUBLIC_OIDC_CLIENT_ID}
+        aliases = auth.get("env") or {}
+        if not isinstance(aliases, dict):
+            raise AppYamlError("auth.env must map injected names to extra variable names")
+        for source, alias in aliases.items():
+            if source not in auth_env and source not in auth_secrets:
+                available = ", ".join(sorted({*auth_env, *auth_secrets}))
+                raise AppYamlError(f"auth.env: {source} is not injected for this app (available: {available})")
+            if not ENV_RE.match(str(alias)):
+                raise AppYamlError(f"auth.env.{source}: {alias!r} is not a valid variable name")
+            (auth_env if source in auth_env else auth_secrets)[alias] = (auth_env | auth_secrets)[source]
+
+        env_map.update(auth_env)
+        secret_map.update(auth_secrets)
 
     # Task role (always)
     blocks.append(module_block("task_role", src("service-role"), {

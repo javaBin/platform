@@ -96,8 +96,8 @@ terraform/platform/
   iam/             GitHub OIDC, CI roles, permission boundary
   compute/         ECS cluster, ECR base config
   monitoring/      SNS, EventBridge, Config, GuardDuty, Security Hub
-  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, resource-tagger, budget-enforcer, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set, ci-broker, app-auth-sync
-  identity/        Cognito user pools (internal + external). Identity Center is in terraform/org/
+  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, resource-tagger, budget-enforcer, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set, ci-broker, app-auth-sync, plan-review, app-secret-rollout
+  identity/        Cognito user pools (internal + external), auth-claims trigger, auth memberships table. Identity Center is in terraform/org/
 ```
 
 ### Terraform — Org (human-applied, no CI)
@@ -168,8 +168,11 @@ terraform/state/
 | `password-set` | Self-service password-set for new hero accounts (Function URL) |
 | `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget |
 | `resource-tagger` | EventBridge-triggered, auto-tags created-by + commit on new resources |
-| `ci-broker` | Validates repo ∈ app.yaml team, vends short-lived team role credentials |
-| `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` (SSM request → client + credentials) |
+| `ci-broker` | Verifies the job's GitHub OIDC token (repo from signed claims), checks repo ∈ app.yaml team, vends short-lived team role credentials |
+| `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` (SSM request → client + credentials + allowed groups) |
+| `auth-claims` | Internal pool pre-token trigger: registry groups → `cognito:groups`, enforces app `auth.groups` (in `identity/`) |
+| `plan-review` | LLM review of app Terraform plans with platform credentials; writes `risk.json` (invoked by app tf-plan) |
+| `app-secret-rollout` | Restarts `{team}-{app}` when one of its secrets in `/javabin/apps/` changes (ECS reads secrets only at task start) |
 
 ### Scripts
 | Script | What |
@@ -179,10 +182,13 @@ terraform/state/
 | `scripts/registry.py` | Module sources + boilerplate templates for generate-modules.py |
 | `scripts/resolve-tool-version.sh` | CI: resolve node/java version from the app repo's version files |
 | `scripts/sync-registered-teams.py` | CI: registry `teams/*.yaml` → `registered-teams.auto.tfvars` (needs App token) |
+| `scripts/sync-registered-teams.py` | CI: GitHub org teams → `registered-teams.auto.tfvars` (needs App token) |
+| `scripts/github-oidc-token.sh` | CI: mint a GitHub OIDC token for the broker / apply gate |
 | `scripts/provision-teams.py` | CI: fetch team YAMLs from registry, invoke team-provisioner Lambda |
 | `scripts/provision-groups.py` | CI: resolve members.yaml + access.yaml, invoke team-provisioner Lambda |
 | `scripts/sync-members.py` | CI: sync approved heroes from Google Sheets into members.yaml |
-| `scripts/review-plan.py` | CI: LLM plan review via Bedrock |
+| `scripts/review-plan.py` | CI: LLM plan review via Bedrock (platform CI; also bundled into the plan-review Lambda) |
+| `scripts/invoke-plan-review.sh` | CI: app tf-plan → plan-review Lambda |
 | `scripts/notify-slack.py` | CI: generic Slack webhook notification |
 | `scripts/invoke-apply-gate.sh` | CI: invoke gate Lambda for apply credentials |
 | `scripts/run-plan.sh` | CI: terraform plan with exit code handling |
@@ -202,6 +208,8 @@ terraform/state/
 | SSM params (platform) | `/javabin/{namespace}/{name}` |
 | SSM params (app) | `/javabin/apps/{team}/{service}/{name}` |
 | ECS cluster | `javabin-platform` |
+| ECS execution roles | `javabin-ecs-exec-{team}` (platform-owned, reads only `/javabin/apps/{team}/*`) |
+| SSO team guardrails | `javabin-team-{team}-guardrails` (developer boundary with the team written in, for `javabin-team-{team}` permission sets) |
 | ECR repos | `{team}-{service}` |
 | SNS topics | `javabin-{alerts,security,budget-enforcement}` |
 | Log groups | `/ecs/{team}/{service}` |
@@ -287,7 +295,8 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 ### Known Issues
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
 - **Cognito**: pools deployed; internal pool's `GoogleSAML` IdP was created outside Terraform
-- **CI broker trusts the payload repo name**: code running inside an app job (e.g. a Terraform `external` data source in tf-plan) can mint a new OIDC token for the broker role and name another repo. Fix: verify a GitHub OIDC token in the Lambda instead of a payload field
+- **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) instead. The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
+- **App databases share one network path**: service-rds allows ingress from the shared ECS tasks SG, so every team's tasks can reach every team's DB port (password still required). Fix: per-app security groups
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
 - **`registered_app_repos` manually managed**: Being replaced with team-scoped IAM roles (repo→team resolved via GitHub API at runtime)
 - **Cost allocation tags pending activation**: `repo`, `created-by`, `commit` tags need activation in Billing console (requires billing data to appear first)

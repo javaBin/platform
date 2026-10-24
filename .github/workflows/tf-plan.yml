@@ -55,7 +55,8 @@ jobs:
       PLAN_BUCKET: javabin-ci-plan-artifacts-${{ inputs.aws_account_id }}
     steps:
       - name: Set session name
-        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | head -c 64)" >> "$GITHUB_ENV"
+        # Bot actors (renovate[bot]) contain characters STS rejects in session names
+        run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | tr -c 'A-Za-z0-9+=,.@_\n-' '-' | head -c 64)" >> "$GITHUB_ENV"
 
       # Branch head, not github.sha: expand may have just committed generated
       # Terraform on top of the triggering commit.
@@ -126,21 +127,25 @@ jobs:
         run: .platform/scripts/upload-plan.sh "${{ inputs.tf_root }}"
 
       # ----------------------------------------------------------------
-      # LLM Plan Review (runs before PR comment so both are combined)
+      # LLM plan review — done by the javabin-plan-review Lambda with
+      # platform credentials (team roles have no Bedrock access, and only
+      # the Lambda may write risk.json). Re-assume the broker OIDC role,
+      # which may invoke it.
       # ----------------------------------------------------------------
+      - name: Assume broker role for plan review
+        if: steps.plan.outputs.has_changes == 'true'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-broker
+          aws-region: ${{ inputs.aws_region }}
+          role-session-name: ${{ env.SESSION_NAME }}
+
       - name: Run LLM review
         id: review
         if: steps.plan.outputs.has_changes == 'true'
         env:
-          REVIEW_RESULT_PATH: review-result.json
-        run: sh .platform/scripts/extract-review-risk.sh .platform/scripts/review-plan.py "${{ inputs.tf_root }}/plan-output.txt"
-
-      - name: Upload risk assessment to S3
-        if: steps.plan.outputs.has_changes == 'true' && steps.review.outputs.risk_level != ''
-        run: |
-          PLAN_DIR=$(dirname "${{ steps.upload.outputs.plan_key }}")
-          echo '{"level":"${{ steps.review.outputs.risk_level }}","reviewed_at":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' | \
-            aws s3 cp - "s3://${PLAN_BUCKET}/${PLAN_DIR}/risk.json" --content-type application/json
+          NOTIFY: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: sh .platform/scripts/invoke-plan-review.sh "${{ steps.upload.outputs.plan_key }}"
 
       - name: Post plan + review to PR
         if: github.event_name == 'pull_request'
@@ -148,7 +153,3 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: sh .platform/scripts/post-plan-comment.sh "${{ inputs.tf_root }}/plan-output.txt" "${{ steps.plan.outputs.has_changes }}"
-
-      - name: Alert Slack on blocked risk
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (steps.review.outputs.risk_level == 'HIGH' || steps.review.outputs.risk_level == 'FAILED')
-        run: sh .platform/scripts/notify-high-risk.sh /javabin/slack/platform-override-alerts-webhook "https://github.com/javaBin/platform/actions/workflows/approve-override.yml"

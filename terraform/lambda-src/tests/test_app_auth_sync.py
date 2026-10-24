@@ -51,6 +51,17 @@ class FakeSSM:
         ], "Parameters")
 
 
+class FakeDynamo:
+    def __init__(self):
+        self.items = {}
+
+    def put_item(self, TableName, Item):
+        self.items[Item["pk"]["S"]] = Item
+
+    def delete_item(self, TableName, Key):
+        self.items.pop(Key["pk"]["S"], None)
+
+
 class FakeCognito:
     POOLS = {"pool-int": "javabin-internal", "pool-ext": "javabin-external"}
 
@@ -75,7 +86,7 @@ class FakeCognito:
     def create_user_pool_client(self, GenerateSecret, **settings):
         self.n += 1
         cid = f"client{self.n}"
-        self.clients[cid] = {**settings, "ClientSecret": f"secret{self.n}"}
+        self.clients[cid] = {**settings, **({"ClientSecret": f"secret{self.n}"} if GenerateSecret else {})}
         return {"UserPoolClient": {"ClientId": cid}}
 
     def update_user_pool_client(self, ClientId, **settings):
@@ -88,9 +99,10 @@ class FakeCognito:
         return {"UserPoolClient": self.clients[ClientId]}
 
 
-def load_handler(ssm, cognito):
+def load_handler(ssm, cognito, dynamo=None):
+    os.environ["MEMBERSHIPS_TABLE"] = "javabin-auth-memberships"
     boto3 = types.ModuleType("boto3")
-    boto3.client = lambda svc: {"ssm": ssm, "cognito-idp": cognito}[svc]
+    boto3.client = lambda svc: {"ssm": ssm, "cognito-idp": cognito, "dynamodb": dynamo or FakeDynamo()}[svc]
     sys.modules["boto3"] = boto3
     path = os.path.join(os.path.dirname(__file__), "..", "app_auth_sync", "handler.py")
     spec = importlib.util.spec_from_file_location("app_auth_sync_handler", path)
@@ -110,8 +122,8 @@ def event(name, operation):
 
 class AppAuthSyncTest(unittest.TestCase):
     def setUp(self):
-        self.ssm, self.cognito = FakeSSM(), FakeCognito()
-        self.h = load_handler(self.ssm, self.cognito)
+        self.ssm, self.cognito, self.dynamo = FakeSSM(), FakeCognito(), FakeDynamo()
+        self.h = load_handler(self.ssm, self.cognito, self.dynamo)
 
     def put_request(self, req=REQUEST, name=REQ):
         self.ssm.params[name] = json.dumps(req)
@@ -201,6 +213,47 @@ class AppAuthSyncTest(unittest.TestCase):
         self.assertEqual(result["deleted"], ["core-moresleep"])
         _, client = self.only_client()
         self.assertEqual(client["ClientName"], "cupcake-frosting")
+
+
+class AuthFeaturesTest(AppAuthSyncTest):
+    SECRET = "/javabin/apps/cupcake/frosting/cognito-client-secret"
+
+    def test_public_client_has_no_secret_parameter(self):
+        self.put_request({**REQUEST, "client_type": "public"})
+        self.h.handler(event(REQ, "Create"), None)
+        _, client = self.only_client()
+        self.assertNotIn("ClientSecret", client)
+        self.assertNotIn(self.SECRET, self.ssm.params)
+        self.assertIn("/javabin/apps/cupcake/frosting/cognito-client-id", self.ssm.params)
+
+    def test_switching_client_type_replaces_the_client(self):
+        self.put_request()
+        self.h.handler(event(REQ, "Create"), None)
+        old_id, _ = self.only_client()
+        self.put_request({**REQUEST, "client_type": "public"})
+        self.h.handler(event(REQ, "Update"), None)
+        new_id, client = self.only_client()
+        self.assertNotEqual(new_id, old_id)
+        self.assertNotIn("ClientSecret", client)
+        self.assertNotIn(self.SECRET, self.ssm.params)
+        self.assertNotIn(f"client#{old_id}", self.dynamo.items)
+
+    def test_allowed_groups_are_recorded_and_cleaned_up(self):
+        self.put_request({**REQUEST, "allowed_groups": ["helter", "pkom"]})
+        self.h.handler(event(REQ, "Create"), None)
+        cid, _ = self.only_client()
+        item = self.dynamo.items[f"client#{cid}"]
+        self.assertEqual([v["S"] for v in item["allowed_groups"]["L"]], ["helter", "pkom"])
+
+        del self.ssm.params[REQ]
+        self.h.handler(event(REQ, "Delete"), None)
+        self.assertEqual(self.dynamo.items, {})
+
+    def test_localhost_callbacks_allowed_but_not_other_http(self):
+        self.put_request({**REQUEST, "callback_urls": ["https://cupcake.javazone.no/", "http://localhost:3000/cb"]})
+        self.assertEqual(self.h.handler(event(REQ, "Create"), None)["status"], "synced")
+        self.put_request({**REQUEST, "callback_urls": ["http://localhost.evil.com/cb"]})
+        self.assertEqual(self.h.handler(event(REQ, "Update"), None)["status"], "invalid")
 
 
 if __name__ == "__main__":

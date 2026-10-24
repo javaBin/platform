@@ -15,3 +15,8 @@ variable "domain" {
   type        = string
   default     = "javazone.no"
 }
+
+variable "team" {
+  description = "Owning team — selects the team's ECS execution role"
+  type        = string
+}
