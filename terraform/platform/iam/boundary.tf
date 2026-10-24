@@ -38,7 +38,10 @@ locals {
           "iam:DeletePolicy",
           "iam:DeletePolicyVersion",
           "iam:CreatePolicyVersion",
-          "iam:SetDefaultPolicyVersion"
+          "iam:SetDefaultPolicyVersion",
+          # Stops pre-creating a not-yet-registered team's guardrails with
+          # Allow * before team-provisioner attaches them by name
+          "iam:CreatePolicy", "iam:TagPolicy", "iam:UntagPolicy",
         ]
         Resource = [
           "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-developer-boundary",

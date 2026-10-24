@@ -36,6 +36,7 @@ budgets_client = boto3.client("budgets")
 cognito_client = boto3.client("cognito-idp")
 dynamodb_client = boto3.client("dynamodb")
 identitystore_client = boto3.client("identitystore")
+iam_client = boto3.client("iam")
 
 GOOGLE_SA_PARAM = os.environ.get(
     "GOOGLE_SA_PARAM", "/javabin/platform/google-admin-sa"
@@ -1350,8 +1351,15 @@ def _ensure_team_permission_set(team_name, group_id):
     if not ps_arn:
         return {"error": "could not create or find permission set"}
 
-    # Attach the team's guardrails; drop the shared boundary from older setups
+    # Attach the team's guardrails; drop the shared boundary from older setups.
+    # Only a policy platform Terraform created: platform CI may not have made
+    # it yet for a brand-new team (or never, for non-app teams like
+    # platform). Then leave the permission set as it is and report pending.
     guardrails = f"{PROJECT}-team-{team_name}-guardrails"
+    state = _guardrails_state(guardrails)
+    if state != "ok":
+        logger.warning("Not switching %s to %s: %s", ps_name, guardrails, state)
+        return {"permission_set": ps_name, "guardrails": state}
     try:
         sso_client.attach_customer_managed_policy_reference_to_permission_set(
             InstanceArn=SSO_INSTANCE_ARN,
@@ -1404,13 +1412,14 @@ def _ensure_team_permission_set(team_name, group_id):
                 ],
             },
             {
-                # Only set secrets the platform created (tagged): a hand-made
+                # Only overwrite secrets the platform created: a hand-made
                 # parameter makes the app's next terraform apply fail.
+                # (PutParameter supports ssm:Overwrite, not aws:ResourceTag.)
                 "Sid": "DenyCreatingParameters",
                 "Effect": "Deny",
                 "Action": "ssm:PutParameter",
                 "Resource": f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*",
-                "Condition": {"Null": {"aws:ResourceTag/team": "true"}},
+                "Condition": {"BoolIfExists": {"ssm:Overwrite": "false"}},
             },
             {
                 "Sid": "AllowUntaggedReads",
@@ -1450,6 +1459,20 @@ def _ensure_team_permission_set(team_name, group_id):
     return result
 
 
+def _guardrails_state(policy_name):
+    """'ok' if the team guardrails policy exists and was created by platform
+    Terraform; otherwise a short reason (it is attached by name, so a
+    look-alike created by someone else must never be used)."""
+    arn = f"arn:aws:iam::{ACCOUNT_ID}:policy/{policy_name}"
+    try:
+        tags = {t["Key"]: t["Value"] for t in iam_client.list_policy_tags(PolicyArn=arn)["Tags"]}
+    except iam_client.exceptions.NoSuchEntityException:
+        return "pending: policy not created yet (platform CI creates it for registry teams)"
+    if tags.get("managed-by") != "terraform" or tags.get("repo") != f"{GITHUB_ORG}/platform":
+        return "refused: policy exists but was not created by platform Terraform"
+    return "ok"
+
+
 def _provision_permission_set(ps_arn, label):
     """Re-provision a permission set to the account and wait (up to ~60 s)."""
     try:
@@ -1463,12 +1486,18 @@ def _provision_permission_set(ps_arn, label):
         logger.error("Failed to provision %s: %s", label, e)
         return {"error": str(e)[:200]}
     request_id = resp.get("PermissionSetProvisioningStatus", {}).get("RequestId")
+    if not request_id:
+        return {"status": "requested"}
     for _ in range(60):
         time.sleep(1)
-        status = sso_client.describe_permission_set_provisioning_status(
-            InstanceArn=SSO_INSTANCE_ARN,
-            ProvisionPermissionSetRequestId=request_id,
-        ).get("PermissionSetProvisioningStatus", {})
+        try:
+            status = sso_client.describe_permission_set_provisioning_status(
+                InstanceArn=SSO_INSTANCE_ARN,
+                ProvisionPermissionSetRequestId=request_id,
+            ).get("PermissionSetProvisioningStatus", {})
+        except Exception as e:
+            logger.error("Provisioning status for %s unavailable: %s", label, e)
+            return {"status": "unknown", "error": str(e)[:200]}
         if status.get("Status") == "SUCCEEDED":
             return {"status": "SUCCEEDED"}
         if status.get("Status") == "FAILED":

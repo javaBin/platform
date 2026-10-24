@@ -73,6 +73,7 @@ class TeamPermissionSetTest(unittest.TestCase):
         h._resolve_permission_set_arn = lambda name: "arn:ps"
         h._create_account_assignment = lambda *a, **k: {"assigned": True}
         h.time.sleep = lambda s: None
+        h._guardrails_state = lambda name: "ok"
 
         result = h._ensure_team_permission_set("cupcake", "group-1")
 
@@ -84,6 +85,35 @@ class TeamPermissionSetTest(unittest.TestCase):
         sids = {st["Sid"] for st in policy["Statement"]}
         self.assertTrue({"DenyPlatformManagedParameters", "DenyCreatingParameters"} <= sids)
         self.assertEqual(result["provisioned"], {"status": "SUCCEEDED"})
+        deny = next(st for st in policy["Statement"] if st["Sid"] == "DenyCreatingParameters")
+        self.assertEqual(deny["Condition"], {"BoolIfExists": {"ssm:Overwrite": "false"}})
+
+    def _guardrails_with(self, tags=None, missing=False):
+        h = load(FakeDynamo([]))
+        iam = mock.MagicMock()
+        iam.exceptions.NoSuchEntityException = type("NoSuchEntity", (Exception,), {})
+        if missing:
+            iam.list_policy_tags.side_effect = iam.exceptions.NoSuchEntityException()
+        else:
+            iam.list_policy_tags.return_value = {"Tags": [{"Key": k, "Value": v} for k, v in (tags or {}).items()]}
+        h.iam_client = iam
+        return h
+
+    def test_guardrails_must_exist_and_be_terraform_managed(self):
+        ok = {"managed-by": "terraform", "repo": "javaBin/platform"}
+        self.assertEqual(self._guardrails_with(ok)._guardrails_state("javabin-team-x-guardrails"), "ok")
+        self.assertTrue(self._guardrails_with(missing=True)._guardrails_state("p").startswith("pending"))
+        self.assertTrue(self._guardrails_with({"managed-by": "me"})._guardrails_state("p").startswith("refused"))
+
+    def test_missing_guardrails_leave_the_permission_set_untouched(self):
+        h = load(FakeDynamo([]))
+        h.sso_client = mock.MagicMock()
+        h._resolve_permission_set_arn = lambda name: "arn:ps"
+        h._guardrails_state = lambda name: "pending: policy not created yet"
+        result = h._ensure_team_permission_set("newteam", "group-1")
+        self.assertTrue(result["guardrails"].startswith("pending"))
+        h.sso_client.detach_customer_managed_policy_reference_from_permission_set.assert_not_called()
+        h.sso_client.attach_customer_managed_policy_reference_to_permission_set.assert_not_called()
 
 
 if __name__ == "__main__":
