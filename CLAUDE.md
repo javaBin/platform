@@ -91,12 +91,12 @@ terraform/platform/
   variables.tf     Root variables
   outputs.tf       Exported values
   backend.tf       S3 + DynamoDB state backend
-  networking/      VPC, subnets, NAT, SGs
+  networking/      VPC, subnets, NAT, SGs, javabin.internal Cloud Map namespace
   ingress/         ALB, ACM, Route53
   iam/             GitHub OIDC, CI roles, permission boundary
   compute/         ECS cluster, ECR base config
   monitoring/      SNS, EventBridge, Config, GuardDuty, Security Hub
-  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, resource-tagger, budget-enforcer, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set, ci-broker, app-auth-sync, plan-review, app-secret-rollout
+  lambdas/         slack-alert, cost-report, daily-cost-check, compliance-reporter, resource-tagger, budget-enforcer, override-cleanup, team-provisioner, apply-gate, securityhub-summary, password-set, ci-broker, app-auth-sync, plan-review, app-secret-rollout, app-peers-sync
   identity/        Cognito user pools (internal + external), auth-claims trigger, auth memberships table. Identity Center is in terraform/org/
 ```
 
@@ -134,6 +134,7 @@ terraform/state/
 | `terraform/modules/service-queue/` | SQS queue + DLQ with IAM policy output |
 | `terraform/modules/service-alarm/` | CloudWatch alarms for ECS service |
 | `terraform/modules/cognito-app-client/` | Requests a Cognito app client via SSM; the `app-auth-sync` Lambda creates it |
+| `terraform/modules/app-network/` | Per-app task SG, Cloud Map name `{team}-{app}.javabin.internal`, app-to-app request via SSM; the `app-peers-sync` Lambda wires the edges |
 
 ### GitHub Actions Workflows
 ```
@@ -172,6 +173,7 @@ terraform/state/
 | `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` (SSM request → client + credentials + allowed groups) |
 | `auth-claims` | Internal pool pre-token trigger: registry groups → `cognito:groups`, enforces app `auth.groups` (in `identity/`) |
 | `plan-review` | LLM review of app Terraform plans with platform credentials; writes `risk.json` (invoked by app tf-plan) |
+| `app-peers-sync` | App-to-app calls from app.yaml `calls:`/`provides:` (SSM `network` request → SG rules, Cognito M2M clients + scopes, caller's peer URL/credential params; daily ownership audits) |
 | `app-secret-rollout` | Restarts `{team}-{app}` when one of its secrets in `/javabin/apps/` changes (ECS reads secrets only at task start) |
 
 ### Scripts
@@ -255,6 +257,9 @@ All parameters are in `eu-central-1`. Use `--profile javabin --region eu-central
 | `/javabin/platform-overrides/{repo}/{sha}` | SecureString | Risk gate override tokens (single-use) |
 | `/javabin/apps/{team}/{app}/auth` | String | app.yaml `auth:` request (written by app TF, read by app-auth-sync) |
 | `/javabin/apps/{team}/{app}/cognito-client-{id,secret}` | String / SecureString | Written by app-auth-sync, read by ECS execution role |
+| `/javabin/apps/{team}/{app}/network` | String | app.yaml `calls:`/`provides:` request (written by app TF, read by app-peers-sync) |
+| `/javabin/apps/{team}/{app}/peer-{t}-{a}-url`, `m2m-client-{id,secret}` | String / SecureString | Written by app-peers-sync, read by ECS execution role |
+| `/javabin/apps/{team}/{app}/peers-status` | String | Written by app-peers-sync: state of the app's calls and consumers |
 
 ## GCP Connection
 
@@ -298,7 +303,7 @@ The SA JSON key is at `/javabin/platform/google-admin-sa`, the impersonation tar
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
 - **Cognito**: pools deployed; internal pool's `GoogleSAML` IdP was created outside Terraform
 - **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) instead. The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
-- **App databases share one network path**: service-rds allows ingress from the shared ECS tasks SG, so every team's tasks can reach every team's DB port (password still required). Fix: per-app security groups
+- **App databases share one network path** (fixed by `app-network`): service-rds now allows ingress only from the app's own `{team}-{app}-tasks` SG; each app moves off the shared ECS tasks SG on its next pipeline run
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
 - **`registered_app_repos` manually managed**: Being replaced with team-scoped IAM roles (repo→team resolved via GitHub API at runtime)
 - **Cost allocation tags pending activation**: `repo`, `created-by`, `commit` tags need activation in Billing console (requires billing data to appear first)

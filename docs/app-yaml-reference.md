@@ -315,6 +315,91 @@ alarms:
 
 Alarms are created only for services with `routing:`.
 
+### calls / provides (app-to-app)
+
+Apps can call each other privately inside the platform VPC, without going through the internet or
+the public ALB. Both sides must agree: the **caller** lists the app it calls under `calls:`, and the
+**callee** lists the caller under `provides.consumers:`. Either side removing its entry closes the
+connection again.
+
+```yaml
+# Caller: cupcake-backend (team cupcake)
+calls:
+  - app: moresleep          # required
+    team: moresleep         # optional, default: this app's team
+    scopes: [talks.read]    # optional; omit for network-only
+    env: SP_BASE_URL        # optional URL variable name, default MORESLEEP_URL
+```
+
+```yaml
+# Callee: moresleep (team moresleep)
+provides:
+  scopes:                   # optional; scope: description (a list of names also works)
+    talks.read: Read talks and speakers
+    talks.write: Create and update talks
+  consumers:                # who may call this app
+    - app: cupcake-backend
+      team: cupcake         # optional, default: this app's team
+      scopes: [talks.read]  # optional; must be listed in provides.scopes
+```
+
+**What the platform does**
+
+- Every app (with or without `calls`/`provides`) gets its own security group `{team}-{name}-tasks`
+  and a private DNS name `{team}-{name}.javabin.internal` (Cloud Map). The ALB can reach only the
+  app's `compute.port`; nothing else can, until a consumer is allowed.
+- When both sides agree, the platform Lambda `javabin-app-peers-sync` opens the callee's port to the
+  caller's security group, usually within a minute of the second apply.
+- **Scopes** (optional) are OAuth2 client-credentials scopes in the internal Cognito pool. The callee
+  gets a resource server `{team}-{name}`; each caller that requests scopes gets one machine-to-machine
+  client. Granted scopes are what the caller requested **and** the callee allows for that caller.
+- Routing is not needed on either side. An app with `provides:` and no `routing:` is reachable only
+  from its consumers inside the VPC.
+
+**Injected into the caller**
+
+| Variable | Kind | Value |
+|---|---|---|
+| `<env>` (default `{APP}_URL`) | secret (SSM) | `http://{team}-{app}.javabin.internal:{port}` |
+| `<env>` with `_URL` → `_SCOPES` (only with `scopes`) | env | Requested scopes, space-separated, e.g. `moresleep-moresleep/talks.read` |
+| `PEER_AUTH_TOKEN_URL` (any call with `scopes`) | env | Token endpoint of the internal pool |
+| `PEER_AUTH_CLIENT_ID`, `PEER_AUTH_CLIENT_SECRET` (any call with `scopes`) | secrets | The caller's M2M client |
+
+**Injected into the callee** (when `provides.scopes` is set): `PEER_AUTH_ISSUER`,
+`PEER_AUTH_JWKS_URL`, `PEER_AUTH_SCOPE_PREFIX` (`{team}-{name}/`).
+
+**Calling with scopes.** Request one token per callee, with that callee's scopes variable, and cache it
+until it expires (60 minutes):
+
+```bash
+curl -s -u "$PEER_AUTH_CLIENT_ID:$PEER_AUTH_CLIENT_SECRET" \
+  -d grant_type=client_credentials --data-urlencode "scope=$SP_BASE_SCOPES" "$PEER_AUTH_TOKEN_URL"
+# -> {"access_token": "...", "expires_in": 3600}; send it as Authorization: Bearer <token>
+```
+
+All requested scopes must be granted, or the token request fails with `invalid_scope`. The callee
+verifies the token's signature against `PEER_AUTH_JWKS_URL`, its `iss` against `PEER_AUTH_ISSUER`, and
+checks that `scope` contains `${PEER_AUTH_SCOPE_PREFIX}<scope>` (Spring Security
+`oauth2ResourceServer().jwt()`, `jose` in Node). One token per callee means a token can never be
+replayed against another app.
+
+**Status.** Each side can see the state of its edges:
+
+```bash
+aws ssm get-parameter --name /javabin/apps/<team>/<app>/peers-status --query Parameter.Value --output text
+# calls: active | pending-consent | callee-missing, with granted/denied scopes; consumers: active | pending
+```
+
+**Rules and limits**
+
+- Names: `app` as in `name:`, `team` as in `team:`. Scope names: lowercase letters, digits, `.`, `_`,
+  `-`, max 40 characters. At most 20 calls, 50 consumers, 25 scopes.
+- The injected names must not also be set in `environment:`, a resource `env` or `auth.env`. Two calls
+  to apps with the same name in different teams need an explicit `env:`.
+- Traffic is plain HTTP inside the VPC. Already-issued tokens stay valid for up to 60 minutes after a
+  scope is withdrawn, and open connections can outlive a removed rule until they close.
+- At most about 25 apps can provide scopes (Cognito resource servers per pool).
+
 ## Not supported
 
 These fields were documented earlier but are not implemented. Using them fails `expand` with an explanation.
@@ -352,3 +437,7 @@ All app resources are prefixed with the team name for ABAC enforcement.
 | CloudWatch logs | `/ecs/{team}/{name}` |
 | DNS record | `{routing.host}` |
 | SSM (Cognito) | `/javabin/apps/{team}/{name}/cognito-client-{id,secret}` |
+| Task security group | `{team}-{name}-tasks` |
+| Private DNS name | `{team}-{name}.javabin.internal` |
+| SSM (app-to-app) | `/javabin/apps/{team}/{name}/network` (request), `peer-{t}-{a}-url`, `m2m-client-{id,secret}`, `peers-status` |
+| Cognito M2M | resource server `{team}-{name}`, client `m2m.{team}-{name}` (internal pool) |

@@ -131,6 +131,23 @@ Idempotent: skips resources that already have a `created-by` tag (preserves orig
 
 **Manual run:** `aws lambda invoke --function-name javabin-app-auth-sync --payload '{"action":"reconcile"}' --cli-binary-format raw-in-base64-out /dev/stdout`
 
+## app-peers-sync
+
+**Trigger:** EventBridge "Parameter Store Change" for `/javabin/apps/*/*/network` (Create/Update/Delete), plus a daily `{"action": "reconcile"}` at 03:45 UTC
+**Purpose:** App-to-app calls declared in `app.yaml` (`calls:` / `provides:`). The request's path identifies the app (only its team can write there); the security group in the request must be that app's own (`{team}-{app}-tasks`, tag `team={team}`), so a team cannot make the Lambda open another team's group.
+
+**Flow:** Every run recomputes everything from all requests (event payloads are ignored) → an edge exists when the caller `calls` the callee and the callee lists the caller in `consumers` → ingress rule on the callee's SG from the caller's SG on the callee port, tagged `managed-by=javabin-app-peers-sync` (rules the team added itself are never touched) → Cognito resource server `{t}-{a}` per callee with scopes and client-credentials client `m2m.{t}-{a}` per caller requesting scopes (internal pool, 60 min tokens, granted = requested ∩ allowed; no grants = OAuth disabled) → writes `peer-{t}-{a}-url`, `m2m-client-id`, `m2m-client-secret` (SecureString) and `peers-status` into the caller's path, only when a value changed. Parameters, clients and servers nobody needs are deleted; an invalid request keeps its app's existing parameters and client and gets `{"error": ...}` in `peers-status`.
+
+**Audits (reconcile only, Slack `#javabin-infra-alerts`, never fixed automatically):** Cloud Map services whose name does not match their `team` tag or that have instances registered by another ECS service; task ENIs carrying `{t}-{a}-tasks` that belong to a different ECS service.
+
+**Concurrency:** reserved concurrency 1.
+
+**Manual run:** `aws lambda invoke --function-name javabin-app-peers-sync --payload '{"action":"reconcile"}' --cli-binary-format raw-in-base64-out /dev/stdout`
+
+| SSM Parameter | Use |
+|---------------|-----|
+| `/javabin/slack/platform-resource-alerts-webhook` | Audit findings and errors |
+
 ## auth-claims
 
 **Trigger:** Cognito pre-token-generation (V2) on the internal pool (`javabin-internal`), every sign-in and token refresh
@@ -156,7 +173,7 @@ Team roles are denied writing `risk.json`, `review.json` and `override.json` in 
 ## app-secret-rollout
 
 **Trigger:** EventBridge "Parameter Store Change" (Update) under `/javabin/apps/`
-**Purpose:** ECS resolves task secrets only at start, so after a team sets a secret value (`javabin secret set`) this forces a new deployment of `{team}-{app}` in `javabin-platform`. Teams have no `ecs:UpdateService` themselves (it would also allow changing networking and task definitions). Platform-managed parameters (`auth`, `cognito-client-*`, `db-master-password`) are ignored; a missing service is logged and skipped.
+**Purpose:** ECS resolves task secrets only at start, so after a team sets a secret value (`javabin secret set`) this forces a new deployment of `{team}-{app}` in `javabin-platform`. Teams have no `ecs:UpdateService` themselves (it would also allow changing networking and task definitions). Platform-managed parameters (`auth`, `cognito-client-*`, `db-master-password`, `network`, `peers-status`) are ignored (peer URLs and `m2m-client-*` do restart the caller); a missing service is logged and skipped.
 
 ## Shared Module: pricing
 
