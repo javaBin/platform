@@ -23,6 +23,10 @@ FEDERATED_IDENTITY_PROVIDERS (the pool's sign-in IdPs, which only release
 Workspace accounts, e.g. GoogleSAML) or have email_verified=true. This is the
 server-side guard against self-registered or foreign-IdP users in the internal
 pool; the IdP's hosted-domain hint is only a UI hint.
+
+IdPs in EMAIL_VERIFIED_IDENTITY_PROVIDERS (default: Google, the OIDC IdP) are
+not trusted on their own: their users also need email_verified=true, which
+the pool maps from Google's own claim. SAML releases no such claim.
 """
 
 import json
@@ -40,6 +44,9 @@ CACHE_SECONDS = int(os.environ.get("CACHE_SECONDS", "60"))
 REQUIRED_DOMAIN = os.environ.get("REQUIRED_EMAIL_DOMAIN", "").strip().lower().lstrip("@")
 FEDERATED_IDPS = {p.strip() for p in os.environ.get("FEDERATED_IDENTITY_PROVIDERS", "").split(",")
                   if p.strip() and p.strip() != "COGNITO"}
+# Federated IdPs whose users must still have email_verified=true
+VERIFY_EMAIL_IDPS = {p.strip() for p in os.environ.get("EMAIL_VERIFIED_IDENTITY_PROVIDERS", "Google").split(",")
+                     if p.strip()}
 
 dynamodb = boto3.client("dynamodb")
 
@@ -112,7 +119,7 @@ def domain_allowed(event, attrs, email):
         return True
     if not email.endswith("@" + REQUIRED_DOMAIN):
         return False
-    if _providers(event, attrs) & FEDERATED_IDPS:
+    if _providers(event, attrs) & (FEDERATED_IDPS - VERIFY_EMAIL_IDPS):
         return True
     return str(attrs.get("email_verified", "")).lower() == "true"
 

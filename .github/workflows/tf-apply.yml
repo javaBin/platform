@@ -93,3 +93,13 @@ jobs:
       - name: Terraform Apply
         working-directory: ${{ inputs.tf_root }}
         run: terraform apply -auto-approve tfplan
+
+      # Non-blocking: checks Cognito sign-in right after apply (sync errors,
+      # redirect_mismatch, logout URL mismatch, unknown auth.groups). Waits
+      # for app-auth-sync to process the new request. Skips apps without auth.
+      - name: Auth doctor
+        if: hashFiles('app.yaml') != ''
+        continue-on-error: true
+        env:
+          APP_SERVICE: ${{ github.event.repository.name }}
+        run: python3 .platform/scripts/auth-doctor.py --app-yaml app.yaml --wait 180

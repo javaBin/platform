@@ -1,152 +1,147 @@
-# Cognito + Google IdP Setup
+# Cognito + Google Sign-In Setup
 
-Manual steps required alongside Terraform-managed infrastructure for Cognito user pools with Google Sign-In.
+How the internal Cognito pool (`javabin-internal`, heroes with `@java.no` accounts) signs users in with
+Google, and how to cut over from the `GoogleSAML` provider. Background: javaBin/platform#157 (personal
+Gmail accounts hit a dead-end `403 app_not_configured_for_user` page on the SAML app, with no way to
+pick another account).
 
-## Two Separate Google Integrations
+## Why OIDC, not SAML
 
-This platform uses Google in two distinct ways. They require separate credentials and serve different purposes.
+Google's SAML IdP always answers for the browser's *active* Google session and has no account chooser.
+The classic hosted UI drops `prompt=`, so Cognito cannot ask for one either. The Google OIDC provider
+can: its `authorize_url` carries `prompt=select_account`, and the OAuth client lives in a GCP project
+with an **Internal** consent screen, so Google itself refuses non-java.no accounts on a page that lets
+the user switch account.
 
-| Integration | Purpose | Credential Type | Stored In |
-|------------|---------|----------------|-----------|
-| Domain-wide delegation SA | Team provisioner manages Google Groups via Admin SDK | GCP Service Account JSON key | SSM `/javabin/platform/google-admin-sa` |
-| OAuth 2.0 Client | User-facing Google Sign-In in Cognito pools | OAuth Client ID + Secret | Cognito IdP config (Terraform) |
+| Integration | Purpose | Credential | Stored in |
+|---|---|---|---|
+| Domain-wide delegation SA | team-provisioner manages Google Groups (Admin SDK) | Service account JSON key | SSM `/javabin/platform/google-admin-sa` |
+| Internal-pool OAuth client | Google sign-in for the internal pool | OAuth client ID + secret | SSM `/javabin/platform/google-oauth/internal/{client-id,client-secret}` |
+| External-pool OAuth client (later) | Google sign-in for the external pool | OAuth client ID + secret | not set up yet (`google_client_id` tfvar) |
 
-The domain-wide delegation SA already exists in the `javabin-platform` GCP project. The OAuth client below is a separate credential that must be created.
+The internal client must be separate from any external-pool client: its consent screen is Internal,
+the external one would be External.
 
-## 1. Google Cloud Console: OAuth Client
+## 1. GCP: create the OAuth client (one-time, GCP admin)
 
-### Prerequisites
-- Access to `javabin-platform` GCP project (under `java.no` org)
-- Permissions: `roles/oauthconfig.editor` or project Owner
+Project: `javabin-platform` (under the `java.no` organisation). Needs `roles/oauthconfig.editor` or Owner.
 
-### 1.1 Configure OAuth Consent Screen
+1. **APIs & Services → OAuth consent screen** (Google Auth Platform → Branding/Audience):
+   - User type / Audience: **Internal**. Only `java.no` Workspace accounts can complete sign-in; Google
+     shows other accounts an error page *with* the account switcher.
+   - App name `Javabin`, support email and developer contact `platform@java.no` (or a board address).
+   - Scopes (Data access): `openid`, `.../auth/userinfo.email`, `.../auth/userinfo.profile`.
+   - Internal apps need no Google verification or publishing.
+2. **APIs & Services → Credentials → Create credentials → OAuth client ID**:
+   - Application type: **Web application**, name `cognito-javabin-internal`.
+   - Authorized JavaScript origins: none.
+   - Authorized redirect URI — exactly one, the pool's Cognito domain:
+     ```
+     https://javabin-internal.auth.eu-central-1.amazoncognito.com/oauth2/idpresponse
+     ```
+     (`terraform output` → `internal_user_pool_domain` + `/oauth2/idpresponse`. There is no
+     `auth-internal.javazone.no` domain; an earlier version of this doc listed it by mistake.)
+   - Create, and copy the client ID and secret.
 
-1. Go to **APIs & Services > OAuth consent screen** in the `javabin-platform` project
-2. Select **External** user type (needed for the external Cognito pool)
-3. Fill in:
-   - App name: `Javabin Platform`
-   - User support email: `platform@java.no` (or board contact)
-   - Developer contact: same
-4. Scopes: add `openid`, `email`, `profile`
-5. Test users: skip (not needed once published)
-6. Publish the app (move from Testing to Production) — Google review may take a few days
+## 2. AWS: store the client in SSM (platform admin)
 
-### 1.2 Create OAuth 2.0 Client ID
-
-1. Go to **APIs & Services > Credentials > Create Credentials > OAuth client ID**
-2. Application type: **Web application**
-3. Name: `javabin-cognito`
-4. Authorized redirect URIs — add both Cognito pool callback URLs:
-   ```
-   https://auth-internal.javazone.no/oauth2/idpresponse
-   https://auth-external.javazone.no/oauth2/idpresponse
-   ```
-   These are the Cognito hosted UI domains. Adjust if using custom domains.
-5. Click **Create** and note the **Client ID** and **Client Secret**
-
-These values are passed to Terraform as variables when creating the Cognito identity provider resources. They are not stored in SSM — Cognito holds them internally.
-
-## 2. Cognito User Pools (Terraform-managed)
-
-The `terraform/platform/identity/` module (not yet implemented) will create two Cognito user pools. Below is what Terraform will manage and what to verify manually.
-
-### 2.1 Internal Pool (`javabin-internal`)
-
-For Javabin heroes and board members — Google Workspace accounts only.
-
-**Terraform creates:**
-- User pool with email as primary attribute
-- Google IdP with `hd=java.no` restriction (hosted domain claim)
-- Hosted UI domain: `auth-internal.javazone.no`
-- Default app client for platform admin UI
-
-**Google IdP config (in Terraform):**
-```hcl
-resource "aws_cognito_identity_provider" "google_internal" {
-  user_pool_id  = aws_cognito_user_pool.internal.id
-  provider_name = "Google"
-  provider_type = "Google"
-
-  provider_details = {
-    client_id                     = var.google_oauth_client_id
-    client_secret                 = var.google_oauth_client_secret
-    authorize_scopes              = "openid email profile"
-    attributes_url                = "https://people.googleapis.com/v1/people/me?personFields="
-    attributes_url_add_attributes = true
-    authorize_url                 = "https://accounts.google.com/o/oauth2/v2/auth"
-    oidc_issuer                   = "https://accounts.google.com"
-    token_url                     = "https://oauth2.googleapis.com/token"
-    token_request_method          = "POST"
-  }
-
-  attribute_mapping = {
-    email    = "email"
-    name     = "name"
-    username = "sub"
-  }
-}
+```bash
+aws ssm put-parameter --profile javabin --region eu-central-1 \
+  --name /javabin/platform/google-oauth/internal/client-id --type String \
+  --value '<client-id>.apps.googleusercontent.com'
+aws ssm put-parameter --profile javabin --region eu-central-1 \
+  --name /javabin/platform/google-oauth/internal/client-secret --type SecureString \
+  --value '<client-secret>'
 ```
 
-**Manual verification after `terraform apply`:**
-1. Visit `https://auth-internal.javazone.no/login?client_id=<CLIENT_ID>&response_type=code&scope=openid+email+profile&redirect_uri=<CALLBACK>`
-2. Confirm only `@java.no` accounts can sign in
-3. Verify the `hd` claim filtering works (non-java.no accounts get rejected)
+Then re-run platform CI (any merge, or re-run the latest `main` workflow). The plan reads the path with
+`aws_ssm_parameters_by_path` and creates `aws_cognito_identity_provider.internal_google` (`Google`)
+once both parameters exist. Until then the plan creates nothing, which is why the Terraform could merge
+first.
 
-### 2.2 External Pool (`javabin-external`)
+Adding the IdP changes **no app client**: clients use only the IdPs in `internal_identity_providers`
+(`terraform/platform/identity/variables.tf`, default `["GoogleSAML"]`). GoogleSAML keeps
+working.
 
-For public users — JavaZone attendees, community members.
+What Terraform configures (`terraform/platform/identity/main.tf`):
 
-**Terraform creates:**
-- User pool with email as primary attribute
-- Google IdP **without** `hd` restriction (any Google account)
-- Self-registration enabled
-- Hosted UI domain: `auth-external.javazone.no`
+- `authorize_scopes = "openid email profile"`
+- `authorize_url = https://accounts.google.com/o/oauth2/v2/auth?hd=java.no&prompt=select_account`
+  (`hd=` preselects java.no accounts; it is only a hint)
+- attribute mapping `email`, `email_verified`, `name`, `username = sub`
 
-**Key differences from internal:**
-- No hosted domain restriction on Google IdP
-- Self-registration allowed
-- Optional: GitHub social IdP (if configured)
-- MFA optional (not enforced)
+## 3. Verify the account chooser survives (after the IdP exists)
 
-**Manual verification after `terraform apply`:**
-1. Test sign-in with a non-java.no Google account
-2. Test self-registration with email/password
-3. Verify email verification flow works
+Cognito keeping query parameters in a `Google`-type `authorize_url` is not documented. Probe it with
+any internal client ID and one of its callback URLs (no credentials needed; cupcake's are in
+`/javabin/apps/cupcake/cupcake/{cognito-client-id,auth}`):
 
-## 3. App Client Registration
-
-Apps declare their auth needs in `app.yaml`:
-
-```yaml
-auth: internal    # or: external, both, none
+```bash
+DOMAIN=javabin-internal.auth.eu-central-1.amazoncognito.com
+curl -s -o /dev/null -w '%{redirect_url}\n' \
+  "https://$DOMAIN/oauth2/authorize?response_type=code&client_id=<id>&redirect_uri=<callback>&scope=openid&identity_provider=Google" \
+  | grep -q 'prompt=select_account' && echo OK || echo "prompt dropped"
 ```
 
-The `cognito-app-client` module (`terraform/modules/cognito-app-client/`) creates:
-- Cognito user pool client(s) in the specified pool(s)
-- SSM parameters with client credentials:
-  - `/{project}/platform-apps/{name}/cognito-internal-client-id`
-  - `/{project}/platform-apps/{name}/cognito-internal-client-secret`
-  - `/{project}/platform-apps/{name}/cognito-external-client-id`
-  - `/{project}/platform-apps/{name}/cognito-external-client-secret`
+`identity_provider=Google` works before cutover only if the client lists `Google`; before cutover, use
+a test client (or run the probe right after cutover — `scripts/auth-doctor.py` does the same check and
+warns when `prompt=select_account` is missing).
 
-Apps read these SSM parameters at runtime — no secrets in env vars or code.
+**If the parameters are dropped (fallback):** set `google_authorize_url_params = false`, switch the
+domain to managed login (`aws_cognito_user_pool_domain.internal` → `managed_login_version = 2`), give
+every client a branding style (app-auth-sync: `CreateManagedLoginBranding(UseCognitoProvidedValues=True)`),
+and send `prompt=select_account` from the app (SPA `extraQueryParams`, ALB
+`authentication_request_extra_params`). Managed login forwards `prompt` to OIDC IdPs; the classic UI
+does not.
 
-## 4. Checklist
+## 4. Cutover: GoogleSAML → Google
 
-### Before Terraform deployment
-- [ ] OAuth consent screen configured and published in GCP
-- [ ] OAuth 2.0 Client ID created with correct redirect URIs
-- [ ] Client ID and Secret available for Terraform variables
-- [ ] Domain-wide delegation SA already in SSM (separate from OAuth client)
+Prerequisites:
 
-### After Terraform deployment
-- [ ] Internal pool: `@java.no` Google Sign-In works
-- [ ] Internal pool: non-`@java.no` accounts are rejected
-- [ ] External pool: any Google account can sign in
-- [ ] External pool: self-registration works
-- [ ] Hosted UI domains resolve correctly (Route53 + ACM)
-- [ ] Test app client credentials in SSM are readable
+- The Google IdP exists (step 2) and the probe passes (step 3).
+- **Hard requirement:** server-side domain enforcement is live — the internal-pool lockdown (#166:
+  auth-claims `REQUIRED_EMAIL_DOMAIN`, no self sign-up, no `COGNITO` on internal clients). The Internal
+  consent screen already blocks other Google accounts, but the pool must not rely on one GCP setting.
+  This branch builds on that change; the identity module also refuses `Google` in the list while
+  `google_workspace_domain` is empty, and auth-claims requires `email_verified=true` from Google users
+  (Google is never trusted on the IdP name alone).
 
-### DNS records needed (created by identity module)
-- `auth-internal.javazone.no` — CNAME to Cognito internal pool domain
-- `auth-external.javazone.no` — CNAME to Cognito external pool domain
+Steps:
+
+1. PR: `internal_identity_providers = ["Google"]` (identity `variables.tf` default). The same list feeds
+   app clients and auth-claims' `FEDERATED_IDENTITY_PROVIDERS`, so one change moves both. The plan fails
+   on an output precondition if the Google credentials are not in SSM. After apply, platform CI queues an
+   app-auth-sync reconcile: every internal client switches to `Google` only, and
+   `cognito-client-identity-provider` changes to `Google`, which restarts each app (app-secret-rollout)
+   so `COGNITO_IDENTITY_PROVIDER` is current.
+2. Check: `python3 scripts/auth-doctor.py --app-yaml <app>/app.yaml` for each auth app (cupcake), or the
+   doctor step in the app's next deploy. Expect `authorize … redirects to Google (accounts.google.com)`.
+3. Sign in once yourself with a personal Gmail active in the browser: Google must show the account chooser.
+
+### Users after cutover
+
+Google users are new Cognito users: username `Google_<google sub>`, a **new `sub`**. Today the pool has
+4 users, all `GoogleSAML_<email>` (external-provider users; there are no native users to link to —
+Cognito can only link a federated identity onto a native user).
+
+- The platform keys everything on **email**, not `sub`: registry group membership (`group#<name>`
+  members) and the auth-claims lookup use the email claim; per-client allowed groups are keyed by client
+  ID. Nothing in the platform needs migrating.
+- Apps that stored data keyed by `sub` (check cupcake/frosting) must re-key by email or map old to new.
+- Delete the 4 `GoogleSAML_*` users a week after cutover (`aws cognito-idp admin-delete-user`); they are
+  harmless meanwhile. If a Google sign-in ever fails because the email already exists, delete that
+  user's `GoogleSAML_*` entry first.
+
+### Decommission GoogleSAML (a week later)
+
+1. Delete the `GoogleSAML` provider from the pool (created outside Terraform; nothing in Terraform
+   references it). app-auth-sync errors if a pool's declared list still names it.
+2. Turn off the Google Admin SAML app "Javabin Apps (Cognito)".
+3. Mark `docs/cognito-saml-setup.md` for removal and drop the CLAUDE.md known issue.
+
+## External pool
+
+The external pool (`javabin-external`) still uses the `google_client_id` / `google_client_secret`
+variables (empty, so no Google IdP) and `external_identity_providers = ["COGNITO"]`. Setting it up needs
+a separate OAuth client with an **External** consent screen (Google verification for public use) and a
+redirect URI on the external pool's domain.

@@ -200,11 +200,13 @@ Full form:
 auth:
   pool: internal              # 'internal' (default) or 'external'
   client: confidential        # confidential (default) | public | none — see below
-  callback_urls:              # optional; https, or http://localhost for local dev
+  callback_urls:              # optional; https on routing.host / extra_hosts, or http://localhost
     - https://app.javazone.no/auth/callback
     - http://localhost:3000/auth/callback
   logout_urls:                # optional; same rules
     - https://app.javazone.no/
+  extra_hosts:                # optional — other hosts the app serves callbacks on
+    - www.app.javazone.no
   scopes:                     # optional, default ['openid', 'email', 'profile']
     - openid
     - email
@@ -214,6 +216,7 @@ auth:
   env:                        # optional — also inject values under your own names
     COGNITO_CLIENT_ID: NUXT_PUBLIC_OIDC_CLIENT_ID
     COGNITO_ISSUER_URL: NUXT_PUBLIC_OIDC_AUTHORITY
+    COGNITO_IDENTITY_PROVIDER: NUXT_PUBLIC_OIDC_IDENTITY_PROVIDER
 ```
 
 #### `scopes`
@@ -226,17 +229,17 @@ Any of `openid`, `email`, `profile`, `phone`, `aws.cognito.signin.user.admin`. T
 |---|---|---|
 | `confidential` | Server-side login (the server does the code exchange) | Client ID **and** secret |
 | `public` | Browser apps doing OIDC with PKCE (oidc-client-ts, etc.) — a secret can't be kept in a browser | Client ID, no secret |
-| `none` | APIs that only *verify* tokens issued to another app's client | Pool/issuer values only; no client, no callbacks, no `routing.host` needed |
+| `none` | APIs that only *verify* tokens issued to another app's client | Pool/issuer values only; no client, no callbacks, no `routing.host` needed. `callback_urls`, `logout_urls`, `scopes` and `extra_hosts` are rejected (they would be ignored) |
 
 A typical split frontend/backend: the frontend uses `client: public`, the API uses `client: none` and validates tokens against `COGNITO_ISSUER_URL` / `COGNITO_WELL_KNOWN_URL`.
 
 A `client: none` API has no client ID of its own to check, so it accepts tokens issued to *any* client in the pool. Check `cognito:groups` (or the token's `client_id`) for anything that matters.
 
-Changing `client` between `confidential` and `public` replaces the Cognito client, so its ID changes. Running tasks keep the old ID until they restart: redeploy after the change.
+Changing `client` between `confidential` and `public` replaces the Cognito client, so its ID changes. The platform restarts the service when the new ID is written (app-secret-rollout), so running tasks don't keep the deleted ID. SPAs that bake the client ID in at *build* time (Vite `VITE_*`, Next `NEXT_PUBLIC_*` at build) must rebuild; runtime config (Nuxt `NUXT_PUBLIC_*`) picks it up on restart.
 
 Both forms are supported and produce the same wiring.
 
-- `internal` — Javabin heroes. The hosted UI sends users straight to Google Workspace (`GoogleSAML`), so apps don't need an `identity_provider` parameter. There is no password form or sign-up. Only `@java.no` accounts get a token; anyone else is refused at sign-in.
+- `internal` — Javabin heroes. Every internal client signs in through the pool's IdP list (`internal_identity_providers` in `terraform/platform/identity/`): today Google Workspace SAML (`GoogleSAML`), after the Google cutover only `Google`. With a single IdP the hosted UI sends users straight to it, so apps don't need an `identity_provider` parameter; apps that pass one anyway should read `COGNITO_IDENTITY_PROVIDER` instead of hardcoding `GoogleSAML`. There is no password form or sign-up. Only `@java.no` accounts get a token; anyone else is refused at sign-in.
 - `external` — public users.
 - `none` or omitted — no Cognito integration.
 
@@ -247,15 +250,41 @@ Both forms are supported and produce the same wiring.
 If `callback_urls` is omitted, defaults to `[https://{routing.host}/, https://{routing.host}/auth/callback]`.
 If `logout_urls` is omitted, defaults to `[https://{routing.host}/]`.
 
+An explicit list *replaces* the defaults. Apps that redirect elsewhere (Spring: `/login/oauth2/code/cognito`, NextAuth: `/api/auth/callback/cognito`) must list that path.
+
+#### URL rules (checked when terraform/ is generated)
+
+- `https://`, except `http://localhost` / `http://127.0.0.1` for local development.
+- The host must be `routing.host` or listed in `auth.extra_hosts` (localhost excepted), so a typo fails in the PR instead of as `redirect_mismatch` in the browser.
+- No `#fragment` (also rejected by `app-auth-sync`).
+
+The host rule runs when `app.yaml` is expanded (`generate-modules.py`); the platform Lambda checks only the scheme and fragments, so it is a guard against typos, not a security boundary.
+
+#### Logout
+
+Cognito's `/logout?client_id=…&logout_uri=…` redirects back only when `logout_uri` matches a `logout_urls` entry **exactly** (trailing slash and path included). Anything else lands on the hosted UI's `/login` page. Cognito ignores `post_logout_redirect_uri`; send `logout_uri`.
+
+#### Sign-in denied
+
+A user in none of `auth.groups` gets no token: Cognito redirects to your callback with `error=access_denied&error_description=PreTokenGeneration failed with error You are not in a group that has access to this app.` Render `error_description` on your callback page instead of looping back to sign-in.
+
 #### How the client is created
 
 App CI cannot create Cognito clients: the pools belong to the platform, and a grant on a pool would let any team rewrite every other team's client. So the app only *requests* one:
 
 1. The generated Terraform writes the client config to SSM `/javabin/apps/{team}/{name}/auth`. The permission boundary lets a team write only under its own prefix, so the path proves ownership.
-2. The platform Lambda `javabin-app-auth-sync` reacts to the change (EventBridge), creates or updates the client `{team}-{name}` in the requested pool, and writes `/javabin/apps/{team}/{name}/cognito-client-id` and `cognito-client-secret`.
+2. The platform Lambda `javabin-app-auth-sync` reacts to the change (EventBridge), creates or updates the client `{team}-{name}` in the requested pool, and writes `/javabin/apps/{team}/{name}/cognito-client-id`, `cognito-client-secret` and `cognito-client-identity-provider` (only when a value changes; a change restarts the service). It reports the outcome in `/javabin/apps/{team}/{name}/auth-status` (JSON, readable by the team): `status` (`synced` / `invalid` / `error` + `error`), `client_id`, `identity_providers`, `drift_corrected` (client settings someone changed outside the platform, reverted by the daily reconcile), `unknown_groups` (`auth.groups` entries that don't exist in the registry — nobody can sign in through them), `client_id_changed_at`, `synced_at`. Your team's SSO role cannot write it, but your CI role can (as it can the `cognito-client-*` parameters); the next sync overwrites any such change, so treat it as a report.
 3. Deleting `auth:` deletes the request parameter, and the Lambda deletes the client and its credentials. A daily reconcile repairs anything an event missed.
 
 On the very first deploy with `auth:`, the first task can start a few seconds before the credentials exist; ECS retries it.
+
+#### auth doctor
+
+`scripts/auth-doctor.py` (platform repo) checks the whole chain with the team's own credentials: the request matches app.yaml, `auth-status` is `synced` with the same client ID, `/oauth2/authorize` redirects to the IdP for every callback URL (no `redirect_mismatch`), `/logout` returns to every logout URL, and (warning only) the service's current deployment started after the client ID last changed. App CI runs it after `terraform apply` (non-blocking; failures show as annotations). Locally, from the app repo:
+
+```bash
+python3 ../platform/scripts/auth-doctor.py --app-yaml app.yaml   # add --json for scripts
+```
 
 #### Injected environment variables
 
@@ -267,6 +296,7 @@ On the very first deploy with `auth:`, the first task can start a few seconds be
 | `COGNITO_WELL_KNOWN_URL` | `{issuer}/.well-known/openid-configuration` | OIDC discovery document |
 | `COGNITO_CLIENT_ID` | SSM (ECS task `secrets`) | `confidential` and `public` only |
 | `COGNITO_CLIENT_SECRET` | SSM SecureString (ECS task `secrets`) | `confidential` only |
+| `COGNITO_IDENTITY_PROVIDER` | SSM (ECS task `secrets`) | `confidential` and `public` only. The IdP the client signs in through (`GoogleSAML`, `Google`, or `COGNITO`), for apps that send `identity_provider` themselves. Changes at the IdP cutover, which restarts the service |
 | `COGNITO_GROUPS` | Comma-joined list from `auth.groups` | Only when `groups` is set |
 
 `auth.env` adds the same values under extra names (both names are injected). Only names injected for your `client` type can be aliased.

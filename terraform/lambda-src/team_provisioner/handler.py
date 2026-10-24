@@ -1409,8 +1409,9 @@ def _ensure_team_permission_set(team_name, group_id):
             },
             {
                 # Platform-managed parameters in the team path: Cognito
-                # credentials (app-auth-sync), the auth request (app
-                # Terraform), RDS master passwords (the DB keeps the original).
+                # credentials and auth-status (app-auth-sync), the auth
+                # request (app Terraform), RDS master passwords (the DB
+                # keeps the original). Teams can still read them.
                 "Sid": "DenyPlatformManagedParameters",
                 "Effect": "Deny",
                 "Action": ["ssm:PutParameter", "ssm:DeleteParameter", "ssm:DeleteParameters",
@@ -1418,6 +1419,7 @@ def _ensure_team_permission_set(team_name, group_id):
                 "Resource": [
                     f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*/*/cognito-client-*",
                     f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*/*/auth",
+                    f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*/*/auth-status",
                     f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*/*/db-master-password",
                 ],
             },
