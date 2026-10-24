@@ -25,10 +25,12 @@ REGION = os.environ.get("AWS_REGION", "eu-central-1")
 # 1M-token context; plan text is roughly 3-4 characters per token). A fixed
 # character cap is what kept cutting real plans - first 80k, then 400k cut a
 # 231-destroy plan (830k chars; destroy diffs print every attribute) to 28 of
-# its changes. REVIEW_MAX_PLAN_CHARS can still set a cap; a plan above it gets
-# a complete change list plus as much diff as fits (see build_plan_section),
-# never a silent cut.
-MAX_PLAN_CHARS = int(os.environ["REVIEW_MAX_PLAN_CHARS"]) if os.environ.get("REVIEW_MAX_PLAN_CHARS") else None
+# its changes. The default ceiling (2M chars, ~500-800k tokens) is 2.4x the
+# largest real plan, so real plans are sent whole; only a pathological plan
+# that couldn't fit the model at all gets a complete change list plus as much
+# diff as fits (see build_plan_section), never a silent cut.
+# REVIEW_MAX_PLAN_CHARS overrides it.
+MAX_PLAN_CHARS = int(os.environ.get("REVIEW_MAX_PLAN_CHARS") or 2_000_000)
 
 # State refresh / data source read lines: noise for review purposes. Resource
 # addresses start in column 0; diff content is always indented.
@@ -239,7 +241,7 @@ never a reason to say the plan or the review is incomplete:
   "# (N unchanged elements hidden)": for an update, Terraform shows only the
   changed attributes. The hidden ones are not changing.
 - "(sensitive value)": the value is redacted on purpose.
-- "(known after apply)": the value is computed by AWS during apply.
+- "(known after apply)": the value is not known until apply (computed by AWS or derived from other resources in this plan); judge it from the expression, not from a value.
 - jsonencode(...) policy diffs show only the changed statements and fields, so
   a changed statement can appear without its Effect, Resource or Sid.
 In a changed IAM policy statement an unchanged `Effect` is usually not shown, so
