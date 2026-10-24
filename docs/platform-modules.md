@@ -81,6 +81,25 @@ SNS topics, EventBridge rules, Config, GuardDuty, Security Hub.
 | `javabin-alert-dedup` DynamoDB | Deduplication table used by slack-alert Lambda |
 | Cost allocation tags | `aws_ce_cost_allocation_tag` resources activating 7 tags: team, service, repo, environment, managed-by, created-by, commit |
 
+### Detection tuning
+
+`monitoring/detection-tuning.tf` holds every suppression, each with its reason in code. Review this list when a reason stops being true.
+
+| Kind | What | Why |
+|------|------|-----|
+| GuardDuty filter (archive) | `Impact:IAMUser/AnomalousBehavior` from `javabin-team-provisioner` on `cognito-idp` | Scheduled Cognito group sync by the team-provisioner Lambda |
+| GuardDuty filter (archive) | `CredentialAccess:IAMUser/AnomalousBehavior`, API `GetParameter`, from `AWSReservedSSO_javabin-team-*` roles | The team permission set only allows SSM reads under `/javabin/apps/<own team>/*`. Role names come from a data source; new teams are added on the next apply |
+| Security Hub control disabled | CIS 1.2.0 CloudWatch.1-14, CloudTrail.5; FSBP CloudTrail.5 | No CloudTrail to CloudWatch Logs (cost). EventBridge rules and GuardDuty give the equivalent alerts |
+| Security Hub control disabled | FSBP GuardDuty.7 | No EKS |
+| Security Hub control disabled | FSBP Macie.1 | Not adopted (cost); revisit if PII lands in S3 |
+| Security Hub control disabled | FSBP EC2.10, EC2.55-58, EC2.60 | No VPC interface endpoints (~$15/month each); traffic goes through NAT over TLS |
+| Security Hub control disabled | FSBP EC2.172 | VPC block-public-access is incompatible with the public ALB and NAT |
+| Security Hub control disabled | FSBP Inspector.1, Inspector.3 | Inspector EC2 and Lambda code scanning are off (legacy EB only; cost) |
+| Security Hub automation rule (suppress) | RDS.2, RDS.46 on `dbmoresleep` | Intentionally public database; EC2.18/EC2.19 on its security group stay open |
+| Security Hub automation rule (suppress) | ELB.18 on the platform ALB port-80 listener | Redirect-only listener |
+
+GuardDuty filters only affect new findings; archive existing matches once in the console.
+
 ## lambdas
 
 11 Lambda functions — see [lambda-functions.md](lambda-functions.md) for details.
