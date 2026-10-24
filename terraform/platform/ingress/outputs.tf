@@ -22,3 +22,8 @@ output "route53_zone_id" {
   description = "Zone ID of the Route53 hosted zone"
   value       = data.aws_route53_zone.main.zone_id
 }
+
+output "http_listener_arn" {
+  description = "ARN of the port-80 HTTP-to-HTTPS redirect listener"
+  value       = aws_lb_listener.http_redirect.arn
+}

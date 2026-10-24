@@ -55,10 +55,11 @@ module "compute" {
 }
 
 module "monitoring" {
-  source         = "./monitoring"
-  project        = var.project
-  region         = var.region
-  aws_account_id = var.aws_account_id
+  source                = "./monitoring"
+  project               = var.project
+  region                = var.region
+  aws_account_id        = var.aws_account_id
+  alb_http_listener_arn = module.ingress.http_listener_arn
 }
 
 module "cost_analytics" {
