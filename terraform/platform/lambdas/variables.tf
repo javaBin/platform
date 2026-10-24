@@ -137,3 +137,9 @@ variable "auth_memberships_table_arn" {
   description = "ARN of the auth memberships table"
   type        = string
 }
+
+variable "atlassian_sync_apply" {
+  description = "Let team-provisioner write Atlassian group memberships; false = report the plan only"
+  type        = bool
+  default     = false
+}
