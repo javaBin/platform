@@ -264,6 +264,19 @@ class AdoptTest(unittest.TestCase):
     def test_without_adopt_dns_routing_output_is_unchanged(self):
         self.assertNotIn("allow_dns_overwrite", generate(CUPCAKE)["main.tf"])
 
+    def test_adopting_a_database_needs_platform_approval(self):
+        self.assertRejected(with_db(MORESLEEP, adopt="dbcakeredux"), "not approved to adopt 'dbcakeredux'")
+        other_team = {**MORESLEEP, "team": "cupcake", "routing": {"host": "x.javazone.no", "priority": 120}}
+        self.assertRejected(other_team, "team 'cupcake' is not approved to adopt 'dbmoresleep'")
+
+    def test_adopting_a_dns_record_needs_platform_approval(self):
+        app = {**MORESLEEP, "routing": {**MORESLEEP["routing"], "host": "submit.javazone.no"}}
+        self.assertRejected(app, "routing.adopt_dns: team 'moresleep' is not approved to adopt 'submit.javazone.no'")
+
+    def test_unapproved_host_is_fine_without_adopt_dns(self):
+        routing = {"host": "submit.javazone.no", "priority": 120}
+        self.assertNotIn("allow_dns_overwrite", generate({**MORESLEEP, "routing": routing})["main.tf"])
+
     def test_adopt_dns_must_be_a_bool(self):
         app = {**MORESLEEP, "routing": {**MORESLEEP["routing"], "adopt_dns": "yes"}}
         self.assertRejected(app, "routing.adopt_dns must be true or false")

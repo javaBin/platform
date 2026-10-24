@@ -145,7 +145,7 @@ An existing RDS instance brought under Terraform without changing it (`databases
 | `backup_retention_period` | null (keep the live value) |
 | `tags` | `{}` |
 
-**Manages:** tags, `deletion_protection`, `backup_retention_period` (when set), final-snapshot settings. Every other argument is read from the live instance or listed in `ignore_changes`, so importing never plans a replacement. `prevent_destroy` is set.
+**Manages:** tags, `deletion_protection`, `backup_retention_period` (when set), final-snapshot settings (`<identifier>-final-<random hex>`, so a later delete/re-adopt cycle never collides with an old snapshot). Needs AWS provider 5.40 or later. Every other argument is read from the live instance or listed in `ignore_changes`, so importing never plans a replacement. `prevent_destroy` is set.
 
 **Outputs:** `endpoint`, `address`, `port` (string), `arn`, `resource_id`
 

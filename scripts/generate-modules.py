@@ -25,7 +25,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from registry import (
-    PROJECT, DOMAIN, APP_DOMAINS, MODULE_SOURCES,
+    PROJECT, DOMAIN, APP_DOMAINS, MODULE_SOURCES, ADOPTIONS,
     BACKEND_TEMPLATE, PROVIDERS_TEMPLATE, OUTPUTS_TEMPLATE, GITIGNORE_TEMPLATE,
 )
 
@@ -116,7 +116,16 @@ def _check_keys(section, data, allowed):
         )
 
 
-def _validate_database(where, db):
+def _check_adoption(team, kind, identifier, where):
+    if identifier not in ADOPTIONS.get(team, {}).get(kind, set()):
+        raise AppYamlError(
+            f"{where}: team {team!r} is not approved to adopt {identifier!r}. Adopting takes over a "
+            "resource the platform did not create, so each one is approved in a javaBin/platform PR "
+            f"that adds it to ADOPTIONS[{team!r}][{kind!r}] in scripts/registry.py"
+        )
+
+
+def _validate_database(where, db, team):
     postgres = str(db.get("engine") or "dynamodb").lower() in POSTGRES_ENGINES
     for key in ("host_env", "port_env"):
         if key in db:
@@ -130,6 +139,7 @@ def _validate_database(where, db):
         raise AppYamlError(f"{where}.adopt: only supported for engine: postgres")
     if not RDS_IDENTIFIER_RE.match(str(db["adopt"])):
         raise AppYamlError(f"{where}.adopt: {db['adopt']!r} is not an RDS DB instance identifier")
+    _check_adoption(team, "rds", db["adopt"], f"{where}.adopt")
     rejected = [k for k in ADOPT_REJECTED if k in db]
     if rejected:
         raise AppYamlError(
@@ -170,6 +180,8 @@ def validate(app):
             raise AppYamlError("routing.priority is required: a unique integer 1-50000")
         if "adopt_dns" in routing and not isinstance(routing["adopt_dns"], bool):
             raise AppYamlError("routing.adopt_dns must be true or false")
+        if routing.get("adopt_dns"):
+            _check_adoption(app["team"], "dns", host, "routing.adopt_dns")
 
     for rtype, items in (app.get("resources") or {}).items():
         if not isinstance(items, list):
@@ -181,7 +193,7 @@ def validate(app):
             if item.get("env") and not ENV_RE.match(item["env"]):
                 raise AppYamlError(f"resources.{rtype}[{i}].env: {item['env']!r} is not a valid variable name")
             if rtype == "databases":
-                _validate_database(f"resources.databases[{i}]", item)
+                _validate_database(f"resources.databases[{i}]", item, app["team"])
 
     env = app.get("environment")
     if env is not None:

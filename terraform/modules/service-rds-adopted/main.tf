@@ -34,6 +34,15 @@ data "aws_db_instance" "live" {
   db_instance_identifier = var.identifier
 }
 
+# Suffix for the final snapshot name, fixed for the life of this state, so a
+# later delete/restore/re-adopt cycle does not collide with an old snapshot.
+resource "random_id" "final_snapshot" {
+  byte_length = 4
+  keepers = {
+    identifier = var.identifier
+  }
+}
+
 resource "aws_db_instance" "this" {
   identifier     = var.identifier
   instance_class = data.aws_db_instance.live.db_instance_class
@@ -44,7 +53,7 @@ resource "aws_db_instance" "this" {
   # Terraform-only settings (no API call): keep a final snapshot and the
   # automated backups if the instance is ever deleted through Terraform.
   skip_final_snapshot       = false
-  final_snapshot_identifier = "${var.identifier}-final"
+  final_snapshot_identifier = "${var.identifier}-final-${random_id.final_snapshot.hex}"
   delete_automated_backups  = false
 
   tags = var.tags
