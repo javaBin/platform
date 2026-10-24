@@ -106,6 +106,14 @@ removed {
 resource "aws_cognito_user_pool" "external" {
   name = "${var.project}-external"
 
+  # Native groups only — see auth_claims_external below
+  lambda_config {
+    pre_token_generation_config {
+      lambda_arn     = aws_lambda_function.auth_claims_external.arn
+      lambda_version = "V2_0"
+    }
+  }
+
   auto_verified_attributes = ["email"]
   username_attributes      = ["email"]
 
@@ -165,6 +173,17 @@ resource "aws_cognito_identity_provider" "external_google" {
     username = "sub"
     name     = "name"
   }
+}
+
+# Cognito-managed prefix domain while no custom domain is wired up: the
+# hosted UI (and so ALB sign-in from app.yaml routing.login, and apps with
+# auth: external) needs one. A pool has at most one domain of each kind,
+# so the custom domain replaces it.
+resource "aws_cognito_user_pool_domain" "external_prefix" {
+  count = var.certificate_arn == "" ? 1 : 0
+
+  domain       = "${var.project}-external"
+  user_pool_id = aws_cognito_user_pool.external.id
 }
 
 resource "aws_cognito_user_pool_domain" "external" {
@@ -291,4 +310,34 @@ resource "aws_lambda_permission" "auth_claims_cognito" {
   function_name = aws_lambda_function.auth_claims.function_name
   principal     = "cognito-idp.amazonaws.com"
   source_arn    = aws_cognito_user_pool.internal.arn
+}
+
+# External pool: same code, but registry groups are never granted — anyone can
+# sign up there with any email address. Native groups and per-client allowed
+# groups still apply. A separate function (instead of the handler looking up
+# which pool called it) keeps the pool -> Lambda dependency one-way.
+resource "aws_lambda_function" "auth_claims_external" {
+  function_name    = "${var.project}-auth-claims-external"
+  role             = aws_iam_role.auth_claims.arn
+  handler          = "handler.handler"
+  runtime          = "python3.12"
+  timeout          = 5
+  memory_size      = 256
+  filename         = data.archive_file.auth_claims.output_path
+  source_code_hash = data.archive_file.auth_claims.output_base64sha256
+
+  environment {
+    variables = {
+      MEMBERSHIPS_TABLE = aws_dynamodb_table.auth_memberships.name
+      REGISTRY_GROUPS   = "false"
+    }
+  }
+}
+
+resource "aws_lambda_permission" "auth_claims_external_cognito" {
+  statement_id  = "AllowCognitoExternalPool"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.auth_claims_external.function_name
+  principal     = "cognito-idp.amazonaws.com"
+  source_arn    = aws_cognito_user_pool.external.arn
 }

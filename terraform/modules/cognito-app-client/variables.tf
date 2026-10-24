@@ -8,6 +8,17 @@ variable "team" {
   type        = string
 }
 
+variable "slot" {
+  description = "Optional extra client for the same app (e.g. 'login-1' for ALB sign-in rules). Empty = the app's main client."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = can(regex("^$|^login-[1-9][0-9]?$", var.slot))
+    error_message = "slot must be empty or login-<1-99>."
+  }
+}
+
 variable "pool" {
   description = "Which Cognito pool to register with: 'internal' or 'external'"
   type        = string
@@ -31,7 +42,7 @@ variable "external_pool_name" {
 }
 
 variable "external_pool_custom_domain" {
-  description = "Custom domain registered on the external pool (e.g. auth-external.javazone.no). Empty if none — COGNITO_DOMAIN is then empty for external apps."
+  description = "Custom domain registered on the external pool (e.g. auth-external.javazone.no). Empty = the pool's Cognito prefix domain (<external_pool_name>.auth.<region>.amazoncognito.com)."
   type        = string
   default     = ""
 }

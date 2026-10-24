@@ -60,7 +60,7 @@ SCHEMA = {
     "team": None,
     "compute": {"cpu", "memory", "port", "desired_count", "health_check",
                 "health_check_matcher", "user", "readonly_root_filesystem"},
-    "routing": {"host", "priority", "deregistration_delay"},
+    "routing": {"host", "priority", "deregistration_delay", "login"},
     "domain": None,
     "resources": {"buckets", "databases", "secrets", "queues"},
     "auth": {"pool", "client", "callback_urls", "logout_urls", "scopes", "groups", "env"},
@@ -85,6 +85,15 @@ UNSUPPORTED = {
 }
 
 AUTH_CLIENT_TYPES = ("confidential", "public", "none")
+AUTH_POOLS = ("internal", "external")
+
+# routing.login — sign-in enforced by the ALB (authenticate-oidc) per path.
+LOGIN_KEYS = {"paths", "pool", "groups", "public"}
+LOGIN_MAX_RULES = 10
+LOGIN_MAX_PATHS = 4  # an ALB rule takes 5 condition values; the host is one
+# ALB path-pattern characters (case-sensitive, * and ? wildcards, max 128 chars)
+LOGIN_PATH_RE = re.compile(r"^/[A-Za-z0-9_\-.$/~\"'@:+*?&]{0,127}$")
+GROUP_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
 TEAM_RE = re.compile(r"^[a-z]{1,12}$")
@@ -108,6 +117,87 @@ def _check_keys(section, data, allowed):
             f"{section}: unknown field(s) {', '.join(unknown)} "
             f"(supported: {', '.join(sorted(allowed))})"
         )
+
+
+def normalize_login(routing):
+    """routing.login as a validated list of {paths, pool, groups, public}.
+
+    Accepts `login: internal|external`, a single mapping, or a list of
+    mappings. Rules are matched in the listed order; the first match wins.
+    """
+    raw = routing.get("login")
+    if raw is None or raw is False or raw == []:
+        return []
+    if isinstance(raw, str):
+        if raw not in AUTH_POOLS:
+            raise AppYamlError(f"routing.login: {raw!r} must be 'internal', 'external', a mapping or a list")
+        raw = [{"pool": raw}]
+    elif isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise AppYamlError("routing.login: expected 'internal', 'external', a mapping or a list of mappings")
+    if len(raw) > LOGIN_MAX_RULES:
+        raise AppYamlError(f"routing.login: at most {LOGIN_MAX_RULES} rules (got {len(raw)})")
+
+    rules, seen, catch_all = [], set(), None
+    for i, entry in enumerate(raw):
+        where = f"routing.login[{i}]"
+        _check_keys(where, entry, LOGIN_KEYS)
+        if catch_all is not None:
+            raise AppYamlError(f"{where}: unreachable — routing.login[{catch_all}] already matches /*")
+
+        paths = entry.get("paths", ["/*"])
+        if isinstance(paths, str):
+            paths = [paths]
+        if not isinstance(paths, list) or not 1 <= len(paths) <= LOGIN_MAX_PATHS:
+            raise AppYamlError(f"{where}.paths: expected a list of 1-{LOGIN_MAX_PATHS} paths")
+        for path in paths:
+            if not isinstance(path, str) or not LOGIN_PATH_RE.match(path):
+                raise AppYamlError(
+                    f"{where}.paths: {path!r} must start with / and use only ALB path characters "
+                    "(letters, digits, _-.$/~\"'@:+& and the wildcards * ?), max 128 chars"
+                )
+            if path in seen:
+                raise AppYamlError(f"{where}.paths: {path!r} is listed more than once")
+            seen.add(path)
+
+        public = entry.get("public", False)
+        if not isinstance(public, bool):
+            raise AppYamlError(f"{where}.public: expected true or false")
+        if public and ("pool" in entry or "groups" in entry):
+            raise AppYamlError(f"{where}: public: true cannot be combined with pool or groups")
+
+        pool = entry.get("pool", "internal")
+        if pool not in AUTH_POOLS:
+            raise AppYamlError(f"{where}.pool: must be 'internal' or 'external' (got {pool!r})")
+
+        groups = entry.get("groups") or []
+        if not isinstance(groups, list) or not all(isinstance(g, str) and GROUP_RE.match(g) for g in groups):
+            raise AppYamlError(f"{where}.groups: expected a list of group names")
+
+        rules.append({"paths": paths, "pool": pool, "groups": groups, "public": public})
+        if "/*" in paths:
+            catch_all = i
+
+    priority = routing.get("priority")
+    if isinstance(priority, int) and priority - len(rules) < 1:
+        raise AppYamlError(
+            f"routing.priority: {priority} leaves no room for {len(rules)} login rule(s) — "
+            f"they use the priorities directly below it; use at least {len(rules) + 1}"
+        )
+    return rules
+
+
+def login_warnings(rules):
+    """Advice that does not fail the build."""
+    protected = [r for r in rules if not r["public"]]
+    if protected and not any("/*" in r["paths"] for r in rules):
+        return [
+            "routing.login protects only some paths. ALB path patterns are case-sensitive, so an app "
+            "that matches paths case-insensitively can be reached past them (e.g. /Admin vs /admin/*). "
+            "Prefer protecting /* and listing the open paths with public: true."
+        ]
+    return []
 
 
 def validate(app):
@@ -140,6 +230,7 @@ def validate(app):
             )
         if not isinstance(routing.get("priority"), int) or not 1 <= routing["priority"] <= 50000:
             raise AppYamlError("routing.priority is required: a unique integer 1-50000")
+        normalize_login(routing)
 
     for rtype, items in (app.get("resources") or {}).items():
         if not isinstance(items, list):
@@ -297,7 +388,7 @@ def generate(app, account_id, region, platform_ref):
 
     # Routing (if host specified)
     if routing.get("host"):
-        blocks.append(module_block("routing", src("service-routing"), {
+        routing_attrs = {
             "name": name,
             "team": team,
             "vpc_id": Ref("module.platform.vpc_id"),
@@ -311,7 +402,25 @@ def generate(app, account_id, region, platform_ref):
             "alb_dns_name": Ref("module.platform.alb_dns_name"),
             "alb_zone_id": Ref("module.platform.alb_zone_id"),
             "deregistration_delay": routing.get("deregistration_delay", 30),
-        }))
+        }
+        # routing.login: one ALB rule per entry, at the priorities directly
+        # below routing.priority so they are evaluated before the host rule.
+        login = normalize_login(routing)
+        if login:
+            routing_attrs["project"] = PROJECT
+            routing_attrs["login_rules"] = {
+                f"p{i + 1}": {
+                    "groups": rule["groups"],
+                    "paths": rule["paths"],
+                    "pool": rule["pool"],
+                    "priority": routing["priority"] - 1 - i,
+                    "public": rule["public"],
+                }
+                for i, rule in enumerate(login)
+            }
+            for warning in login_warnings(login):
+                print(f"::warning file=app.yaml::{warning}")
+        blocks.append(module_block("routing", src("service-routing"), routing_attrs))
 
     # Collection modules (buckets, databases, secrets, queues)
     policy_map = {}  # name -> module output ref for access_policy_json

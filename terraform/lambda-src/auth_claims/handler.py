@@ -15,6 +15,11 @@ At every sign-in and token refresh this trigger:
      refuse the sign-in, so the app never receives a token.
 
 Clients without an entry, or with an empty list, accept any pool user.
+
+The external pool runs the same code as javabin-auth-claims-external with
+REGISTRY_GROUPS=false: anyone can sign up there with any email, so registry
+membership (keyed by email) must not be granted. Only native Cognito groups
+count, and the per-client allowed groups are still enforced.
 """
 
 import logging
@@ -28,6 +33,7 @@ logger.setLevel(logging.INFO)
 
 TABLE = os.environ.get("MEMBERSHIPS_TABLE", "javabin-auth-memberships")
 CACHE_SECONDS = int(os.environ.get("CACHE_SECONDS", "60"))
+REGISTRY_GROUPS = os.environ.get("REGISTRY_GROUPS", "true").lower() != "false"
 
 dynamodb = boto3.client("dynamodb")
 
@@ -75,7 +81,9 @@ def handler(event, context):
     client_id = event.get("callerContext", {}).get("clientId", "")
     native = (request.get("groupConfiguration") or {}).get("groupsToOverride") or []
 
-    registry = sorted(g for g, members in group_members().items() if email and email in members)
+    registry = []
+    if REGISTRY_GROUPS:
+        registry = sorted(g for g, members in group_members().items() if email and email in members)
     groups = sorted(set(native) | set(registry))
 
     allowed = allowed_groups(client_id) if client_id else set()

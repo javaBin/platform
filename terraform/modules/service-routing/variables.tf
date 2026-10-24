@@ -71,3 +71,64 @@ variable "deregistration_delay" {
   type        = number
   default     = 30
 }
+
+variable "project" {
+  description = "Project name for SSM parameter paths (sign-in clients)"
+  type        = string
+  default     = "javabin"
+}
+
+variable "login_rules" {
+  description = <<-EOT
+    ALB sign-in rules from app.yaml routing.login, keyed p1, p2, ... Each rule
+    matches host + paths at its own priority (below listener_rule_priority).
+    Protected rules require sign-in to the pool and membership of one of
+    groups (empty = any pool user); public rules forward without sign-in.
+  EOT
+  type = map(object({
+    priority = number
+    paths    = list(string)
+    public   = optional(bool, false)
+    pool     = optional(string, "internal")
+    groups   = optional(list(string), [])
+  }))
+  default = {}
+
+  validation {
+    condition     = alltrue([for k, v in var.login_rules : can(regex("^p[1-9][0-9]?$", k))])
+    error_message = "login_rules keys must be p1, p2, ... (p1-p99)."
+  }
+
+  validation {
+    condition     = alltrue([for v in values(var.login_rules) : v.priority >= 1 && v.priority <= 50000])
+    error_message = "login_rules priorities must be between 1 and 50000."
+  }
+
+  validation {
+    condition     = alltrue([for v in values(var.login_rules) : contains(["internal", "external"], v.pool)])
+    error_message = "login_rules pool must be 'internal' or 'external'."
+  }
+
+  validation {
+    condition     = alltrue([for v in values(var.login_rules) : length(v.paths) >= 1 && length(v.paths) <= 4])
+    error_message = "login_rules need 1-4 paths each (an ALB rule takes 5 condition values; the host is one)."
+  }
+}
+
+variable "login_session_timeout" {
+  description = "Seconds an ALB sign-in session lasts. Bounds how long a removed group membership keeps working."
+  type        = number
+  default     = 28800
+}
+
+variable "login_client_wait" {
+  description = "How long to wait for app-auth-sync to create a sign-in client before reading its credentials"
+  type        = string
+  default     = "60s"
+}
+
+variable "internal_identity_provider" {
+  description = "Identity provider the internal pool's sign-in goes straight to (empty = show the Cognito chooser)"
+  type        = string
+  default     = "GoogleSAML"
+}

@@ -1,6 +1,8 @@
 """Tests for generate-modules.py — run: python3 -m unittest discover scripts/tests"""
 
+import contextlib
 import importlib.util
+import io
 import os
 import shutil
 import subprocess
@@ -178,6 +180,115 @@ class AuthFeaturesTest(unittest.TestCase):
         self.assertIn('"http://localhost:3000/"', generate(app)["main.tf"])
 
 
+WIKI = {
+    "name": "wiki",
+    "team": "core",
+    "compute": {"port": 8080, "health_check": "/"},
+    "routing": {
+        "host": "wiki.java.no",
+        "priority": 120,
+        "login": [
+            {"paths": ["/admin/*"], "groups": ["styret"]},
+            {"paths": ["/assets/*", "/health"], "public": True},
+            {"groups": ["helter", "team-core"], "pool": "internal"},
+        ],
+    },
+}
+
+
+def routing_block(main_tf):
+    start = main_tf.index('module "routing"')
+    return main_tf[start:main_tf.index("\n}\n", start) + 2]
+
+
+class LoginTest(unittest.TestCase):
+    def with_login(self, login, priority=120):
+        return {**WIKI, "routing": {"host": "wiki.java.no", "priority": priority, "login": login}}
+
+    def assertRejected(self, login, fragment, priority=120):
+        with self.assertRaises(gen.AppYamlError) as cm:
+            generate(self.with_login(login, priority))
+        self.assertIn(fragment, str(cm.exception))
+
+    def test_rules_get_priorities_directly_below_the_host_rule(self):
+        block = routing_block(generate(WIKI)["main.tf"])
+        self.assertIn('  project                = "javabin"', block)
+        self.assertIn("""  login_rules = {
+    p1 = {
+      groups   = ["styret"]
+      paths    = ["/admin/*"]
+      pool     = "internal"
+      priority = 119
+      public   = false
+    }
+    p2 = {
+      groups   = []
+      paths    = ["/assets/*", "/health"]
+      pool     = "internal"
+      priority = 118
+      public   = true
+    }
+    p3 = {
+      groups   = ["helter", "team-core"]
+      paths    = ["/*"]
+      pool     = "internal"
+      priority = 117
+      public   = false
+    }
+  }""", block)
+        self.assertIn("listener_rule_priority = 120", block)
+
+    def test_shorthands_protect_the_whole_site(self):
+        for login in ("external", {"pool": "external"}, [{"pool": "external", "paths": ["/*"]}]):
+            block = routing_block(generate(self.with_login(login))["main.tf"])
+            self.assertIn('paths    = ["/*"]', block)
+            self.assertIn('pool     = "external"', block)
+            self.assertIn("priority = 119", block)
+
+    def test_apps_without_login_are_unchanged(self):
+        block = routing_block(generate(FROSTING)["main.tf"])
+        self.assertNotIn("login_rules", block)
+        self.assertNotIn("project", block)
+        for login in (None, [], False):
+            self.assertEqual(generate({**FROSTING, "routing": {**FROSTING["routing"], "login": login}}),
+                             generate(FROSTING))
+
+    def test_partial_protection_warns_about_case_sensitive_paths(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            generate(self.with_login([{"paths": ["/admin/*"], "groups": ["styret"]}]))
+        self.assertIn("::warning file=app.yaml::routing.login protects only some paths", out.getvalue())
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            generate(WIKI)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_login_needs_a_host(self):
+        with self.assertRaises(gen.AppYamlError) as cm:
+            generate({**WIKI, "routing": {"priority": 120, "login": "internal"}})
+        self.assertIn("routing.host is required", str(cm.exception))
+
+    def test_invalid_rules_are_rejected(self):
+        self.assertRejected("both", "must be 'internal', 'external'")
+        self.assertRejected(42, "expected 'internal', 'external', a mapping or a list")
+        self.assertRejected([{"paths": [f"/p{i}"]} for i in range(11)], "at most 10 rules")
+        self.assertRejected({"paths": ["/a", "/b", "/c", "/d", "/e"]}, "1-4 paths")
+        self.assertRejected({"paths": []}, "1-4 paths")
+        self.assertRejected({"paths": ["admin"]}, "must start with /")
+        self.assertRejected({"paths": ["/a b"]}, "ALB path characters")
+        self.assertRejected([{"paths": ["/a"]}, {"paths": ["/a"], "public": True}], "listed more than once")
+        self.assertRejected([{"paths": ["/*"]}, {"paths": ["/admin/*"]}], "unreachable")
+        self.assertRejected({"paths": ["/x"], "public": True, "groups": ["styret"]}, "cannot be combined")
+        self.assertRejected({"public": True, "pool": "internal"}, "cannot be combined")
+        self.assertRejected({"public": "yes"}, "expected true or false")
+        self.assertRejected({"pool": "both"}, "pool: must be 'internal' or 'external'")
+        self.assertRejected({"groups": "styret"}, "list of group names")
+        self.assertRejected({"groups": ["bad group"]}, "list of group names")
+        self.assertRejected({"path": ["/x"]}, "routing.login[0]: unknown field(s) path")
+        self.assertRejected([{"paths": ["/a"]}, {"paths": ["/b"]}], "use at least 3", priority=2)
+
+
 @unittest.skipUnless(shutil.which("terraform"), "terraform not installed")
 class FmtTest(unittest.TestCase):
     """tf-plan runs `terraform fmt -check`; generated files must pass it."""
@@ -185,7 +296,7 @@ class FmtTest(unittest.TestCase):
     def test_generated_files_are_fmt_clean(self):
         public = {**FROSTING, "auth": {"pool": "internal", "client": "public", "groups": ["helter"],
                                        "env": {"COGNITO_CLIENT_ID": "NUXT_PUBLIC_OIDC_CLIENT_ID"}}}
-        for app in (CUPCAKE, FROSTING, FULL, public, {"name": "worker", "team": "core"}):
+        for app in (CUPCAKE, FROSTING, FULL, public, WIKI, {"name": "worker", "team": "core"}):
             with tempfile.TemporaryDirectory() as d:
                 for name, content in generate(app).items():
                     with open(os.path.join(d, name), "w") as f:

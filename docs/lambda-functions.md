@@ -127,6 +127,8 @@ Idempotent: skips resources that already have a `created-by` tag (preserves orig
 
 **Flow:** Re-read the request → validate (pool, client_type, https/localhost URLs, scopes, allowed_groups) → upsert client `{team}-{app}` in the requested pool with every pool IdP + `COGNITO` (a client_type change replaces the client, since the secret setting is immutable) → remove it from the other pool → write `/javabin/apps/{team}/{app}/cognito-client-id` (String) and, for confidential clients, `cognito-client-secret` (SecureString), tagged `team={team}` → record `allowed_groups` in `javabin-auth-memberships`. A missing request deletes the client and both parameters. Reconcile also removes clients whose credential parameter exists but whose request is gone; clients created by other means are never touched.
 
+**Slots:** a request one level down, `/javabin/apps/{team}/{app}/login-N/auth` (written by service-routing for each `routing.login` rule), gets its own client `{team}-{app}.login-N` with credentials under `/javabin/apps/{team}/{app}/login-N/`. `.` cannot occur in app names, so slot clients never collide with another app's client. Other subpaths are ignored.
+
 **Concurrency:** reserved concurrency 1, so two changes to one app cannot race into duplicate clients.
 
 **Manual run:** `aws lambda invoke --function-name javabin-app-auth-sync --payload '{"action":"reconcile"}' --cli-binary-format raw-in-base64-out /dev/stdout`
@@ -137,6 +139,8 @@ Idempotent: skips resources that already have a `created-by` tag (preserves orig
 **Purpose:** Puts the user's registry groups into `cognito:groups` (ID and access token), and refuses sign-in when the app client has `allowed_groups` and the user is in none of them.
 
 **Data:** `javabin-auth-memberships` (DynamoDB). `group#<name>` items (members' emails) are written by team-provisioner on registry merges; `client#<client_id>` items (`allowed_groups`) by app-auth-sync. Memberships are cached for 60 s per container.
+
+**External pool:** the same code runs as `javabin-auth-claims-external` with `REGISTRY_GROUPS=false`. Anyone can sign up in the external pool with any email, so registry groups (keyed by email) are never added there; native Cognito groups still go into `cognito:groups`, and per-client `allowed_groups` are still enforced.
 
 **Lives in:** `terraform/platform/identity/` (the pool references it, so it can't sit in `lambdas/` without a module cycle).
 
