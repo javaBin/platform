@@ -454,7 +454,7 @@ These fields were documented earlier but are not implemented. Using them fails `
 
 1. Developer creates/updates `app.yaml`
 2. The `expand` job runs `scripts/generate-modules.py`, which validates `app.yaml` and writes `terraform/backend.tf`, `providers.tf`, `main.tf`, `outputs.tf` (module blocks sourced from `javaBin/platform//terraform/modules/*`), then commits them to the branch
-3. `tf-plan` plans the committed files → LLM review → `tf-apply` on main
+3. `tf-plan` plans the committed files → LLM review → `tf-apply` on the default branch (main or master)
 4. `docker-build` pushes `{team}-{name}` to ECR, `ecs-deploy` rolls the service
 
 Generated files carry a `# GENERATED FROM app.yaml` marker and are overwritten on every run. Developers can add their own `.tf` files alongside them.

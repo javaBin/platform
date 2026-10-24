@@ -5,7 +5,7 @@ name: Javabin CI
 #   name: Deploy
 #   on:
 #     push:
-#       branches: [main]
+#       branches: [main]   # your default branch (main or master)
 #     pull_request:
 #     workflow_dispatch:
 #   permissions:
@@ -20,6 +20,10 @@ name: Javabin CI
 # and platform scripts are read from this public repo with the caller's
 # GITHUB_TOKEN. Onboarding prerequisites are listed in
 # docs/reusable-workflows.md.
+#
+# Deploy jobs (docker-build, tf-apply, ecs-deploy, eb-deploy) run only for
+# pushes and manual runs on the repo's default branch, whatever it is called
+# (main, master, ...). Pull requests and other branches build, test and plan.
 
 on:
   workflow_call:
@@ -36,6 +40,30 @@ on:
         description: "Java version override (default: read from the repo's version files)"
         type: string
         default: ""
+      maven_args:
+        description: "Extra arguments for `mvn verify` (e.g. -DskipITs)"
+        type: string
+        default: ""
+      gradle_args:
+        description: "Extra arguments for `gradle build`"
+        type: string
+        default: ""
+      test_postgres_image:
+        description: "Run a PostgreSQL service container on localhost:5432 during the JVM build (e.g. postgres:17). Empty = no database."
+        type: string
+        default: ""
+      test_postgres_db:
+        description: "Database created in the test PostgreSQL container"
+        type: string
+        default: "test"
+      test_postgres_user:
+        description: "User for the test PostgreSQL container"
+        type: string
+        default: "test"
+      test_postgres_password:
+        description: "Password for the test PostgreSQL container (throwaway CI database, not a secret)"
+        type: string
+        default: "test"
 
 permissions:
   id-token: write
@@ -59,6 +87,12 @@ jobs:
     with:
       build_tool: ${{ needs.detect.outputs.has_maven == 'true' && 'maven' || 'gradle' }}
       java_version: ${{ inputs.java_version }}
+      maven_args: ${{ inputs.maven_args }}
+      gradle_args: ${{ inputs.gradle_args }}
+      test_postgres_image: ${{ inputs.test_postgres_image }}
+      test_postgres_db: ${{ inputs.test_postgres_db }}
+      test_postgres_user: ${{ inputs.test_postgres_user }}
+      test_postgres_password: ${{ inputs.test_postgres_password }}
 
   build-ts:
     needs: detect
@@ -69,13 +103,14 @@ jobs:
       pnpm_version: ${{ inputs.pnpm_version }}
 
   # --------------------------------------------------------------------------
-  # 3. Docker build + ECR push (main only, after builds pass)
+  # 3. Docker build + ECR push (default branch only, after builds pass)
   # --------------------------------------------------------------------------
   docker-build:
     needs: [detect, build-jvm, build-ts, tf-plan, tf-apply]
     if: |
       always() &&
-      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request' &&
+      github.ref_name == github.event.repository.default_branch &&
       needs.detect.outputs.has_docker == 'true' &&
       (needs.build-jvm.result == 'success' || needs.build-jvm.result == 'skipped') &&
       (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped') &&
@@ -108,12 +143,13 @@ jobs:
       team: ${{ needs.detect.outputs.app_team }}
 
   # --------------------------------------------------------------------------
-  # 6. Terraform apply (main only, after plan + review — blocked on HIGH risk)
+  # 6. Terraform apply (default branch only, after plan + review — blocked on HIGH risk)
   # --------------------------------------------------------------------------
   tf-apply:
     needs: [detect, tf-plan]
     if: >-
-      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request' &&
+      github.ref_name == github.event.repository.default_branch &&
       needs.tf-plan.outputs.has_changes == 'true'
     uses: javaBin/platform/.github/workflows/tf-apply.yml@main
     with:
@@ -123,13 +159,14 @@ jobs:
       team: ${{ needs.detect.outputs.app_team }}
 
   # --------------------------------------------------------------------------
-  # 7. ECS deploy (main only, after docker build + TF apply)
+  # 7. ECS deploy (default branch only, after docker build + TF apply)
   # --------------------------------------------------------------------------
   ecs-deploy:
     needs: [detect, docker-build, tf-apply]
     if: |
       always() &&
-      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request' &&
+      github.ref_name == github.event.repository.default_branch &&
       needs.docker-build.result == 'success' &&
       (needs.tf-apply.result == 'success' || needs.tf-apply.result == 'skipped')
     uses: javaBin/platform/.github/workflows/ecs-deploy.yml@main
@@ -147,7 +184,8 @@ jobs:
     needs: [detect, build-jvm, build-ts]
     if: |
       always() &&
-      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request' &&
+      github.ref_name == github.event.repository.default_branch &&
       needs.detect.outputs.has_eb == 'true' &&
       (needs.build-jvm.result == 'success' || needs.build-jvm.result == 'skipped') &&
       (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped')
