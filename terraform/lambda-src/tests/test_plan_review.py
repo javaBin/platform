@@ -94,6 +94,16 @@ class PlanReviewTest(unittest.TestCase):
         self.assertIn("aws_iam_role_policy.p2999", prompts[0])
         self.assertNotIn("Refreshing state", prompts[0])
         self.assertNotIn("NOTE: this plan is", prompts[0])
+        self.assertIn("COMPLETE PLAN", prompts[0])
+
+    def test_answer_cut_at_max_tokens_is_retried(self):
+        cut = tool_response("LOW")
+        cut["stopReason"] = "max_tokens"
+        bedrock = FakeBedrock([cut, tool_response("MEDIUM")])
+        h = load(self.s3, bedrock)
+        with mock.patch("sys.stderr"):
+            self.assertEqual(h.handler({"plan_key": PLAN, "id_token": "good"}, None)["risk"], "MEDIUM")
+        self.assertEqual(bedrock.calls, 2)
 
     def test_transient_failures_are_retried(self):
         bedrock = FakeBedrock([RuntimeError("ThrottlingException"), tool_response("MEDIUM")])

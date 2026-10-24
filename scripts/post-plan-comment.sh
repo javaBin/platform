@@ -24,12 +24,22 @@ else
 fi
 
 # --- Filter plan: strip refresh/read noise, keep only the meaningful diff ---
+# GitHub caps a comment at 65,536 characters, so the plan shown here is cut at
+# PLAN_COMMENT_CHARS. Say so when it is: readers (and anyone pasting the
+# comment into a model) must not mistake the cut for the whole plan. The LLM
+# review reads plan-output.txt itself and is not affected by this cut.
+PLAN_COMMENT_CHARS="${PLAN_COMMENT_CHARS:-60000}"
 PLAN_CLEAN_FILE="$(dirname "$PLAN_FILE")/plan-clean.txt"
-if [ -f "$PLAN_CLEAN_FILE" ]; then
-  PLAN=$(head -c 60000 "$PLAN_CLEAN_FILE")
-else
+if [ ! -f "$PLAN_CLEAN_FILE" ]; then
   # Fallback: filter inline
-  PLAN=$(grep -v -E '^(module\.|data\.|\s+#).*: (Refreshing state|Reading|Read complete)' "$PLAN_FILE" 2>/dev/null | head -c 60000)
+  PLAN_CLEAN_FILE=$(mktemp)
+  grep -v -E '^(module\.|data\.|\s+#).*: (Refreshing state|Reading|Read complete)' "$PLAN_FILE" > "$PLAN_CLEAN_FILE" 2>/dev/null || true
+fi
+PLAN=$(head -c "$PLAN_COMMENT_CHARS" "$PLAN_CLEAN_FILE")
+PLAN_SIZE=$(wc -c < "$PLAN_CLEAN_FILE" | tr -d ' ')
+CUT_NOTE=""
+if [ "$PLAN_SIZE" -gt "$PLAN_COMMENT_CHARS" ]; then
+  CUT_NOTE="> :scissors: Plan output above is cut at ${PLAN_COMMENT_CHARS} of ${PLAN_SIZE} characters (GitHub comment size limit). The full plan is in the workflow log; the LLM review below is not affected by this cut."
 fi
 
 # --- Build comment ---
@@ -43,6 +53,8 @@ ${STATUS}
 \`\`\`
 ${PLAN}
 \`\`\`
+
+${CUT_NOTE}
 
 </details>
 ENDOFCOMMENT
