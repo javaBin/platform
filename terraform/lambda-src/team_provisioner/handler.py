@@ -190,6 +190,15 @@ GOOGLE_GROUPS_SETTINGS_SCOPE = "https://www.googleapis.com/auth/apps.groups.sett
 class GoogleScopeNotDelegated(Exception):
     """Raised when the delegated service account lacks a requested scope."""
 
+    def __init__(self, scope):
+        super().__init__(f"scope not delegated to DWD client: {scope}")
+        self.scope = scope
+
+
+# How long a "scope not delegated" answer is remembered, so one invocation does
+# not retry (and log) the token exchange for every team.
+SCOPE_NOT_DELEGATED_TTL = 300
+
 
 def _get_delegated_token(scope, cache_key):
     """Exchange a domain-wide delegation JWT for a Google OAuth2 access token.
@@ -197,9 +206,13 @@ def _get_delegated_token(scope, cache_key):
     Token is cached for ~58 minutes (Google tokens last 1 hour). Raises
     GoogleScopeNotDelegated when Google answers `unauthorized_client`, which
     happens when any requested scope is missing from the delegation grant.
+    That outcome is cached for SCOPE_NOT_DELEGATED_TTL seconds.
     """
     cached = _credential_cache.get(cache_key)
-    if cached and cached["exp"] > time.time() + 120:
+    if cached and cached.get("not_delegated"):
+        if cached["exp"] > time.time():
+            raise GoogleScopeNotDelegated(scope)
+    elif cached and cached["exp"] > time.time() + 120:
         return cached["token"]
 
     sa_json = json.loads(_get_ssm_param(GOOGLE_SA_PARAM))
@@ -235,9 +248,14 @@ def _get_delegated_token(scope, cache_key):
             token = json.loads(resp.read())["access_token"]
     except urllib.error.HTTPError as e:
         body_text = e.read().decode("utf-8", errors="replace")
-        logger.error("Google OAuth token exchange failed: %d %s", e.code, body_text)
         if "unauthorized_client" in body_text:
+            logger.warning("Google scope not delegated (%s): %d %s", scope, e.code, body_text)
+            _credential_cache[cache_key] = {
+                "not_delegated": True,
+                "exp": time.time() + SCOPE_NOT_DELEGATED_TTL,
+            }
             raise GoogleScopeNotDelegated(scope) from e
+        logger.error("Google OAuth token exchange failed: %d %s", e.code, body_text)
         raise
 
     _credential_cache[cache_key] = {
@@ -645,9 +663,12 @@ def sync_google_group(team):
     """Create or update a Google Workspace group and sync its membership.
 
     Group email is derived as team-{name}@java.no. Registry `role: maintainer`
-    becomes Google MANAGER, everyone else MEMBER. Existing OWNERs are never
-    changed. Group settings are then enforced so members can read the mail
-    archive (see enforce_team_group_settings).
+    becomes Google MANAGER, everyone else MEMBER. OWNERs (only ever added by
+    a Workspace admin by hand) are never demoted or removed, even when they are
+    not in the registry. Members outside java.no are not added (the group does
+    not allow external members); they are reported in `skipped_external`.
+    Group settings are then enforced so members can read the mail archive (see
+    enforce_team_group_settings).
     """
     team_name = team["name"]
     group_email = f"team-{team_name}@java.no"
@@ -692,6 +713,7 @@ def sync_google_group(team):
     desired_emails = set()
     added = 0
     role_changes = []
+    skipped_external = []
     for member in team.get("members", []):
         m = _normalize_member(member)
         email = m.get("email", "").lower()
@@ -700,7 +722,12 @@ def sync_google_group(team):
         desired_emails.add(email)
         role = _google_role_for(m)
 
-        if email not in current_roles:
+        if email not in current_roles and not email.endswith("@java.no"):
+            # allowExternalMembers=false: Google would reject the insert and
+            # abort the rest of this team's sync. Report instead.
+            skipped_external.append(email)
+            logger.warning("Not adding external address %s to %s", email, group_email)
+        elif email not in current_roles:
             _google_api(
                 "POST",
                 f"/groups/{group_key}/members",
@@ -720,9 +747,13 @@ def sync_google_group(team):
             role_changes.append(f"{email} {current_roles[email]}->{role}")
             logger.info("Changed %s in %s: %s -> %s", email, group_email, current_roles[email], role)
 
-    # Remove members no longer in the team definition
-    for email in current_roles:
-        if email not in desired_emails:
+    # Remove members no longer in the team definition. OWNERs are kept: they
+    # are set by a Workspace admin, not by the registry.
+    kept_owners = []
+    for email, current_role in current_roles.items():
+        if email not in desired_emails and current_role == "OWNER":
+            kept_owners.append(email)
+        elif email not in desired_emails:
             encoded_email = urllib.parse.quote(email, safe="")
             _google_api(
                 "DELETE",
@@ -737,6 +768,8 @@ def sync_google_group(team):
         "member_count": len(desired_emails),
         "added": added,
         "role_changes": role_changes,
+        "skipped_external": skipped_external,
+        "kept_owners": kept_owners,
         "settings": enforce_team_group_settings(group_email),
     }
 
@@ -2286,6 +2319,8 @@ def _result_line(provider, outcome):
             parts.append(f":warning: group settings skipped: {settings.get('reason')}")
         elif settings.get("error"):
             parts.append(f":warning: group settings: {settings['error'][:150]}")
+    if outcome.get("skipped_external"):
+        parts.append(f":warning: not added (not @java.no): {', '.join(outcome['skipped_external'])}")
     return " ".join(parts)
 
 
