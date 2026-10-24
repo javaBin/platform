@@ -181,6 +181,7 @@ terraform/state/
 | `scripts/generate-modules.py` | CI: validates app.yaml, generates fmt-clean module blocks into terraform/ (tests: `scripts/tests/`) |
 | `scripts/registry.py` | Module sources + boilerplate templates for generate-modules.py |
 | `scripts/resolve-tool-version.sh` | CI: resolve node/java version from the app repo's version files |
+| `scripts/sync-registered-teams.py` | CI: registry `teams/*.yaml` → `registered-teams.auto.tfvars` (needs App token) |
 | `scripts/sync-registered-teams.py` | CI: GitHub org teams → `registered-teams.auto.tfvars` (needs App token) |
 | `scripts/github-oidc-token.sh` | CI: mint a GitHub OIDC token for the broker / apply gate |
 | `scripts/provision-teams.py` | CI: fetch team YAMLs from registry, invoke team-provisioner Lambda |
