@@ -99,8 +99,14 @@ class FakeCognito:
         return {"UserPoolClient": self.clients[ClientId]}
 
 
-def load_handler(ssm, cognito, dynamo=None):
+IDP_ENV = ("INTERNAL_IDENTITY_PROVIDERS", "EXTERNAL_IDENTITY_PROVIDERS")
+
+
+def load_handler(ssm, cognito, dynamo=None, **idps):
     os.environ["MEMBERSHIPS_TABLE"] = "javabin-auth-memberships"
+    for key in IDP_ENV:
+        os.environ.pop(key, None)
+    os.environ.update(idps)
     boto3 = types.ModuleType("boto3")
     boto3.client = lambda svc: {"ssm": ssm, "cognito-idp": cognito, "dynamodb": dynamo or FakeDynamo()}[svc]
     sys.modules["boto3"] = boto3
@@ -140,7 +146,8 @@ class AppAuthSyncTest(unittest.TestCase):
         cid, client = self.only_client()
         self.assertEqual(client["ClientName"], "cupcake-frosting")
         self.assertEqual(client["UserPoolId"], "pool-int")
-        self.assertEqual(client["SupportedIdentityProviders"], ["GoogleSAML", "COGNITO"])
+        # Only the pool's IdP: no COGNITO, so no password form or sign-up link
+        self.assertEqual(client["SupportedIdentityProviders"], ["GoogleSAML"])
         self.assertEqual(self.ssm.params["/javabin/apps/cupcake/frosting/cognito-client-id"], cid)
         self.assertEqual(self.ssm.params["/javabin/apps/cupcake/frosting/cognito-client-secret"], client["ClientSecret"])
         self.assertEqual(self.ssm.tags["/javabin/apps/cupcake/frosting/cognito-client-id"]["team"], "cupcake")
@@ -213,6 +220,77 @@ class AppAuthSyncTest(unittest.TestCase):
         self.assertEqual(result["deleted"], ["core-moresleep"])
         _, client = self.only_client()
         self.assertEqual(client["ClientName"], "cupcake-frosting")
+
+
+class IdentityProviderTest(unittest.TestCase):
+    ID_PARAM = "/javabin/apps/cupcake/frosting/cognito-client-id"
+
+    def setUp(self):
+        self.ssm, self.cognito, self.dynamo = FakeSSM(), FakeCognito(), FakeDynamo()
+        self.h = load_handler(self.ssm, self.cognito, self.dynamo)
+        self.ssm.params[REQ] = json.dumps(REQUEST)
+        self.h.handler(event(REQ, "Create"), None)
+        self.cid = next(iter(self.cognito.clients))
+
+    def tearDown(self):
+        for key in IDP_ENV:
+            os.environ.pop(key, None)
+
+    def reload(self, **idps):
+        self.h = load_handler(self.ssm, self.cognito, self.dynamo, **idps)
+
+    def client(self):
+        return self.cognito.clients[self.cid]
+
+    def test_reconcile_restores_the_pool_idp_list(self):
+        self.client()["SupportedIdentityProviders"] = ["GoogleSAML", "COGNITO"]
+        self.h.handler({"action": "reconcile"}, None)
+        self.assertEqual(self.client()["SupportedIdentityProviders"], ["GoogleSAML"])
+
+    def test_idp_list_comes_from_the_environment(self):
+        self.reload(INTERNAL_IDENTITY_PROVIDERS="GoogleSAML, COGNITO")
+        self.assertEqual(self.h.handler(event(REQ, "Update"), None)["status"], "synced")
+        self.assertEqual(self.client()["SupportedIdentityProviders"], ["GoogleSAML", "COGNITO"])
+
+    def test_missing_idp_skips_the_request_and_keeps_the_client(self):
+        self.reload(INTERNAL_IDENTITY_PROVIDERS="Google")
+        self.ssm.params[REQ] = json.dumps({**REQUEST, "callback_urls": ["https://new.javazone.no/cb"]})
+        with self.assertLogs(level="ERROR"):
+            result = self.h.handler(event(REQ, "Update"), None)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Google", result["error"])
+        self.assertEqual(list(self.cognito.clients), [self.cid])
+        self.assertEqual(self.client()["SupportedIdentityProviders"], ["GoogleSAML"])
+        self.assertEqual(self.client()["CallbackURLs"], REQUEST["callback_urls"])
+        self.assertEqual(self.ssm.params[self.ID_PARAM], self.cid)
+
+    def test_missing_idp_creates_no_client(self):
+        self.reload(INTERNAL_IDENTITY_PROVIDERS="Google")
+        other = "/javabin/apps/core/moresleep/auth"
+        self.ssm.params[other] = json.dumps(REQUEST)
+        self.assertEqual(self.h.handler(event(other, "Create"), None)["status"], "error")
+        self.assertEqual(list(self.cognito.clients), [self.cid])
+        self.assertNotIn("/javabin/apps/core/moresleep/cognito-client-id", self.ssm.params)
+
+    def test_empty_idp_list_is_an_error_not_a_client_nobody_can_use(self):
+        self.reload(INTERNAL_IDENTITY_PROVIDERS=" , ")
+        self.assertEqual(self.h.handler(event(REQ, "Update"), None)["status"], "error")
+        self.assertEqual(self.client()["SupportedIdentityProviders"], ["GoogleSAML"])
+
+    def test_missing_idp_in_target_pool_does_not_move_the_client(self):
+        self.reload(EXTERNAL_IDENTITY_PROVIDERS="Google")
+        self.ssm.params[REQ] = json.dumps({**REQUEST, "pool": "external"})
+        self.assertEqual(self.h.handler(event(REQ, "Update"), None)["status"], "error")
+        self.assertEqual(self.client()["UserPoolId"], "pool-int")
+
+    def test_reconcile_reports_and_keeps_skipped_clients(self):
+        self.reload(INTERNAL_IDENTITY_PROVIDERS="Google")
+        with self.assertLogs(level="ERROR"):
+            result = self.h.handler({"action": "reconcile"}, None)
+        self.assertEqual(result["error"], ["cupcake-frosting"])
+        self.assertEqual(result["deleted"], [])
+        self.assertEqual(list(self.cognito.clients), [self.cid])
+        self.assertEqual(self.ssm.params[self.ID_PARAM], self.cid)
 
 
 class AuthFeaturesTest(AppAuthSyncTest):

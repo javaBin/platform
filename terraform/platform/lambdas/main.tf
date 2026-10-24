@@ -1682,8 +1682,10 @@ resource "aws_lambda_function" "app_auth_sync" {
 
   environment {
     variables = {
-      PROJECT           = var.project
-      MEMBERSHIPS_TABLE = var.auth_memberships_table_name
+      PROJECT                     = var.project
+      MEMBERSHIPS_TABLE           = var.auth_memberships_table_name
+      INTERNAL_IDENTITY_PROVIDERS = join(",", var.internal_identity_providers)
+      EXTERNAL_IDENTITY_PROVIDERS = join(",", var.external_identity_providers)
     }
   }
 }

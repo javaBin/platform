@@ -1,6 +1,7 @@
 """Tests for auth_claims — run: python3 -m unittest discover terraform/lambda-src/tests"""
 
 import importlib.util
+import json
 import os
 import sys
 import types
@@ -29,7 +30,13 @@ def client(cid, *groups):
     return {"pk": {"S": f"client#{cid}"}, "allowed_groups": {"L": [{"S": g} for g in groups]}}
 
 
-def load(dynamo):
+DOMAIN_ENV = ("REQUIRED_EMAIL_DOMAIN", "FEDERATED_IDENTITY_PROVIDERS")
+
+
+def load(dynamo, **env):
+    for key in DOMAIN_ENV:
+        os.environ.pop(key, None)
+    os.environ.update(env)
     boto3 = types.ModuleType("boto3")
     boto3.client = lambda svc: dynamo
     sys.modules["boto3"] = boto3
@@ -51,6 +58,72 @@ def event(email, client_id="frosting", native=()):
 
 def groups_of(result):
     return result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]["groupsToOverride"]
+
+
+def user(email, provider=None, verified=None, client_id="other-app"):
+    """A pre-token event shaped like Cognito's: federated users carry identities."""
+    attrs = {"email": email}
+    e = event(email, client_id=client_id)
+    if provider:
+        attrs["identities"] = json.dumps([{"userId": email, "providerName": provider, "providerType": "SAML",
+                                           "issuer": None, "primary": "true", "dateCreated": "1"}])
+        e["userName"] = f"{provider}_{email}"
+    else:
+        e["userName"] = "6f1c2e4a-0000-4000-8000-000000000000"
+    if verified is not None:
+        attrs["email_verified"] = verified
+    e["request"]["userAttributes"] = attrs
+    return e
+
+
+class EmailDomainTest(unittest.TestCase):
+    def setUp(self):
+        self.dynamo = FakeDynamo([group("helter", "ada.lovelace@java.no"), client("frosting", "helter")])
+        self.h = load(self.dynamo, REQUIRED_EMAIL_DOMAIN="java.no", FEDERATED_IDENTITY_PROVIDERS="GoogleSAML")
+
+    def tearDown(self):
+        for key in DOMAIN_ENV:
+            os.environ.pop(key, None)
+
+    def assertAllowed(self, e):
+        self.assertIn("claimsAndScopeOverrideDetails", self.h.handler(e, None)["response"])
+
+    def assertDenied(self, e):
+        with self.assertRaises(self.h.AccessDenied):
+            self.h.handler(e, None)
+
+    def test_existing_saml_users_pass_without_email_verified(self):
+        # Live users: GoogleSAML, @java.no, email_verified=false
+        self.assertAllowed(user("Ada.Lovelace@Java.NO", provider="GoogleSAML", verified="false", client_id="frosting"))
+
+    def test_saml_user_recognised_by_username_when_identities_is_missing(self):
+        e = user("ada.lovelace@java.no", provider="GoogleSAML", client_id="frosting")
+        del e["request"]["userAttributes"]["identities"]
+        self.assertAllowed(e)
+
+    def test_self_registered_gmail_user_is_denied(self):
+        self.assertDenied(user("someone@gmail.com", verified="true"))
+
+    def test_lookalike_domains_are_denied(self):
+        for email in ("x@java.no.evil.com", "x@notjava.no", "x@sub.java.no", "x@java.no@evil.com", "java.no", ""):
+            self.assertDenied(user(email, provider="GoogleSAML"))
+
+    def test_native_java_no_user_needs_a_verified_email(self):
+        self.assertDenied(user("grace.hopper@java.no", verified="false"))
+        self.assertDenied(user("grace.hopper@java.no"))
+        self.assertAllowed(user("grace.hopper@java.no", verified="true"))
+
+    def test_other_idp_needs_a_verified_email(self):
+        self.assertDenied(user("grace.hopper@java.no", provider="SomeOtherIdP", verified="false"))
+        self.assertAllowed(user("grace.hopper@java.no", provider="Google", verified="true"))
+
+    def test_group_rule_still_applies_after_the_domain_check(self):
+        self.assertDenied(user("grace.hopper@java.no", provider="GoogleSAML", client_id="frosting"))
+
+    def test_pool_without_a_domain_rule_accepts_any_email(self):
+        h = load(self.dynamo)
+        result = h.handler(user("someone@gmail.com"), None)
+        self.assertEqual(groups_of(result), [])
 
 
 class AuthClaimsTest(unittest.TestCase):

@@ -14,6 +14,13 @@ requested pool, removes it from the other pool, and writes the credentials to
 where the app's ECS task picks them up via its team's execution role.
 Public clients (browser apps using PKCE) get no secret and no secret parameter.
 
+Each pool has a fixed sign-in IdP list (INTERNAL_IDENTITY_PROVIDERS /
+EXTERNAL_IDENTITY_PROVIDERS, comma-separated, set by Terraform). Every client
+in the pool gets exactly that list, so with a single IdP the hosted UI sends
+the user straight to it (no password form, no sign-up link). If a configured
+IdP does not exist in the pool, the request is skipped and logged as an error;
+the existing client is left as it is.
+
 The request's allowed groups are written to the auth memberships table as
 {pk: "client#<client_id>", allowed_groups: [...]}; the auth-claims trigger
 refuses tokens for users in none of them.
@@ -40,6 +47,16 @@ POOL_NAMES = {
     "internal": os.environ.get("INTERNAL_POOL_NAME", f"{PROJECT}-internal"),
     "external": os.environ.get("EXTERNAL_POOL_NAME", f"{PROJECT}-external"),
 }
+
+def _idp_list(value):
+    return [p.strip() for p in value.split(",") if p.strip()]
+
+
+# Sign-in IdPs per pool. COGNITO means local username/password users.
+POOL_IDPS = {
+    "internal": _idp_list(os.environ.get("INTERNAL_IDENTITY_PROVIDERS", "GoogleSAML")),
+    "external": _idp_list(os.environ.get("EXTERNAL_IDENTITY_PROVIDERS", "COGNITO")),
+}
 MEMBERSHIPS_TABLE = os.environ.get("MEMBERSHIPS_TABLE", "")
 DEFAULT_SCOPES = ["openid", "email", "profile"]
 CLIENT_TYPES = ("confidential", "public")
@@ -57,6 +74,10 @@ dynamodb = boto3.client("dynamodb")
 
 class InvalidRequest(ValueError):
     pass
+
+
+class PoolMisconfigured(RuntimeError):
+    """The platform side is wrong (not the app's request): skip, keep the client."""
 
 
 # ---------------------------------------------------------------------------
@@ -141,15 +162,27 @@ def find_client(user_pool_id, client_name):
     return None
 
 
-def identity_providers(user_pool_id):
-    """Every IdP configured on the pool (e.g. GoogleSAML) plus local users."""
-    names = []
-    for page in cognito.get_paginator("list_identity_providers").paginate(UserPoolId=user_pool_id, MaxResults=60):
-        names += [p["ProviderName"] for p in page["Providers"]]
-    return names + ["COGNITO"]
+_idp_cache = {}
 
 
-def client_settings(user_pool_id, client_name, req):
+def identity_providers(pool, user_pool_id):
+    """The pool's configured sign-in IdPs, after checking each one exists."""
+    wanted = POOL_IDPS[pool]
+    if not wanted:
+        raise PoolMisconfigured(f"no identity providers configured for the {pool} pool")
+    if user_pool_id not in _idp_cache:
+        names = set()
+        for page in cognito.get_paginator("list_identity_providers").paginate(UserPoolId=user_pool_id, MaxResults=60):
+            names |= {p["ProviderName"] for p in page["Providers"]}
+        _idp_cache[user_pool_id] = names
+    existing = _idp_cache[user_pool_id]
+    missing = [p for p in wanted if p != "COGNITO" and p not in existing]
+    if missing:
+        raise PoolMisconfigured(f"{pool} pool has no identity provider {missing}; it has {sorted(existing)}")
+    return list(wanted)
+
+
+def client_settings(pool, user_pool_id, client_name, req):
     return {
         "UserPoolId": user_pool_id,
         "ClientName": client_name,
@@ -158,7 +191,7 @@ def client_settings(user_pool_id, client_name, req):
         "AllowedOAuthScopes": req["scopes"],
         "CallbackURLs": req["callback_urls"],
         "LogoutURLs": req["logout_urls"],
-        "SupportedIdentityProviders": identity_providers(user_pool_id),
+        "SupportedIdentityProviders": identity_providers(pool, user_pool_id),
         "ExplicitAuthFlows": ["ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_SRP_AUTH"],
         "PreventUserExistenceErrors": "ENABLED",
     }
@@ -195,6 +228,10 @@ def _put_param(name, value, secure, team, app):
 def sync(team, app, req):
     """Make Cognito match one request. Returns the client ID."""
     client_name = f"{team}-{app}"
+    # Resolve settings first: a misconfigured pool must abort before anything
+    # (including the pool-switch cleanup below) is changed.
+    upid = pool_id(req["pool"])
+    settings = client_settings(req["pool"], upid, client_name, req)
 
     # A pool switch (internal <-> external) leaves no client behind.
     for other in POOL_NAMES:
@@ -206,8 +243,6 @@ def sync(team, app, req):
                 _delete_client_groups(stale)
                 logger.info("Removed %s from %s pool", client_name, other)
 
-    upid = pool_id(req["pool"])
-    settings = client_settings(upid, client_name, req)
     want_secret = req["client_type"] == "confidential"
     client_id = find_client(upid, client_name)
     if client_id:
@@ -298,7 +333,12 @@ def handle_change(name, operation):
     except InvalidRequest as e:
         logger.error("Invalid auth request %s: %s", name, e)
         return {"status": "invalid", "error": str(e)}
-    return {"status": "synced", "client": f"{team}-{app}", "client_id": sync(team, app, req)}
+    try:
+        client_id = sync(team, app, req)
+    except PoolMisconfigured as e:
+        logger.error("Skipped %s-%s, client left unchanged: %s", team, app, e)
+        return {"status": "error", "error": str(e)}
+    return {"status": "synced", "client": f"{team}-{app}", "client_id": client_id}
 
 
 def reconcile():
@@ -311,7 +351,7 @@ def reconcile():
             if owner:
                 wanted[owner] = p["Value"]
 
-    results = {"synced": [], "invalid": [], "deleted": []}
+    results = {"synced": [], "invalid": [], "error": [], "deleted": []}
     for (team, app), raw in sorted(wanted.items()):
         try:
             sync(team, app, parse_request(raw))
@@ -319,6 +359,9 @@ def reconcile():
         except InvalidRequest as e:
             logger.error("Invalid auth request for %s-%s: %s", team, app, e)
             results["invalid"].append(f"{team}-{app}")
+        except PoolMisconfigured as e:
+            logger.error("Skipped %s-%s, client left unchanged: %s", team, app, e)
+            results["error"].append(f"{team}-{app}")
 
     # Orphans: clients whose credential parameter exists (so this Lambda made
     # them) but whose request is gone. Clients created by other means are
@@ -335,6 +378,8 @@ def reconcile():
 
 
 def handler(event, context):
+    # IdPs can be added or removed between invocations of a warm container
+    _idp_cache.clear()
     if event.get("action") == "reconcile":
         return reconcile()
 

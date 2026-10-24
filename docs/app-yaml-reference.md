@@ -232,7 +232,7 @@ Changing `client` between `confidential` and `public` replaces the Cognito clien
 
 Both forms are supported and produce the same wiring.
 
-- `internal` — Javabin heroes. Sign-in offers every identity provider on the pool (Google Workspace SAML) plus Cognito users.
+- `internal` — Javabin heroes. The hosted UI sends users straight to Google Workspace (`GoogleSAML`), so apps don't need an `identity_provider` parameter. There is no password form or sign-up. Only `@java.no` accounts get a token; anyone else is refused at sign-in.
 - `external` — public users.
 - `none` or omitted — no Cognito integration.
 
@@ -271,7 +271,7 @@ On the very first deploy with `auth:`, the first task can start a few seconds be
 
 Tokens from the internal pool carry the user's registry groups in `cognito:groups` (ID and access token): every group in `javaBin/registry` `groups/groups.yaml` with `cognito: true` the user is a member of, plus `team-{team}` for teams they belong to. The `javabin-auth-claims` trigger adds them at every sign-in and refresh, from membership team-provisioner records on each registry merge. A registry change reaches tokens at the user's next sign-in or token refresh.
 
-`auth.groups` restricts the client: a user in none of the listed groups is refused at sign-in, so the app never receives a token for them. Apps should still check `cognito:groups` for finer-grained authorization (e.g. admin features).
+`auth.groups` restricts the client: a user in none of the listed groups is refused at sign-in, so the app never receives a token for them. The refusal (like the internal pool's `@java.no` check) comes back to your callback URL as `error=…&error_description=…PreTokenGeneration failed…`; show `error_description` to the user rather than a blank page. Apps should still check `cognito:groups` for finer-grained authorization (e.g. admin features).
 
 No Cognito groups are created from `app.yaml`; add groups in the registry.
 
