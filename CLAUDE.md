@@ -165,7 +165,7 @@ terraform/state/
 | `override-cleanup` | Hourly cleanup of stale SSM override tokens |
 | `team-provisioner` | Syncs Google Groups, GitHub teams, AWS Budgets from registry team YAML; Atlassian groups from `groups/atlassian.yaml` |
 | `securityhub-summary` | Weekly Security Hub findings summary (Monday 08:00 UTC) |
-| `password-set` | Self-service password-set for new hero accounts (Function URL) |
+| `password-set` | Self-service password-set for new hero accounts (ALB only: password.javazone.no) |
 | `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget |
 | `resource-tagger` | EventBridge-triggered, auto-tags created-by + commit on new resources |
 | `ci-broker` | Verifies the job's GitHub OIDC token (repo from signed claims), checks repo ∈ app.yaml team, vends short-lived team role credentials |
