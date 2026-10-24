@@ -152,6 +152,8 @@ locals {
           "route53:DeleteHostedZone", "sns:DeleteTopic", "sns:SetTopicAttributes",
           # Shared SGs (ECS tasks, ALB): a team rule here opens or cuts every app
           "ec2:AuthorizeSecurityGroup*", "ec2:RevokeSecurityGroup*",
+          # Shared Cloud Map namespace for app-to-app DNS
+          "servicediscovery:Delete*",
         ]
         Resource  = "*"
         Condition = { StringEquals = { "aws:ResourceTag/team" = "shared" } }
@@ -167,6 +169,7 @@ locals {
           "elasticloadbalancing:AddTags", "elasticloadbalancing:RemoveTags",
           "iam:TagRole", "iam:UntagRole",
           "sns:TagResource", "sns:UntagResource",
+          "servicediscovery:*agResource",
         ]
         Resource  = "*"
         Condition = { StringEquals = { "aws:ResourceTag/team" = ["shared", "platform"] } }

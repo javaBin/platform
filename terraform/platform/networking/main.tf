@@ -225,3 +225,22 @@ resource "aws_vpc_security_group_egress_rule" "ecs_all" {
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
 }
+
+################################################################################
+# Private DNS for app-to-app calls (app.yaml calls/provides)
+#
+# Every app registers {team}-{app}.<project>.internal here (app-network
+# module). team=shared lets every team create its Cloud Map service in it;
+# the developer boundary denies deleting or retagging the namespace.
+################################################################################
+
+resource "aws_service_discovery_private_dns_namespace" "internal" {
+  name        = "${var.project}.internal"
+  description = "Private app-to-app DNS (app.yaml calls/provides)"
+  vpc         = aws_vpc.main.id
+
+  tags = {
+    Name = "${var.project}.internal"
+    team = "shared"
+  }
+}

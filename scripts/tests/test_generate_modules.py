@@ -178,6 +178,116 @@ class AuthFeaturesTest(unittest.TestCase):
         self.assertIn('"http://localhost:3000/"', generate(app)["main.tf"])
 
 
+CALLER = {  # cupcake-backend calling moresleep privately instead of over the internet
+    "name": "cupcake-backend",
+    "team": "cupcake",
+    "compute": {"port": 8080},
+    "routing": {"host": "cupcake-backend.javazone.no", "priority": 101},
+    "calls": [{"app": "moresleep", "team": "moresleep", "scopes": ["talks.read"], "env": "SP_BASE_URL"},
+              {"app": "cupcake"}],
+}
+
+CALLEE = {  # private-only app (no routing) offering scopes
+    "name": "moresleep",
+    "team": "moresleep",
+    "compute": {"port": 8082},
+    "resources": {"databases": [{"name": "main", "engine": "postgres", "env": "DATABASE_URL"}]},
+    "provides": {
+        "scopes": {"talks.read": "Read talks", "talks.write": "Write talks"},
+        "consumers": [{"app": "cupcake-backend", "team": "cupcake", "scopes": ["talks.read"]}],
+    },
+}
+
+
+class PeersValidationTest(unittest.TestCase):
+    def assertRejected(self, app, fragment):
+        with self.assertRaises(gen.AppYamlError) as cm:
+            generate(app)
+        self.assertIn(fragment, str(cm.exception))
+
+    def test_self_reference_is_rejected(self):
+        self.assertRejected({**CALLER, "calls": [{"app": "cupcake-backend"}]}, "cannot call itself")
+        self.assertRejected({**CALLEE, "provides": {"consumers": [{"app": "moresleep"}]}}, "cannot consume itself")
+
+    def test_duplicates_are_rejected(self):
+        self.assertRejected({**CALLER, "calls": [{"app": "x"}, {"app": "x", "team": "cupcake"}]}, "listed twice")
+        self.assertRejected({**CALLEE, "provides": {"consumers": [{"app": "a", "team": "b"}, {"app": "a", "team": "b"}]}},
+                            "listed twice")
+
+    def test_bad_names_and_fields_are_rejected(self):
+        self.assertRejected({**CALLER, "calls": [{"app": "Moresleep"}]}, "calls[0].app")
+        self.assertRejected({**CALLER, "calls": [{"app": "x", "team": "more-sleep"}]}, "calls[0].team")
+        self.assertRejected({**CALLER, "calls": [{"app": "x", "scope": ["a"]}]}, "unknown field(s) scope")
+        self.assertRejected({**CALLER, "calls": [{"app": "x", "scopes": ["has space"]}]}, "not a valid scope name")
+        self.assertRejected({**CALLER, "calls": [{"app": "x", "env": "1BAD"}]}, "calls[0].env")
+        self.assertRejected({**CALLER, "calls": {"app": "x"}}, "calls: expected a list")
+        self.assertRejected({**CALLEE, "provides": {"scopes": {"a": ""}}}, "description")
+
+    def test_consumer_scopes_must_be_provided(self):
+        app = {**CALLEE, "provides": {"scopes": ["talks.read"],
+                                      "consumers": [{"app": "x", "scopes": ["talks.write"]}]}}
+        self.assertRejected(app, "not listed in provides.scopes")
+
+    def test_injected_names_must_not_collide(self):
+        # cupcake today sets SP_BASE_URL in environment:; moving to calls means removing it there
+        self.assertRejected({**CUPCAKE, "calls": [{"app": "moresleep", "team": "moresleep", "env": "SP_BASE_URL"}]},
+                            "SP_BASE_URL is injected")
+        self.assertRejected({**CALLER, "calls": [{"app": "moresleep", "team": "a"}, {"app": "moresleep", "team": "b"}]},
+                            "MORESLEEP_URL used twice")
+        self.assertRejected({**CALLER, "calls": [{"app": "x", "env": "PEER_AUTH_CLIENT_ID"}, {"app": "y", "scopes": ["a"]}]},
+                            "PEER_AUTH_CLIENT_ID used twice")
+
+    def test_limits(self):
+        self.assertRejected({**CALLER, "calls": [{"app": f"a{i}"} for i in range(21)]}, "at most 20")
+
+
+class PeersGenerationTest(unittest.TestCase):
+    def test_every_app_gets_its_own_security_group_and_registry(self):
+        for app in (CUPCAKE, FROSTING, FULL, {"name": "worker", "team": "core"}):
+            main = generate(app)["main.tf"]
+            self.assertIn('module "network"', main)
+            self.assertIn("security_group_ids       = [module.network.security_group_id]", main)
+            self.assertIn("[module.network.registry_arn]", main)
+            self.assertNotIn("ecs_tasks_security_group_id", main)
+
+    def test_rds_accepts_only_the_apps_own_group(self):
+        main = generate(FULL)["main.tf"]
+        self.assertIn("allowed_security_group_ids = [module.network.security_group_id]", main)
+
+    def test_alb_ingress_follows_routing(self):
+        self.assertIn("alb_ingress = true", generate(CALLER)["main.tf"])
+        self.assertIn("alb_ingress = false", generate(CALLEE)["main.tf"])
+
+    def test_caller_gets_url_scopes_and_m2m_credentials(self):
+        main = generate(CALLER)["main.tf"]
+        self.assertIn('"moresleep/moresleep" = ["talks.read"]', main)
+        self.assertIn('"cupcake/cupcake"     = []', main)
+        self.assertRegex(main, r'SP_BASE_URL\s+= module.network.peer_url_arns\["moresleep/moresleep"\]')
+        self.assertRegex(main, r'CUPCAKE_URL\s+= module.network.peer_url_arns\["cupcake/cupcake"\]')
+        self.assertRegex(main, r'SP_BASE_SCOPES\s+= "moresleep-moresleep/talks.read"')
+        self.assertNotIn("CUPCAKE_SCOPES", main)
+        self.assertRegex(main, r"PEER_AUTH_TOKEN_URL\s+= module.network.token_url")
+        self.assertRegex(main, r"PEER_AUTH_CLIENT_SECRET\s+= module.network.m2m_client_secret_arn")
+        self.assertNotIn("PEER_AUTH_ISSUER", main)
+
+    def test_network_only_caller_gets_no_m2m_credentials(self):
+        main = generate({**CALLER, "calls": [{"app": "cupcake"}]})["main.tf"]
+        self.assertIn("CUPCAKE_URL", main)
+        self.assertNotIn("PEER_AUTH", main)
+
+    def test_callee_gets_verification_settings(self):
+        main = generate(CALLEE)["main.tf"]
+        self.assertIn('"talks.read"  = "Read talks"', main)
+        self.assertIn('"cupcake/cupcake-backend" = ["talks.read"]', main)
+        self.assertRegex(main, r"PEER_AUTH_ISSUER\s+= module.network.issuer_url")
+        self.assertRegex(main, r'PEER_AUTH_SCOPE_PREFIX\s+= "moresleep-moresleep/"')
+        self.assertNotIn("target_group_arn", main)
+
+    def test_scope_list_shorthand(self):
+        main = generate({**CALLEE, "provides": {"scopes": ["talks.read"]}})["main.tf"]
+        self.assertIn('"talks.read" = "talks.read"', main)
+
+
 @unittest.skipUnless(shutil.which("terraform"), "terraform not installed")
 class FmtTest(unittest.TestCase):
     """tf-plan runs `terraform fmt -check`; generated files must pass it."""
@@ -185,7 +295,7 @@ class FmtTest(unittest.TestCase):
     def test_generated_files_are_fmt_clean(self):
         public = {**FROSTING, "auth": {"pool": "internal", "client": "public", "groups": ["helter"],
                                        "env": {"COGNITO_CLIENT_ID": "NUXT_PUBLIC_OIDC_CLIENT_ID"}}}
-        for app in (CUPCAKE, FROSTING, FULL, public, {"name": "worker", "team": "core"}):
+        for app in (CUPCAKE, FROSTING, FULL, public, {"name": "worker", "team": "core"}, CALLER, CALLEE):
             with tempfile.TemporaryDirectory() as d:
                 for name, content in generate(app).items():
                     with open(os.path.join(d, name), "w") as f:

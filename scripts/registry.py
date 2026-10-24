@@ -32,6 +32,7 @@ MODULE_SOURCES = {
     "service-secret":     "terraform/modules/service-secret",
     "service-queue":      "terraform/modules/service-queue",
     "cognito-app-client": "terraform/modules/cognito-app-client",
+    "app-network":        "terraform/modules/app-network",
 }
 
 # ---------------------------------------------------------------------------

@@ -80,6 +80,12 @@ variable "target_group_arn" {
   default     = ""
 }
 
+variable "service_registry_arns" {
+  description = "Cloud Map service ARNs to register the tasks in (at most one; from app-network)"
+  type        = list(string)
+  default     = []
+}
+
 variable "desired_count" {
   description = "Number of tasks to run"
   type        = number
