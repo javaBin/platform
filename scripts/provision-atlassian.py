@@ -4,7 +4,9 @@
 Usage: provision-atlassian.py <atlassian.yaml> <members.yaml>
 
 Each Atlassian group in atlassian.yaml lists the registry groups (`from`) whose
-members belong in it. Members are resolved to their javabin_google_email — the
+members belong in it, and/or sets `all_java_no_accounts` to include everyone
+with a java.no Google account (resolved by the Lambda from the Atlassian
+directory, which the Google Workspace user sync keeps in step). Members are resolved to their javabin_google_email — the
 account the Google Workspace user sync creates in Atlassian — so personal
 emails never reach Atlassian. The Lambda runs with action=sync_atlassian and
 reports (or, when enabled in Terraform, applies) the membership changes.
@@ -43,6 +45,7 @@ def resolve_atlassian_groups(atlassian_data, members_data):
             "name": group["name"],
             "description": group.get("description") or "",
             "members": emails,
+            "all_java_no_accounts": bool(group.get("all_java_no_accounts")),
         })
     return resolved
 

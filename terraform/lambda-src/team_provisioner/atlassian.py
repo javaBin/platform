@@ -6,6 +6,8 @@ makes each declared Atlassian group contain exactly those accounts:
 
 - members are matched by email against the org directory, so only accounts
   the Google Workspace user sync created (managed java.no accounts) are added
+- a group with all_java_no_accounts also gets every active managed java.no
+  account, i.e. everyone with a java.no Google account
 - anyone else in a declared group is removed, including personal-email
   accounts; groups not declared in the YAML are never touched
 - report mode (the default) computes the same plan without writing
@@ -130,6 +132,15 @@ def plan_group(desired_emails, current_members, accounts_by_email):
     return {"add": add, "remove": remove, "missing_account": missing}
 
 
+def _java_no_accounts(accounts_by_email):
+    """Active accounts the Google Workspace sync owns — one per java.no Google user."""
+    return [
+        e for e, u in accounts_by_email.items()
+        if e.endswith("@java.no") and u.get("claimStatus") == "managed"
+        and u.get("accountStatus", "active") == "active"
+    ]
+
+
 def _describe(user):
     label = _email(user) or user["accountId"]
     return f"{label} (personal)" if user.get("claimStatus") == "unmanaged" else label
@@ -138,7 +149,8 @@ def _describe(user):
 def sync(admin, groups, apply=False):
     """Plan, and if apply is set, enforce each declared group's membership.
 
-    groups: [{"name": str, "description": str, "members": [email, ...]}]
+    groups: [{"name": str, "description": str, "members": [email, ...],
+              "all_java_no_accounts": bool}]
     Returns per-group results; one failing group doesn't stop the others.
     """
     accounts_by_email = {_email(u): u for u in admin.users() if _email(u)}
@@ -155,7 +167,10 @@ def sync(admin, groups, apply=False):
                 raise ValueError(f"{name} is synced from an identity provider and can't be edited")
 
             members = admin.users(current["id"]) if current else []
-            plan = plan_group(group.get("members") or [], members, accounts_by_email)
+            desired = list(group.get("members") or [])
+            if group.get("all_java_no_accounts"):
+                desired += _java_no_accounts(accounts_by_email)
+            plan = plan_group(desired, members, accounts_by_email)
             result = {
                 "create": current is None,
                 "add": [_describe(u) for u in plan["add"]],
