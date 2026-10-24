@@ -6,7 +6,7 @@
 #
 # Sub-modules:
 #   networking  VPC, subnets, NAT, security groups
-#   ingress     ALB, ACM wildcard cert, Route53 DNS
+#   ingress     ALB, ACM wildcard certs (*.javazone.no, *.java.no, *.javabin.no)
 #   iam         GitHub OIDC, CI roles, permission boundary, ECS execution role
 #   compute     ECS cluster, public ECR images
 #   monitoring       SNS topics, EventBridge rules, Config, GuardDuty, Security Hub
@@ -28,6 +28,11 @@ module "ingress" {
   domain            = var.domain
   public_subnet_ids = module.networking.public_subnet_ids
   alb_sg_id         = module.networking.alb_sg_id
+
+  extra_domains = {
+    "java.no"    = module.dns.java_no_zone_id
+    "javabin.no" = module.dns.javabin_no_zone_id
+  }
 }
 
 module "iam" {
@@ -115,9 +120,10 @@ module "identity" {
 }
 
 module "dns" {
-  source  = "./dns"
-  project = var.project
-  region  = var.region
+  source           = "./dns"
+  project          = var.project
+  region           = var.region
+  javazone_zone_id = module.ingress.route53_zone_id
 
   providers = {
     aws           = aws

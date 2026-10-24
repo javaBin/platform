@@ -25,7 +25,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from registry import (
-    PROJECT, DOMAIN, MODULE_SOURCES,
+    PROJECT, DOMAIN, APP_DOMAINS, MODULE_SOURCES,
     BACKEND_TEMPLATE, PROVIDERS_TEMPLATE, OUTPUTS_TEMPLATE, GITIGNORE_TEMPLATE,
 )
 
@@ -90,6 +90,13 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
 TEAM_RE = re.compile(r"^[a-z]{1,12}$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+HOST_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+def host_zone(host):
+    """The app domain a host lives under, or None if it is not one label under one."""
+    label, _, zone = str(host).partition(".")
+    return zone if zone in APP_DOMAINS and HOST_LABEL_RE.match(label) else None
 
 
 def _check_keys(section, data, allowed):
@@ -125,6 +132,12 @@ def validate(app):
     if routing:
         if not routing.get("host") and not app.get("domain"):
             raise AppYamlError("routing.host is required when routing is set")
+        host = routing.get("host") or app.get("domain")
+        if not host_zone(host):
+            raise AppYamlError(
+                f"routing.host: {host!r} must be one label under "
+                f"{', '.join(APP_DOMAINS)} (e.g. my-app.{APP_DOMAINS[0]})"
+            )
         if not isinstance(routing.get("priority"), int) or not 1 <= routing["priority"] <= 50000:
             raise AppYamlError("routing.priority is required: a unique integer 1-50000")
 
@@ -294,7 +307,7 @@ def generate(app, account_id, region, platform_ref):
             "https_listener_arn": Ref("module.platform.https_listener_arn"),
             "listener_rule_priority": routing["priority"],
             "host_header": routing["host"],
-            "route53_zone_id": Ref("module.platform.route53_zone_id"),
+            "route53_zone_id": Ref(f'module.platform.route53_zone_ids["{host_zone(routing["host"])}"]'),
             "alb_dns_name": Ref("module.platform.alb_dns_name"),
             "alb_zone_id": Ref("module.platform.alb_zone_id"),
             "deregistration_delay": routing.get("deregistration_delay", 30),

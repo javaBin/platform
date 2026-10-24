@@ -11,6 +11,9 @@ references natively.
 
 PROJECT = "javabin"
 DOMAIN = "javazone.no"
+# Domains apps may be hosted under. Each has a Route53 zone and a wildcard
+# cert on the platform ALB, so a host must be exactly one label under one.
+APP_DOMAINS = ("javazone.no", "java.no", "javabin.no")
 
 # ---------------------------------------------------------------------------
 # Module source paths (relative to platform repo root)

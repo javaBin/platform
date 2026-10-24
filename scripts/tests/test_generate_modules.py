@@ -83,6 +83,14 @@ class ValidationTest(unittest.TestCase):
     def test_routing_needs_priority(self):
         self.assertRejected({**CUPCAKE, "routing": {"host": "x.javazone.no"}}, "routing.priority")
 
+    def test_host_must_be_under_an_app_domain(self):
+        self.assertRejected({**CUPCAKE, "routing": {"host": "cupcake.example.com", "priority": 101}},
+                            "routing.host")
+
+    def test_host_must_be_one_label_deep_for_the_wildcard_cert(self):
+        self.assertRejected({**CUPCAKE, "routing": {"host": "a.b.javazone.no", "priority": 101}},
+                            "routing.host")
+
     def test_auth_needs_host(self):
         app = {k: v for k, v in CUPCAKE.items() if k != "routing"}
         self.assertRejected(app, "auth: requires routing.host")
@@ -114,6 +122,12 @@ class GenerationTest(unittest.TestCase):
     def test_domain_is_an_alias_for_routing_host(self):
         app = {**CUPCAKE, "routing": {"priority": 101}, "domain": "alias.javazone.no"}
         self.assertIn('"alias.javazone.no"', generate(app)["main.tf"])
+
+    def test_dns_record_goes_in_the_zone_matching_the_host(self):
+        for host, zone in (("cupcake-backend.javazone.no", "javazone.no"),
+                           ("app.java.no", "java.no"), ("app.javabin.no", "javabin.no")):
+            app = {**CUPCAKE, "routing": {"host": host, "priority": 101}}
+            self.assertIn(f'module.platform.route53_zone_ids["{zone}"]', generate(app)["main.tf"])
 
     def test_worker_without_routing_has_no_target_group(self):
         app = {"name": "worker", "team": "core"}

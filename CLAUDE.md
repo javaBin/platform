@@ -11,7 +11,7 @@ sourced from this repo.
 
 **AWS Account:** 553637109631
 **Region:** eu-central-1 (Frankfurt) — confirmed, all existing infra here
-**Domain:** javazone.no (Route53 hosted zone, 78 records). java.no DNS not in AWS — TBD.
+**Domains:** javazone.no, java.no, javabin.no, javabin.com, teknologihuset.no are Route53 zones. Apps can be hosted one label under javazone.no, java.no or javabin.no (wildcard certs on the ALB). aws.javabin.no / aws.java.no / aws.javazone.no redirect to the SSO portal (CloudFront, `dns/`).
 **GitHub Org:** github.com/javaBin
 **CI/CD:** GitHub Actions
 **Bedrock:** All models available (no per-model access request needed)

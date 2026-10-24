@@ -8,6 +8,12 @@ variable "domain" {
   type        = string
 }
 
+variable "extra_domains" {
+  description = "Additional app domains (domain => Route53 zone ID) that get a wildcard cert on the HTTPS listener"
+  type        = map(string)
+  default     = {}
+}
+
 variable "public_subnet_ids" {
   description = "Public subnet IDs for ALB"
   type        = list(string)

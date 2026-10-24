@@ -69,5 +69,11 @@ data "aws_route53_zone" "main" {
   private_zone = false
 }
 
+data "aws_route53_zone" "app" {
+  for_each     = toset(var.app_domains)
+  name         = each.key
+  private_zone = false
+}
+
 
 data "aws_caller_identity" "current" {}
