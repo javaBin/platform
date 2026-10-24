@@ -69,14 +69,17 @@ ECS Fargate cluster + CI ECR repositories.
 
 ## monitoring
 
-SNS topics, EventBridge rules, Config, GuardDuty, Security Hub.
+SNS topics, EventBridge rules, Config, GuardDuty, Security Hub, account guardrails (`guardrails.tf`).
 
 | Resource | Purpose |
 |----------|---------|
 | `javabin-alerts` SNS | Cost anomalies, budgets |
 | `javabin-security` SNS | IAM changes, GuardDuty, Config, Security Hub |
-| EventBridge rules | IAM key creation, root login, console sign-in, resource creation |
-| AWS Config | Configuration recorder + S3 delivery |
+| EventBridge rules | IAM key creation, root login, console sign-in, resource creation, security tampering (CloudTrail/Config/GuardDuty/Security Hub/KMS/guardrail disables) |
+| AWS Config | Configuration recorder (service-linked role, includes global IAM types) + S3 delivery (TLS-only, 2-year expiry) |
+| Account guardrails | EBS snapshot block-public-access (block all), AMI block-public-access (block new), EBS encryption by default, SSM document public sharing off |
+| IAM Access Analyzer | `javabin-external-access`, external-access findings only (free) |
+| Inspector | ECR + Lambda package scanning (EC2 and Lambda code scanning off) |
 | GuardDuty | Threat detection |
 | Security Hub | Findings aggregation |
 | `javabin-alert-dedup` DynamoDB | Deduplication table used by slack-alert Lambda |
