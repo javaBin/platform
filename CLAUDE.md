@@ -224,6 +224,7 @@ EventBridge ──► javabin-security SNS ──► slack-alert Lambda:
   Security Hub findings (NEW only) ──► #platform-security-alerts
   GuardDuty findings              ──► #platform-security-alerts
   IAM / resource / login events   ──► #javabin-infra-alerts
+  ECS service can't start tasks   ──► #javabin-infra-alerts (once per service per day)
 Cost Anomaly ──► javabin-alerts SNS ──► slack-alert Lambda ──► #javabin-cost-alerts
 
 Account budget (FORECASTED >100%, ACTUAL >100%) ──► javabin-alerts SNS ──► #javabin-cost-alerts

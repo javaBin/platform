@@ -562,6 +562,35 @@ resource "aws_dynamodb_table" "alert_dedup" {
 }
 
 ################################################################################
+# ECS services that cannot start tasks → javabin-security (#javabin-infra-alerts)
+#
+# A service stuck failing task starts (missing image, failing health check)
+# crash-loops until someone notices: wasted Fargate starts, image pulls and
+# AWS Config items for every ENI. slack-alert posts once per service per day.
+# Scoped to the platform cluster (compute/: "${var.project}-platform").
+################################################################################
+
+resource "aws_cloudwatch_event_rule" "ecs_task_start_impaired" {
+  name        = "${var.project}-ecs-task-start-impaired"
+  description = "ECS services in the platform cluster that cannot start tasks"
+
+  event_pattern = jsonencode({
+    source      = ["aws.ecs"]
+    detail-type = ["ECS Service Action"]
+    detail = {
+      eventName  = ["SERVICE_TASK_START_IMPAIRED"]
+      clusterArn = ["arn:aws:ecs:${var.region}:${var.aws_account_id}:cluster/${var.project}-platform"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "ecs_task_start_impaired_sns" {
+  rule      = aws_cloudwatch_event_rule.ecs_task_start_impaired.name
+  target_id = "send-to-security-sns"
+  arn       = aws_sns_topic.security.arn
+}
+
+################################################################################
 # Cost Allocation Tags
 ################################################################################
 

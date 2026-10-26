@@ -18,6 +18,8 @@ Log groups `/aws/lambda/javabin-{function}` are declared in `lambdas/log-groups.
 
 Features: GitHub OIDC attribution (extracts actor/repo/SHA from session tags), cost estimation via shared pricing module, Security Hub finding formatting.
 
+ECS `SERVICE_TASK_START_IMPAIRED` events from the `javabin-platform` cluster only (a crash-looping service) are posted to #javabin-infra-alerts at most once per service per UTC day. Legacy clusters (vaultwarden, cakeredux, moresleep-test, dennis-test) are not covered. As with the other deduplicated alerts, the dedup key is written before the Slack post, so a failed post suppresses that service's alert for the rest of the day; if the dedup table is unreadable, dedup fails open.
+
 Uses the `javabin-alert-dedup` DynamoDB table for deduplication of alerts (prevents repeated notifications for the same finding).
 
 ## cost-report
