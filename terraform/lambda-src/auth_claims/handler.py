@@ -27,6 +27,11 @@ pool; the IdP's hosted-domain hint is only a UI hint.
 IdPs in EMAIL_VERIFIED_IDENTITY_PROVIDERS (default: Google, the OIDC IdP) are
 not trusted on their own: their users also need email_verified=true, which
 the pool maps from Google's own claim. SAML releases no such claim.
+
+The external pool runs the same code as javabin-auth-claims-external with
+REGISTRY_GROUPS=false: anyone can sign up there with any email, so registry
+membership (keyed by email) must not be granted. Only native Cognito groups
+count, and the per-client allowed groups are still enforced.
 """
 
 import json
@@ -41,6 +46,7 @@ logger.setLevel(logging.INFO)
 
 TABLE = os.environ.get("MEMBERSHIPS_TABLE", "javabin-auth-memberships")
 CACHE_SECONDS = int(os.environ.get("CACHE_SECONDS", "60"))
+REGISTRY_GROUPS = os.environ.get("REGISTRY_GROUPS", "true").lower() != "false"
 REQUIRED_DOMAIN = os.environ.get("REQUIRED_EMAIL_DOMAIN", "").strip().lower().lstrip("@")
 FEDERATED_IDPS = {p.strip() for p in os.environ.get("FEDERATED_IDENTITY_PROVIDERS", "").split(",")
                   if p.strip() and p.strip() != "COGNITO"}
@@ -136,7 +142,9 @@ def handler(event, context):
     client_id = event.get("callerContext", {}).get("clientId", "")
     native = (request.get("groupConfiguration") or {}).get("groupsToOverride") or []
 
-    registry = sorted(g for g, members in group_members().items() if email and email in members)
+    registry = []
+    if REGISTRY_GROUPS:
+        registry = sorted(g for g, members in group_members().items() if email and email in members)
     groups = sorted(set(native) | set(registry))
 
     allowed = allowed_groups(client_id) if client_id else set()

@@ -532,5 +532,76 @@ class PoolIdpListTest(unittest.TestCase):
         self.assertEqual(json.loads(self.ssm.params[STATUS])["status"], "error")
 
 
+class LoginSlotTest(AppAuthSyncTest):
+    """service-routing requests one client per ALB sign-in rule, one level down."""
+    SLOT_REQ = "/javabin/apps/cupcake/frosting/login-1/auth"
+    ALB = {"pool": "internal", "client_type": "confidential",
+           "callback_urls": ["https://frosting.java.no/oauth2/idpresponse"], "allowed_groups": ["styret"]}
+
+    def test_slot_names(self):
+        self.assertEqual(self.h.parse_name(self.SLOT_REQ), ("cupcake", "frosting", "login-1"))
+        self.assertEqual(self.h.parse_name(REQ), ("cupcake", "frosting", ""))
+        self.assertEqual(self.h.client_name("cupcake", "frosting", "login-1"), "cupcake-frosting.login-1")
+
+    def test_slot_client_lives_next_to_the_main_client(self):
+        self.put_request()
+        self.h.handler(event(REQ, "Create"), None)
+        self.put_request(self.ALB, name=self.SLOT_REQ)
+        result = self.h.handler(event(self.SLOT_REQ, "Create"), None)
+
+        self.assertEqual(result["client"], "cupcake-frosting.login-1")
+        names = {c["ClientName"]: cid for cid, c in self.cognito.clients.items()}
+        self.assertEqual(set(names), {"cupcake-frosting", "cupcake-frosting.login-1"})
+        slot_id = names["cupcake-frosting.login-1"]
+        base = "/javabin/apps/cupcake/frosting/login-1"
+        self.assertEqual(self.ssm.params[f"{base}/cognito-client-id"], slot_id)
+        self.assertEqual(self.ssm.params[f"{base}/cognito-client-secret"], self.cognito.clients[slot_id]["ClientSecret"])
+        self.assertEqual(self.ssm.params[f"{base}/cognito-client-identity-provider"], "GoogleSAML")
+        self.assertEqual(json.loads(self.ssm.params[f"{base}/auth-status"])["status"], "synced")
+        self.assertEqual(self.ssm.tags[f"{base}/cognito-client-secret"]["team"], "cupcake")
+        self.assertNotIn("COGNITO", self.cognito.clients[slot_id]["SupportedIdentityProviders"])
+        item = self.dynamo.items[f"client#{slot_id}"]
+        self.assertEqual([v["S"] for v in item["allowed_groups"]["L"]], ["styret"])
+        self.assertEqual(item["app"]["S"], "cupcake-frosting.login-1")
+        # the main client's credentials are untouched
+        self.assertEqual(self.ssm.params["/javabin/apps/cupcake/frosting/cognito-client-id"], names["cupcake-frosting"])
+
+    def test_deleting_the_slot_leaves_the_main_client(self):
+        self.put_request()
+        self.h.handler(event(REQ, "Create"), None)
+        self.put_request(self.ALB, name=self.SLOT_REQ)
+        self.h.handler(event(self.SLOT_REQ, "Create"), None)
+        del self.ssm.params[self.SLOT_REQ]
+
+        self.assertEqual(self.h.handler(event(self.SLOT_REQ, "Delete"), None)["status"], "deleted")
+        _, client = self.only_client()
+        self.assertEqual(client["ClientName"], "cupcake-frosting")
+        self.assertFalse([k for k in self.ssm.params if "/login-1/" in k])
+        self.assertIn("/javabin/apps/cupcake/frosting/cognito-client-id", self.ssm.params)
+
+    def test_reconcile_keeps_slot_clients_and_removes_slot_orphans(self):
+        self.put_request(self.ALB, name=self.SLOT_REQ)
+        gone = "/javabin/apps/cupcake/frosting/login-2/auth"
+        self.put_request(self.ALB, name=gone)
+        self.h.handler(event(gone, "Create"), None)
+        del self.ssm.params[gone]
+
+        result = self.h.handler({"action": "reconcile"}, None)
+
+        self.assertEqual(result["synced"], ["cupcake-frosting.login-1"])
+        self.assertEqual(result["deleted"], ["cupcake-frosting.login-2"])
+        _, client = self.only_client()
+        self.assertEqual(client["ClientName"], "cupcake-frosting.login-1")
+
+    def test_other_subpaths_are_not_requests(self):
+        for name in ("/javabin/apps/cupcake/frosting/admin/auth",
+                     "/javabin/apps/cupcake/frosting/login-0/auth",
+                     "/javabin/apps/cupcake/frosting/login-100/auth",
+                     "/javabin/apps/cupcake/frosting/login-1/x/auth"):
+            self.ssm.params[name] = json.dumps(self.ALB)
+            self.assertEqual(self.h.handler(event(name, "Create"), None)["status"], "ignored", name)
+        self.assertEqual(self.cognito.clients, {})
+
+
 if __name__ == "__main__":
     unittest.main()
