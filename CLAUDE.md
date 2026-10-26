@@ -26,7 +26,7 @@ sourced from this repo.
   Our CI roles attach to the same provider with different trust conditions.
 - **Auth0**: login.javazone.no — existing IdP, stays as-is
 - **Existing TF state**: `javazone-terraform-state` bucket + `terraform-lock` table — manages SQS only, unrelated to our work
-- **Security services**: GuardDuty, Security Hub, and Config deployed by our platform. CloudTrail not managed by us.
+- **Security services**: GuardDuty, Security Hub, Config, Inspector (ECR + Lambda), IAM Access Analyzer and account guardrails (EBS/AMI/SSM block-public-access, EBS default encryption) deployed by our platform (`monitoring/`). CloudTrail not managed by us.
 
 ### Coexistence Strategy
 **Full separation.** We create our own VPC, ALB, ECS cluster, OIDC provider, state bucket — everything.

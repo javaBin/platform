@@ -235,13 +235,20 @@ resource "aws_cloudwatch_event_target" "resource_modification_sns" {
 # AWS Config Recorder — needed for Config Rules to evaluate resources
 ################################################################################
 
+# Config.1: the recorder must use the AWS Config service-linked role, and
+# record global (IAM) resource types so IAM controls are evaluated. This is
+# the only recorder in the account (single region), so it owns global types.
+resource "aws_iam_service_linked_role" "config" {
+  aws_service_name = "config.amazonaws.com"
+}
+
 resource "aws_config_configuration_recorder" "main" {
   name     = "${var.project}-recorder"
-  role_arn = aws_iam_role.config_role.arn
+  role_arn = aws_iam_service_linked_role.config.arn
 
   recording_group {
     all_supported                 = true
-    include_global_resource_types = false
+    include_global_resource_types = true
   }
 }
 
@@ -291,6 +298,8 @@ resource "aws_s3_bucket_public_access_block" "config_logs" {
 resource "aws_s3_bucket_policy" "config_logs" {
   bucket = aws_s3_bucket.config_logs.id
 
+  # Delivery statements follow the AWS-documented Config bucket policy,
+  # scoped to this account with aws:SourceAccount.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -300,45 +309,65 @@ resource "aws_s3_bucket_policy" "config_logs" {
         Principal = { Service = "config.amazonaws.com" }
         Action    = "s3:GetBucketAcl"
         Resource  = aws_s3_bucket.config_logs.arn
+        Condition = {
+          StringEquals = { "aws:SourceAccount" = var.aws_account_id }
+        }
+      },
+      {
+        Sid       = "AWSConfigBucketExistenceCheck"
+        Effect    = "Allow"
+        Principal = { Service = "config.amazonaws.com" }
+        Action    = "s3:ListBucket"
+        Resource  = aws_s3_bucket.config_logs.arn
+        Condition = {
+          StringEquals = { "aws:SourceAccount" = var.aws_account_id }
+        }
       },
       {
         Sid       = "AWSConfigBucketDelivery"
         Effect    = "Allow"
         Principal = { Service = "config.amazonaws.com" }
         Action    = "s3:PutObject"
-        Resource  = "${aws_s3_bucket.config_logs.arn}/*"
+        Resource  = "${aws_s3_bucket.config_logs.arn}/AWSLogs/${var.aws_account_id}/Config/*"
         Condition = {
-          StringEquals = { "s3:x-amz-acl" = "bucket-owner-full-control" }
+          StringEquals = {
+            "s3:x-amz-acl"      = "bucket-owner-full-control"
+            "aws:SourceAccount" = var.aws_account_id
+          }
         }
-      }
+      },
+      {
+        # S3.5
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.config_logs.arn,
+          "${aws_s3_bucket.config_logs.arn}/*",
+        ]
+        Condition = {
+          Bool = { "aws:SecureTransport" = "false" }
+        }
+      },
     ]
   })
 }
 
-################################################################################
-# IAM Role for AWS Config
-################################################################################
+# S3.13: keep two years of Config history (audits), then expire.
+resource "aws_s3_bucket_lifecycle_configuration" "config_logs" {
+  bucket = aws_s3_bucket.config_logs.id
 
-resource "aws_iam_role" "config_role" {
-  name = "${var.project}-config-role"
+  rule {
+    id     = "expire-after-2-years"
+    status = "Enabled"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "config.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
+    filter {}
 
-  tags = {
-    Name = "${var.project}-config-role"
+    expiration {
+      days = 730
+    }
   }
-}
-
-resource "aws_iam_role_policy_attachment" "config_role" {
-  role       = aws_iam_role.config_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWS_ConfigRole"
 }
 
 ################################################################################
