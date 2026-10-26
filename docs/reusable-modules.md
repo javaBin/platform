@@ -68,6 +68,8 @@ Supports `environment` (map) and `secrets` (map of name => ARN) for container co
 
 **Tag propagation:** `enable_ecs_managed_tags = true` and `propagate_tags = "SERVICE"` ensure Fargate task-level compute costs are attributed to the team via Cost Explorer.
 
+`service_registry_arns` (list, default `[]`) registers the tasks in Cloud Map (from `app-network`).
+
 **Outputs:** `service_name`, `task_definition_arn`, `log_group_name`
 
 ## service-bucket
@@ -175,6 +177,22 @@ Requests a Cognito OAuth client for the app. It does **not** create the client: 
 
 **Inputs:** `app_name`, `team`, `pool` (internal/external), `client_type` (confidential/public/none), `callback_urls`, `logout_urls`, `allowed_oauth_scopes`, `allowed_groups`, `external_pool_custom_domain`, `slot` (optional `login-N`: an extra client `{team}-{app_name}.login-N` with everything under `/{project}/apps/{team}/{app_name}/login-N/`)
 **Outputs:** `user_pool_id`, `user_pool_domain`, `issuer_url`, `well_known_url`, `client_id_arn`, `client_secret_arn`, `identity_provider_arn` (SSM ARNs for ECS `secrets`), `auth_status_parameter_name`, `client_id_parameter_name`, `client_secret_parameter_name`, `request_parameter_name`, `request_value` (the request JSON; depends on the parameter existing)
+
+## app-network
+
+Emitted for every app. The app's own task security group `{team}-{name}-tasks` (ALB ingress on the
+app port when routed, all egress, tag `javabin-network=app`), its Cloud Map service `{team}-{name}`
+in the shared `{project}.internal` namespace, and the app-to-app request
+`/{project}/apps/{team}/{name}/network` (security group, port, `calls`, `provides`). The platform
+`app-peers-sync` Lambda turns the requests into security group rules, Cognito M2M clients and the
+caller's `peer-*-url` / `peer-*-scopes` / `m2m-client-*` parameters. See
+[app-yaml-reference.md#calls--provides-app-to-app](app-yaml-reference.md#calls--provides-app-to-app).
+
+**Inputs:** `name`, `team`, `project`, `vpc_id`, `port`, `alb_ingress`, `calls` (`"team/app"` => scopes),
+`provides_scopes` (scope => description), `consumers` (`"team/app"` => scopes), `internal_pool_name`,
+`internal_pool_domain` (Cognito domain prefix for `token_url`, default `javabin-internal`)
+**Outputs:** `security_group_id`, `registry_arn`, `dns_name`, `request_parameter_name`, `peer_url_arns`, `peer_scopes_arns`,
+`m2m_client_id_arn`, `m2m_client_secret_arn`, `token_url`, `issuer_url`, `jwks_url`, `scope_prefix`
 
 ## Policy Composition Pattern
 

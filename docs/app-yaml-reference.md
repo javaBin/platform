@@ -469,6 +469,118 @@ alarms:
 
 Alarms are created only for services with `routing:`.
 
+### calls / provides (app-to-app)
+
+Apps can call each other privately inside the platform VPC, without going through the internet or
+the public ALB. Both sides must agree: the **caller** lists the app it calls under `calls:`, and the
+**callee** lists the caller under `provides.consumers:`. Either side removing its entry closes the
+connection again.
+
+```yaml
+# Caller: cupcake-backend (team cupcake)
+calls:
+  - app: moresleep          # required
+    team: moresleep         # optional, default: this app's team
+    scopes: [talks.read]    # optional; omit for network-only
+    env: SP_BASE_URL        # optional URL variable name, default MORESLEEP_URL
+```
+
+```yaml
+# Callee: moresleep (team moresleep)
+provides:
+  scopes:                   # optional; scope: description (a list of names also works)
+    talks.read: Read talks and speakers
+    talks.write: Create and update talks
+  consumers:                # who may call this app
+    - app: cupcake-backend
+      team: cupcake         # optional, default: this app's team
+      scopes: [talks.read]  # optional; must be listed in provides.scopes
+```
+
+**What the platform does**
+
+- Every app (with or without `calls`/`provides`) gets its own security group `{team}-{name}-tasks`
+  and a private DNS name `{team}-{name}.javabin.internal` (Cloud Map). The ALB can reach only the
+  app's `compute.port`; nothing else can, until a consumer is allowed.
+- When both sides agree, the platform Lambda `javabin-app-peers-sync` opens the callee's port to the
+  caller's security group, usually within a minute of the second apply.
+- **Scopes** (optional) are OAuth2 client-credentials scopes in the internal Cognito pool. The callee
+  gets a resource server `{team}-{name}`; each caller that requests scopes gets one machine-to-machine
+  client. Granted scopes are what the caller requested **and** the callee allows for that caller.
+- Routing is not needed on either side. An app with `provides:` and no `routing:` is reachable only
+  from its consumers inside the VPC.
+
+**Injected into the caller**
+
+| Variable | Kind | Value |
+|---|---|---|
+| `<env>` (default `{APP}_URL`) | secret (SSM) | `http://{team}-{app}.javabin.internal:{port}` |
+| `<env>` with `_URL` → `_SCOPES` (only with `scopes`) | secret (SSM) | Scopes actually **granted** for that callee, space-separated, e.g. `moresleep-moresleep/talks.read`; `none` until something is granted |
+| `PEER_AUTH_TOKEN_URL` (any call with `scopes`) | env | Token endpoint of the internal pool |
+| `PEER_AUTH_CLIENT_ID`, `PEER_AUTH_CLIENT_SECRET` (any call with `scopes`) | secrets | The caller's M2M client |
+
+**Injected into the callee** (when `provides.scopes` is set): `PEER_AUTH_ISSUER`,
+`PEER_AUTH_JWKS_URL`, `PEER_AUTH_SCOPE_PREFIX` (`{team}-{name}/`).
+
+**Calling with scopes.** Request one token per callee, with that callee's scopes variable, and cache it
+until it expires (60 minutes). Skip the request while the variable is `none`:
+
+```bash
+curl -s -u "$PEER_AUTH_CLIENT_ID:$PEER_AUTH_CLIENT_SECRET" \
+  -d grant_type=client_credentials --data-urlencode "scope=$SP_BASE_SCOPES" "$PEER_AUTH_TOKEN_URL"
+# -> {"access_token": "...", "expires_in": 3600}; send it as Authorization: Bearer <token>
+```
+
+Cognito refuses the whole token request (`invalid_scope`) if any requested scope is not granted, so
+always request exactly the scopes variable, never a hard-coded list: it holds what the client really has.
+When the callee grants fewer scopes (or more), the variable changes and the platform restarts the caller
+so it picks up the new value. The callee
+verifies the token's signature against `PEER_AUTH_JWKS_URL`, its `iss` against `PEER_AUTH_ISSUER`, and
+checks that `scope` contains `${PEER_AUTH_SCOPE_PREFIX}<scope>` (Spring Security
+`oauth2ResourceServer().jwt()`, `jose` in Node). One token per callee means a token can never be
+replayed against another app.
+
+**Status.** Each side can see the state of its edges:
+
+```bash
+aws ssm get-parameter --name /javabin/apps/<team>/<app>/peers-status --query Parameter.Value --output text
+# calls: active | pending-consent | callee-missing | callee-invalid, with granted/denied scopes
+# consumers: active | pending | caller-invalid
+```
+
+If an app's request becomes invalid (its `peers-status` shows `{"error": ...}`), the app is frozen rather
+than removed: its existing rules, scopes and parameters stay, so a bad apply does not cut off its peers.
+The other side can still withdraw while it is frozen. Removing the app (destroying its Terraform) removes
+its edges for real.
+
+**Security notes**
+
+- A network-only call (no `scopes`) is **not caller authentication**. It only means "tasks with the
+  caller's security group can reach the port". ECS attaches security groups and registers Cloud Map
+  instances through its own service role, so a team that deliberately runs a task with another app's
+  group ID would get that app's network identity. The daily audit reports this, but does not block it.
+  Endpoints that change data or return anything sensitive should require scopes.
+- The platform denies teams changing the private `javabin.internal` DNS zone, and the daily audit
+  compares its records with Cloud Map. Cloud Map service names are not enforced at creation: a squatted
+  `{your-team}-{app}` name makes your apply fail and is reported by the daily audit; ask the platform
+  team to remove it.
+
+**First deploy.** The caller's task definition references `peer-*-url`, `peer-*-scopes` and
+`m2m-client-*`, which `javabin-app-peers-sync` writes shortly after the apply that adds the call. If the
+Lambda has not written them (or failed), tasks fail to start with `ResourceInitializationError` and the
+deployment rolls back. Check `peers-status` and the `#javabin-infra-alerts` channel, then re-run the
+deploy.
+
+**Rules and limits**
+
+- Names: `app` as in `name:`, `team` as in `team:`. Scope names: lowercase letters, digits, `.`, `_`,
+  `-`, max 40 characters. At most 20 calls, 50 consumers, 25 scopes.
+- The injected names must not also be set in `environment:`, a resource `env` or `auth.env`. Two calls
+  to apps with the same name in different teams need an explicit `env:`.
+- Traffic is plain HTTP inside the VPC. Already-issued tokens stay valid for up to 60 minutes after a
+  scope is withdrawn, and open connections can outlive a removed rule until they close.
+- At most about 25 apps can provide scopes (Cognito resource servers per pool).
+
 ## Not supported
 
 These fields were documented earlier but are not implemented. Using them fails `expand` with an explanation.
@@ -507,3 +619,7 @@ All app resources are prefixed with the team name for ABAC enforcement.
 | DNS record | `{routing.host}` |
 | SSM (Cognito) | `/javabin/apps/{team}/{name}/cognito-client-{id,secret}` |
 | Cognito client (`routing.login`) | `{team}-{name}.login-{N}`, credentials under `/javabin/apps/{team}/{name}/login-{N}/` |
+| Task security group | `{team}-{name}-tasks` |
+| Private DNS name | `{team}-{name}.javabin.internal` |
+| SSM (app-to-app) | `/javabin/apps/{team}/{name}/network` (request), `peer-{t}-{a}-url`, `peer-{t}-{a}-scopes`, `m2m-client-{id,secret}`, `peers-status` |
+| Cognito M2M | resource server `{team}-{name}`, client `m2m.{team}-{name}` (internal pool) |
