@@ -269,7 +269,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/javabin-ci-infra-plan
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: ${{ env.SESSION_NAME }}
 
