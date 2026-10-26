@@ -126,3 +126,9 @@ variable "login_client_wait" {
   type        = string
   default     = "60s"
 }
+
+variable "allow_dns_overwrite" {
+  description = "Take over an existing A record for host_header (Route53 UPSERT) instead of failing because it exists"
+  type        = bool
+  default     = false
+}

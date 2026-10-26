@@ -39,7 +39,7 @@ ECR repository with 4-rule lifecycle policy.
 ALB target group + listener rule (host-header routing) + Route53 A record (alias to ALB).
 
 **Required inputs:** `name`, `team`, `vpc_id`, `https_listener_arn`, `listener_rule_priority`, `host_header`, `route53_zone_id`, `alb_dns_name`, `alb_zone_id`
-**Optional inputs:** `project`, `login_rules` (app.yaml `routing.login`), `login_session_timeout` (default 8 h), `login_client_wait` (default `60s`)
+**Optional inputs:** `project`, `login_rules` (app.yaml `routing.login`), `login_session_timeout` (default 8 h), `login_client_wait` (default `60s`), `allow_dns_overwrite` (default false; take over an existing A record for `host_header` with a Route53 UPSERT, set by `routing.adopt_dns` in app.yaml)
 **Outputs:** `target_group_arn`, `target_group_arn_suffix`, `dns_name`
 
 `login_rules` (map keyed `p1`, `p2`, ...) adds one listener rule per entry, matching host + paths at the entry's priority (below `listener_rule_priority`). Protected entries get an `authenticate-oidc` action against the chosen Cognito pool, with a per-rule client `{team}-{name}.login-N` requested through a nested `cognito-app-client` (slot `login-N`); group restrictions are enforced by Cognito (auth-claims). `public` entries forward without sign-in. The host rule `depends_on` them, so a new app serves nothing until they exist. `authenticate-cognito` is not used: it needs `cognito-idp:DescribeUserPoolClient` on the platform pools, which the developer boundary denies. Requires the `hashicorp/time` provider (for the wait on the async client creation).
@@ -119,7 +119,7 @@ RDS PostgreSQL instance in private subnets.
 
 **Password:** Generated once via `random_password`, stored in SSM at `/{project}/apps/{name}/db-master-password`.
 
-**Outputs:** `endpoint`, `port`, `db_name`, `password_parameter_arn`, `access_policy_json`, `security_group_id`
+**Outputs:** `endpoint`, `address`, `port`, `db_name`, `password_parameter_arn`, `access_policy_json`, `security_group_id`
 
 **Auto-wiring:** `access_policy_json` grants `rds-db:connect` + `ssm:GetParameter` on the password parameter. Auto-attached to task role via `collect:access_policy_json`.
 
@@ -132,6 +132,26 @@ databases:
     allocated_storage: 20
     engine_version: "16"
 ```
+
+
+## service-rds-adopted
+
+An existing RDS instance brought under Terraform without changing it (`databases[].adopt` in app.yaml). The generated root module imports it with an `import {}` block.
+
+**Inputs:**
+
+| Input | Default |
+|-------|---------|
+| `identifier` | required — DB instance identifier |
+| `deletion_protection` | true |
+| `backup_retention_period` | null (keep the live value) |
+| `tags` | `{}` |
+
+**Manages:** tags, `deletion_protection`, `backup_retention_period` (when set), final-snapshot settings (`<identifier>-final-<random hex>`, so a later delete/re-adopt cycle never collides with an old snapshot). Needs AWS provider 5.40 or later. Every other argument is read from the live instance or listed in `ignore_changes`, so importing never plans a replacement. `prevent_destroy` is set.
+
+**Outputs:** `endpoint`, `address`, `port` (string), `arn`, `resource_id`
+
+**Auto-wiring:** none. The app keeps its own credentials (`secrets:`); `env`, `host_env` and `port_env` map to `endpoint`, `address` and `port`.
 
 ## service-alarm
 

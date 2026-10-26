@@ -15,6 +15,20 @@ DOMAIN = "javazone.no"
 # cert on the platform ALB, so a host must be exactly one label under one.
 APP_DOMAINS = ("javazone.no", "java.no", "javabin.no")
 
+# Existing resources a team may adopt with app.yaml (databases[].adopt and
+# routing.adopt_dns). Adopting takes over a resource the platform did not
+# create: the team's Terraform imports or overwrites it and then owns it.
+# Neither Route53 records nor untagged legacy resources are protected by the
+# team permission boundary, so each adoption is approved here, in a platform
+# PR, instead of being a one-line app.yaml change. Remove an entry once the
+# adoption is applied if the resource should never be adopted again.
+ADOPTIONS = {
+    "moresleep": {
+        "rds": {"dbmoresleep"},
+        "dns": {"sleepingpill.javazone.no"},
+    },
+}
+
 # ---------------------------------------------------------------------------
 # Module source paths (relative to platform repo root)
 # ---------------------------------------------------------------------------
@@ -29,6 +43,7 @@ MODULE_SOURCES = {
     "service-bucket":     "terraform/modules/service-bucket",
     "service-database":   "terraform/modules/service-database",
     "service-rds":        "terraform/modules/service-rds",
+    "service-rds-adopted": "terraform/modules/service-rds-adopted",
     "service-secret":     "terraform/modules/service-secret",
     "service-queue":      "terraform/modules/service-queue",
     "cognito-app-client": "terraform/modules/cognito-app-client",

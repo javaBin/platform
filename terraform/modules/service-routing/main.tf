@@ -229,10 +229,15 @@ resource "aws_lb_listener_rule" "public" {
 # Route53 DNS Record (alias to ALB)
 ################################################################################
 
+# allow_overwrite (routing.adopt_dns in app.yaml) lets Terraform take over a
+# record that already exists, e.g. a hand-made record for an app that moves
+# onto the platform: Route53 UPSERTs it instead of failing on CREATE. From
+# then on the record is managed here, and destroying it deletes it.
 resource "aws_route53_record" "this" {
-  zone_id = var.route53_zone_id
-  name    = var.host_header
-  type    = "A"
+  zone_id         = var.route53_zone_id
+  name            = var.host_header
+  type            = "A"
+  allow_overwrite = var.allow_dns_overwrite ? true : null # null = unchanged for existing apps
 
   alias {
     name                   = var.alb_dns_name
