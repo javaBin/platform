@@ -131,6 +131,8 @@ terraform/state/
 | `terraform/modules/ecs-service/` | ECS Fargate service |
 | `terraform/modules/service-bucket/` | S3 bucket with IAM policy output |
 | `terraform/modules/service-database/` | DynamoDB table with IAM policy output |
+| `terraform/modules/service-rds/` | RDS PostgreSQL instance with generated master password |
+| `terraform/modules/service-rds-adopted/` | Existing RDS instance imported as-is (`databases[].adopt`); manages tags and deletion protection only |
 | `terraform/modules/service-secret/` | SSM Parameter Store SecureString with IAM policy output |
 | `terraform/modules/service-queue/` | SQS queue + DLQ with IAM policy output |
 | `terraform/modules/service-alarm/` | CloudWatch alarms for ECS service |
