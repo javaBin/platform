@@ -83,6 +83,47 @@ Queries Security Hub for active findings at HIGH and CRITICAL severity, aggregat
 | `/javabin/platform/atlassian-org-id` | Atlassian organisation ID |
 | `/javabin/platform/atlassian-api-key` | Atlassian org admin API key (unscoped — full org admin) |
 
+### Team Google group (`sync_google_group`)
+
+Each team gets the group `team-{name}@java.no`. Members are kept in step with the registry: a member
+with `role: maintainer` is a Google **MANAGER**, everyone else a **MEMBER**. A differing role is
+changed in place. Members not in the registry are removed, except **OWNER**s: an owner is only ever
+set by a Workspace admin by hand (e.g. `platform@java.no`), so owners are never demoted or removed and
+are reported as `kept_owners`. Team members must have a `@java.no` account: the group has
+`allowExternalMembers=false`, so a non-java.no address (legacy `email:` field) is not added and is
+reported as `skipped_external` with a Slack `:warning:`, while the rest of the sync continues.
+
+After the member sync, `enforce_team_group_settings` makes the group's mail readable by its members.
+It reads the Groups Settings API and writes only the keys that differ:
+
+| Setting | Value |
+|---------|-------|
+| `whoCanViewGroup` | `ALL_MEMBERS_CAN_VIEW` (members read the conversations at groups.google.com/a/java.no/g/team-{name}) |
+| `isArchived` / `archiveOnly` | `true` / `false` (keep an archive, still deliver mail) |
+| `whoCanViewMembership` | `ALL_IN_DOMAIN_CAN_VIEW` |
+| `whoCanJoin` | `INVITED_CAN_JOIN` (the registry is the only way in) |
+| `allowWebPosting` | `true` |
+| `allowExternalMembers` | `false` |
+
+Not enforced, so outside senders reach the group as before: `whoCanPostMessage`, message and spam
+moderation, collaborative inbox, and posting as the group. The current `whoCanPostMessage` and
+`messageModerationLevel` are returned in the result for visibility.
+
+The settings use their own token with only the `apps.groups.settings` scope. If that scope is not
+delegated, the settings step is skipped with a Slack `:warning:` and member sync still succeeds. If
+the Groups Settings API is disabled in GCP project `javabin-platform`, the step reports that.
+Org groups from the registry's `groups.yaml` are not touched by this.
+
+Members read the archive at groups.google.com only if the **Groups for Business** service is ON for
+their org unit (Admin console > Apps > Google Workspace > Groups for Business); without it the archive
+settings have no visible effect.
+
+Delegated scopes the platform code requests (client ID 103162295681564397615). The console may grant
+more; read the current list there first and add to it rather than pasting this one:
+`admin.directory.group`, `admin.directory.group.member`, `admin.directory.user`,
+`admin.directory.user.alias`, `gmail.send`, `gmail.settings.sharing`, `apps.groups.settings`
+(all under `https://www.googleapis.com/auth/`).
+
 ### Atlassian group sync (`sync_atlassian`)
 
 Invoked by the registry's `provision-groups.yml` via `scripts/provision-atlassian.py`, which resolves
