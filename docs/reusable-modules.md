@@ -38,8 +38,11 @@ ECR repository with 4-rule lifecycle policy.
 
 ALB target group + listener rule (host-header routing) + Route53 A record (alias to ALB).
 
-**Required inputs:** `name`, `project`, `vpc_id`, `https_listener_arn`, `listener_rule_priority`, `host_header`, `route53_zone_id`, `alb_dns_name`, `alb_zone_id`
+**Required inputs:** `name`, `team`, `vpc_id`, `https_listener_arn`, `listener_rule_priority`, `host_header`, `route53_zone_id`, `alb_dns_name`, `alb_zone_id`
+**Optional inputs:** `project`, `login_rules` (app.yaml `routing.login`), `login_session_timeout` (default 8 h), `login_client_wait` (default `60s`)
 **Outputs:** `target_group_arn`, `target_group_arn_suffix`, `dns_name`
+
+`login_rules` (map keyed `p1`, `p2`, ...) adds one listener rule per entry, matching host + paths at the entry's priority (below `listener_rule_priority`). Protected entries get an `authenticate-oidc` action against the chosen Cognito pool, with a per-rule client `{team}-{name}.login-N` requested through a nested `cognito-app-client` (slot `login-N`); group restrictions are enforced by Cognito (auth-claims). `public` entries forward without sign-in. The host rule `depends_on` them, so a new app serves nothing until they exist. `authenticate-cognito` is not used: it needs `cognito-idp:DescribeUserPoolClient` on the platform pools, which the developer boundary denies. Requires the `hashicorp/time` provider (for the wait on the async client creation).
 
 ## service-role
 
@@ -150,8 +153,8 @@ Auto-wires: resource env vars (bucket names, table names, queue URLs), secret AR
 
 Requests a Cognito OAuth client for the app. It does **not** create the client: it writes the request to SSM `/{project}/apps/{team}/{app_name}/auth`, and the platform `app-auth-sync` Lambda creates the client `{team}-{app_name}` and writes its credentials next to the request (`cognito-client-id`, `cognito-client-secret`). See [app-yaml-reference.md#auth](app-yaml-reference.md#auth) for why.
 
-**Inputs:** `app_name`, `team`, `pool` (internal/external), `client_type` (confidential/public/none), `callback_urls`, `logout_urls`, `allowed_oauth_scopes`, `allowed_groups`, `external_pool_custom_domain`
-**Outputs:** `user_pool_id`, `user_pool_domain`, `issuer_url`, `well_known_url`, `client_id_arn`, `client_secret_arn`, `identity_provider_arn` (SSM ARNs for ECS `secrets`), `auth_status_parameter_name`, `request_parameter_name`
+**Inputs:** `app_name`, `team`, `pool` (internal/external), `client_type` (confidential/public/none), `callback_urls`, `logout_urls`, `allowed_oauth_scopes`, `allowed_groups`, `external_pool_custom_domain`, `slot` (optional `login-N`: an extra client `{team}-{app_name}.login-N` with everything under `/{project}/apps/{team}/{app_name}/login-N/`)
+**Outputs:** `user_pool_id`, `user_pool_domain`, `issuer_url`, `well_known_url`, `client_id_arn`, `client_secret_arn`, `identity_provider_arn` (SSM ARNs for ECS `secrets`), `auth_status_parameter_name`, `client_id_parameter_name`, `client_secret_parameter_name`, `request_parameter_name`, `request_value` (the request JSON; depends on the parameter existing)
 
 ## Policy Composition Pattern
 

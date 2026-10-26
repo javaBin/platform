@@ -30,7 +30,8 @@ def client(cid, *groups):
     return {"pk": {"S": f"client#{cid}"}, "allowed_groups": {"L": [{"S": g} for g in groups]}}
 
 
-DOMAIN_ENV = ("REQUIRED_EMAIL_DOMAIN", "FEDERATED_IDENTITY_PROVIDERS", "EMAIL_VERIFIED_IDENTITY_PROVIDERS")
+DOMAIN_ENV = ("REQUIRED_EMAIL_DOMAIN", "FEDERATED_IDENTITY_PROVIDERS", "EMAIL_VERIFIED_IDENTITY_PROVIDERS",
+              "REGISTRY_GROUPS")
 
 
 def load(dynamo, **env):
@@ -169,6 +170,31 @@ class AuthClaimsTest(unittest.TestCase):
         self.h.handler(event("ada.lovelace@java.no"), None)
         self.h.handler(event("alan.turing@java.no"), None)
         self.assertEqual(self.dynamo.scans, 1)
+
+
+class ExternalPoolTest(unittest.TestCase):
+    """javabin-auth-claims-external: anyone can sign up with any email there."""
+
+    def setUp(self):
+        self.dynamo = FakeDynamo([
+            group("helter", "ada.lovelace@java.no"),
+            client("attendee-app", "speakers"),
+        ])
+        self.h = load(self.dynamo, REGISTRY_GROUPS="false")
+
+    def tearDown(self):
+        os.environ.pop("REGISTRY_GROUPS", None)
+
+    def test_registry_groups_are_not_granted_by_email(self):
+        result = self.h.handler(event("ada.lovelace@java.no", client_id="other-app"), None)
+        self.assertEqual(groups_of(result), [])
+        self.assertEqual(self.dynamo.scans, 0)
+
+    def test_native_groups_still_count_for_allowed_groups(self):
+        result = self.h.handler(event("x@example.com", client_id="attendee-app", native=["speakers"]), None)
+        self.assertEqual(groups_of(result), ["speakers"])
+        with self.assertRaises(self.h.AccessDenied):
+            self.h.handler(event("ada.lovelace@java.no", client_id="attendee-app"), None)
 
 
 if __name__ == "__main__":

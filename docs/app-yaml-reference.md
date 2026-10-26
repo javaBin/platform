@@ -113,6 +113,97 @@ routing:
 - `host` creates a Route53 A record (in the zone matching the host's domain) pointing to the platform ALB and an ALB listener rule matching the Host header.
 - `priority` determines listener rule evaluation order. Must be unique across all apps. Coordinate via the registry.
 
+#### routing.login — sign-in at the load balancer
+
+`login` makes the platform load balancer require sign-in before a request reaches the app. You pick, per path, which Cognito pool users sign in to and which groups may pass. The app needs no auth code, so this works for simple apps and static web pages (see [recipe](#static-pages-behind-sign-in)). It is independent of [`auth`](#auth) (where the app does OIDC itself); an app can use both.
+
+```yaml
+routing:
+  host: wiki.java.no
+  priority: 120
+  login:
+    - paths: ["/admin/*"]          # rules are checked in this order; first match wins
+      groups: [styret]
+    - paths: ["/assets/*", "/health"]
+      public: true                 # no sign-in for these
+    - paths: ["/*"]                # default when paths is left out
+      groups: [helter, team-core]
+      pool: internal               # default
+```
+
+Shorthands:
+
+```yaml
+routing:
+  login: internal          # whole site, any user of the internal pool
+# or
+routing:
+  login:                   # one rule; paths defaults to ["/*"]
+    groups: [helter]
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `paths` | `["/*"]` | 1-4 ALB path patterns. Case-sensitive; `*` and `?` are wildcards; max 128 chars. On protected rules, `/x/*` also protects the bare `/x` (added for you unless you list `/x` yourself), and counts toward the 4. |
+| `pool` | `internal` | `internal`: Javabin heroes, signed in through the internal pool's IdP list (Google Workspace). The pool has no self sign-up, its clients offer no username/password sign-in, and only `@java.no` accounts get a token. `external`: attendees, partners and other public users. Today that means Cognito email/password sign-up; other identity providers (e.g. Google, Vipps) are not set up on that pool yet. |
+| `groups` | `[]` (any pool user) | Only users in at least one of these groups get through. Internal pool: registry groups (`groups/groups.yaml` with `cognito: true`, and `team-<team>`). External pool: native Cognito groups of the external pool. Nothing in the platform creates or fills those groups yet; until it does, an admin creates them by hand (`aws cognito-idp create-group` / `admin-add-user-to-group` on `javabin-external`), so ask the platform team. |
+| `public` | `false` | Forward without sign-in. Cannot be combined with `pool` or `groups`. |
+
+What happens:
+
+- A user without a session is redirected to the pool's sign-in page, then back to the page they asked for. A user outside `groups` is refused by Cognito at sign-in ("You are not in a group that has access to this app.") and never gets a session, so the app is never reached. Where the message shows (Cognito's sign-in page or the load balancer's error page) depends on the sign-in flow.
+- Every path not matched by a rule keeps working as before, without sign-in.
+- Sessions last 8 hours. A registry change (e.g. removing someone from a group) takes effect at their next sign-in, so at most 8 hours later.
+- An app.yaml change to a rule's `pool` or `groups`, or a reorder that gives a rule a new position, renames that rule's session cookie, so everyone signs in again and the new groups apply at once. Changing only `paths` keeps existing sessions.
+- One sign-in covers all rules of the app: Cognito remembers the user, so a second rule only redirects.
+
+Rules and priorities:
+
+- Each rule becomes its own ALB listener rule at the priorities **directly below** `routing.priority`: the first rule gets `priority - 1`, the next `priority - 2`, and so on. Leave that room free: if another app already uses one of those priorities, apply fails with `PriorityInUse`. `priority` must be larger than the number of rules. Nothing checks this across apps yet, so pick a `priority` with at least 10 free numbers below it (e.g. a multiple of 20 when registering a new app); apps whose priority is right next to another app's (e.g. 100 and 101) cannot add rules without moving.
+- At most 10 rules. A path may appear only once, and a rule after a `/*` rule is an error (it could never match).
+- Protect `/*` and open the exceptions with `public: true`, rather than protecting a few subpaths. The load balancer matches the raw request path: case-sensitively, without decoding `%xx` and without resolving `..`. An app or framework that does any of these can be reached past a subpath rule, e.g. `/Admin`, `/%61dmin/` or `/x/../admin/` past `/admin/*`. The generator warns when no rule covers `/*`.
+
+What the app receives on signed-in requests (headers added by the load balancer):
+
+| Header | Content |
+|---|---|
+| `x-amzn-oidc-identity` | The user's `sub` |
+| `x-amzn-oidc-data` | JWT with the user's claims (`email`, `name`, ...), signed by the load balancer (ES256). Verify it with the key at `https://public-keys.auth.elb.eu-central-1.amazonaws.com/<kid>` and check that `signer` is the platform ALB's ARN. |
+| `x-amzn-oidc-accesstoken` | The Cognito access token, with the user's groups in `cognito:groups`. Verify it against the pool's issuer (`COGNITO_ISSUER_URL` if the app also uses `auth`). |
+
+Caveats:
+
+- On paths that are not protected, a client can send these headers itself. Verify the signature before trusting them anywhere.
+- The load balancer has no logout endpoint. To sign out, expire the `javabin-auth-p<N>-*` cookies and redirect to the pool's `/logout`.
+- How it works: each protected rule has its own Cognito client, `<team>-<name>.login-<N>`, requested through SSM (`/javabin/apps/<team>/<name>/login-<N>/auth`) and created by the platform's `javabin-app-auth-sync` Lambda, exactly like [`auth`](#how-the-client-is-created). The first apply waits 60 seconds for the client. If it fails with `ParameterNotFound`, the client was not created in time: re-run the pipeline.
+
+##### Static pages behind sign-in
+
+There is no separate static-site hosting: serve the files from a small container and let `login` protect it. `login` protects apps that run on the platform; it cannot proxy to a site hosted elsewhere (the load balancer only forwards to its own target groups).
+
+```dockerfile
+FROM nginxinc/nginx-unprivileged:1.27-alpine
+COPY site/ /usr/share/nginx/html/
+```
+
+```yaml
+name: styret-docs
+team: core
+compute:
+  cpu: 256
+  memory: 512
+  port: 8080
+  health_check: /
+  readonly_root_filesystem: false   # nginx writes its cache and pid outside /tmp
+routing:
+  host: styret.javabin.no
+  priority: 130
+  login:
+    groups: [styret]
+```
+
+The health check comes from inside the VPC and is not affected by `login`.
+
 ### resources
 
 Optional infrastructure resources. Each creates the AWS resource and auto-wires environment variables and IAM policies to the ECS task.
@@ -240,7 +331,7 @@ Changing `client` between `confidential` and `public` replaces the Cognito clien
 Both forms are supported and produce the same wiring.
 
 - `internal` — Javabin heroes. Every internal client signs in through the pool's IdP list (`internal_identity_providers` in `terraform/platform/identity/`): today Google Workspace SAML (`GoogleSAML`), after the Google cutover only `Google`. With a single IdP the hosted UI sends users straight to it, so apps don't need an `identity_provider` parameter; apps that pass one anyway should read `COGNITO_IDENTITY_PROVIDER` instead of hardcoding `GoogleSAML`. There is no password form or sign-up. Only `@java.no` accounts get a token; anyone else is refused at sign-in.
-- `external` — public users.
+- `external` — public users. Tokens carry only native Cognito groups of the external pool; registry groups are never added there, since anyone can sign up with any email.
 - `none` or omitted — no Cognito integration.
 
 `auth:` with a client needs `routing.host` or explicit `callback_urls` — the defaults are derived from the host.
@@ -291,7 +382,7 @@ python3 ../platform/scripts/auth-doctor.py --app-yaml app.yaml   # add --json fo
 | Var | Source | Notes |
 |---|---|---|
 | `COGNITO_USER_POOL_ID` | Pool looked up by name | Used to construct the issuer URL on the backend |
-| `COGNITO_DOMAIN` | Hosted-UI FQDN of the pool | e.g. `javabin-internal.auth.eu-central-1.amazoncognito.com`; empty for external when no custom domain is configured |
+| `COGNITO_DOMAIN` | Hosted-UI FQDN of the pool | e.g. `javabin-internal.auth.eu-central-1.amazoncognito.com` (external: `javabin-external.auth.eu-central-1.amazoncognito.com`) |
 | `COGNITO_ISSUER_URL` | `https://cognito-idp.{region}.amazonaws.com/{pool_id}` | OIDC issuer for JWT validation |
 | `COGNITO_WELL_KNOWN_URL` | `{issuer}/.well-known/openid-configuration` | OIDC discovery document |
 | `COGNITO_CLIENT_ID` | SSM (ECS task `secrets`) | `confidential` and `public` only |
@@ -386,3 +477,4 @@ All app resources are prefixed with the team name for ABAC enforcement.
 | CloudWatch logs | `/ecs/{team}/{name}` |
 | DNS record | `{routing.host}` |
 | SSM (Cognito) | `/javabin/apps/{team}/{name}/cognito-client-{id,secret}` |
+| Cognito client (`routing.login`) | `{team}-{name}.login-{N}`, credentials under `/javabin/apps/{team}/{name}/login-{N}/` |

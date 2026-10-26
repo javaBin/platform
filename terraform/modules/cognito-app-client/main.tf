@@ -19,6 +19,11 @@
 # Those parameters are owned by the Lambda, not by this Terraform. Their ARNs
 # are deterministic, so the ECS task definition can reference them up front;
 # the shared execution role reads /<project>/apps/* at task launch.
+#
+# With `slot` set (e.g. "login-1", used by service-routing for ALB sign-in),
+# everything moves one level down — /<project>/apps/<team>/<app>/<slot>/auth —
+# and the client is named <team>-<app>.<slot>, so an app can own several
+# clients without colliding with another app's names.
 ################################################################################
 
 data "aws_region" "current" {}
@@ -33,13 +38,23 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
   pool_id    = tolist(data.aws_cognito_user_pools.this.ids)[0]
 
-  param_prefix = "/${var.project}/apps/${var.team}/${var.app_name}"
+  param_prefix = "/${var.project}/apps/${var.team}/${var.app_name}${var.slot == "" ? "" : "/${var.slot}"}"
   param_arn    = "arn:aws:ssm:${local.region}:${local.account_id}:parameter${local.param_prefix}"
 
-  # Internal pool has a Cognito-managed domain (deterministic FQDN). The
-  # external pool's custom domain only exists when the platform has a
-  # certificate wired up, so the caller passes it in.
-  pool_domain = var.pool == "internal" ? "${var.internal_pool_name}.auth.${local.region}.amazoncognito.com" : var.external_pool_custom_domain
+  # Both pools have a Cognito-managed prefix domain named after the pool
+  # (deterministic FQDN). When the platform wires a custom domain for the
+  # external pool, the caller passes it in and it wins.
+  prefix_domain = "${var.pool == "internal" ? var.internal_pool_name : var.external_pool_name}.auth.${local.region}.amazoncognito.com"
+  pool_domain   = var.pool == "external" && var.external_pool_custom_domain != "" ? var.external_pool_custom_domain : local.prefix_domain
+
+  request_value = jsonencode({
+    pool           = var.pool
+    client_type    = var.client_type
+    callback_urls  = var.callback_urls
+    logout_urls    = var.logout_urls
+    scopes         = var.allowed_oauth_scopes
+    allowed_groups = var.allowed_groups
+  })
 }
 
 # Validate-only apps (client_type = "none") only verify tokens issued to
@@ -48,14 +63,7 @@ resource "aws_ssm_parameter" "auth_request" {
   count = var.client_type == "none" ? 0 : 1
 
   name        = "${local.param_prefix}/auth"
-  description = "Cognito client request for ${var.team}-${var.app_name} — read by the platform app-auth-sync Lambda"
+  description = "Cognito client request for ${var.team}-${var.app_name}${var.slot == "" ? "" : ".${var.slot}"} — read by the platform app-auth-sync Lambda"
   type        = "String"
-  value = jsonencode({
-    pool           = var.pool
-    client_type    = var.client_type
-    callback_urls  = var.callback_urls
-    logout_urls    = var.logout_urls
-    scopes         = var.allowed_oauth_scopes
-    allowed_groups = var.allowed_groups
-  })
+  value       = local.request_value
 }
