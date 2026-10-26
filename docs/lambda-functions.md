@@ -2,6 +2,7 @@
 
 Source code in `terraform/lambda-src/{function}/handler.py`. Shared module in `terraform/lambda-src/shared/`.
 Terraform in `terraform/platform/lambdas/`.
+Log groups `/aws/lambda/javabin-{function}` are declared in `lambdas/log-groups.tf` (365-day retention); add every new function to `local.platform_lambda_names` (enforced by `scripts/tests/test_lambda_log_groups.py`).
 
 ## slack-alert
 
