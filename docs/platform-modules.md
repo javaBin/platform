@@ -23,9 +23,10 @@ VPC, subnets, NAT gateway, security groups.
 | Public subnets | 3 AZs, tagged `tier=public` |
 | Private subnets | 3 AZs, tagged `tier=private` |
 | NAT Gateway | Single NAT in first public subnet |
-| SGs | `javabin-alb-sg` (80/443 inbound), `javabin-ecs-tasks-sg` (ALB-only inbound) |
+| SGs | `javabin-alb-sg` (80/443 inbound), `javabin-ecs-tasks-sg` (ALB-only inbound; legacy, apps now get their own `{team}-{app}-tasks` group from `app-network`) |
+| Cloud Map namespace | `javabin.internal` (private DNS, tagged `team=shared`) — app-to-app names `{team}-{app}.javabin.internal` |
 
-**Outputs:** `vpc_id`, `public_subnet_ids`, `private_subnet_ids`, `alb_sg_id`, `ecs_tasks_sg_id`
+**Outputs:** `vpc_id`, `vpc_arn`, `public_subnet_ids`, `private_subnet_ids`, `alb_sg_id`, `ecs_tasks_sg_id`, `service_discovery_namespace_{id,arn,name}`
 
 ## ingress
 

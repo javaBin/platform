@@ -13,6 +13,7 @@
 locals {
   platform_lambda_names = toset([
     "app-auth-sync",
+    "app-peers-sync",
     "app-secret-rollout",
     "apply-gate",
     "budget-enforcer",
