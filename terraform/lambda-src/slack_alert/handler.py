@@ -271,6 +271,11 @@ def service_display_name(event_source):
 # ---------------------------------------------------------------------------
 # Identity / resource extraction — GitHub OIDC attribution
 # ---------------------------------------------------------------------------
+def _strip_github_ids(repo):
+    """Turn an immutable-subject owner/repo ('javaBin@95047/x@123') into 'javaBin/x'."""
+    return re.sub(r"@\d+", "", repo)
+
+
 def parse_identity(detail):
     """Extract human-readable identity from CloudTrail userIdentity.
 
@@ -283,7 +288,8 @@ def parse_identity(detail):
     - GitHubSHA: the commit SHA
     - GitHubRepo: org/repo (e.g. javaBin/moresleep)
     - GitHubRunID: the workflow run ID
-    The OIDC sub claim format: repo:javaBin/{name}:ref:refs/heads/{branch}
+    The OIDC sub claim format: repo:javaBin/{name}:ref:refs/heads/{branch}, or for repos
+    with immutable subjects repo:javaBin@{org_id}/{name}@{repo_id}:ref:refs/heads/{branch}
     """
     identity = detail.get("userIdentity", {})
     arn = identity.get("arn", "unknown")
@@ -319,7 +325,7 @@ def parse_identity(detail):
                 r"repo:([^:]+):ref:refs/(?:heads|tags)/(.+)", sub_claim
             )
             if sub_match:
-                ci_ctx["repo"] = sub_match.group(1)
+                ci_ctx["repo"] = _strip_github_ids(sub_match.group(1))
                 ci_ctx["ref"] = sub_match.group(2)
 
             # Session tags from OIDC (if present in CloudTrail)
@@ -336,7 +342,7 @@ def parse_identity(detail):
                     r"repo:([^:]+):ref:refs/(?:heads|tags)/(.+)", session
                 )
                 if sub_match:
-                    ci_ctx["repo"] = sub_match.group(1)
+                    ci_ctx["repo"] = _strip_github_ids(sub_match.group(1))
                     ci_ctx["ref"] = sub_match.group(2)
 
             # Parse enriched session name: {actor}-{sha8}-{run_id}

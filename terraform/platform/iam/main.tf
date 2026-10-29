@@ -295,7 +295,10 @@ resource "aws_iam_role" "ci_app_broker" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/*:*"
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:${var.github_org}/*:*",
+            "repo:${var.github_org}@${var.github_org_id}/*:*",
+          ]
           "token.actions.githubusercontent.com:job_workflow_ref" = [
             "${var.github_org}/platform/.github/workflows/tf-plan.yml@refs/heads/main",
             "${var.github_org}/platform/.github/workflows/docker-build.yml@refs/heads/main",
@@ -773,7 +776,10 @@ resource "aws_iam_role" "ci_override_approver" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/*:*"
+            "token.actions.githubusercontent.com:sub" = [
+              "repo:${var.github_org}/*:*",
+              "repo:${var.github_org}@${var.github_org_id}/*:*",
+            ]
             # Pin to the approve-override workflow on main branch
             "token.actions.githubusercontent.com:job_workflow_ref" = "${var.github_org}/platform/.github/workflows/approve-override.yml@refs/heads/main"
           }
@@ -892,7 +898,10 @@ resource "aws_iam_role" "ci_apply_gate" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            "token.actions.githubusercontent.com:sub"              = "repo:${var.github_org}/*:*"
+            "token.actions.githubusercontent.com:sub" = [
+              "repo:${var.github_org}/*:*",
+              "repo:${var.github_org}@${var.github_org_id}/*:*",
+            ]
             "token.actions.githubusercontent.com:job_workflow_ref" = "${var.github_org}/platform/.github/workflows/tf-apply.yml@refs/heads/main"
           }
         }
