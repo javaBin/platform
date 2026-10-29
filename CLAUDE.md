@@ -194,7 +194,9 @@ terraform/state/
 | `scripts/sync-members.py` | CI: sync approved heroes from Google Sheets into members.yaml |
 | `scripts/review-plan.py` | CI: LLM plan review via Bedrock (platform CI; also bundled into the plan-review Lambda) |
 | `scripts/invoke-plan-review.sh` | CI: app tf-plan → plan-review Lambda |
-| `scripts/notify-slack.py` | CI: generic Slack webhook notification |
+| `scripts/notify-slack.sh` | CI: generic Slack webhook notification (via `slack_post.py`) |
+| `scripts/notify-high-risk.sh` | CI: blocked-apply alert (risk HIGH or review FAILED) with plan key + override link (via `slack_post.py`) |
+| `scripts/slack_post.py` | CI: builds escaped, size-limited Block Kit, checks Slack's reply, falls back to plain text (tests: `scripts/tests/`) |
 | `scripts/invoke-apply-gate.sh` | CI: invoke gate Lambda for apply credentials |
 | `scripts/run-plan.sh` | CI: terraform plan with exit code handling |
 | `scripts/upload-plan.sh` | CI: upload plan artifact to S3 |

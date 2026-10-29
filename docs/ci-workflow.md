@@ -23,7 +23,7 @@ Monday 08:00   ──► securityhub-summary Lambda ──► #javabin-infra-ale
 - The PR comment shows at most 60k chars of the plan (GitHub's comment limit) and says so when it cuts; this does not affect the review.
 - Structured output via Bedrock Converse tool use: `{risk: LOW|MEDIUM|HIGH, summary: ..., findings: [...]}`
 - Posts review as PR comment
-- HIGH risk on main → sends Slack notification
+- HIGH risk (or a FAILED review) on main → Slack alert to #platform-override-alerts with plan key, run ID and override button. `slack_post.py` checks Slack's reply; rejected blocks fall back to plain text, and an undelivered alert shows as a CI error annotation
 - Outputs: `has_changes`, `plan_key`, `plan_sha256`, `risk_level`
 
 ### apply
