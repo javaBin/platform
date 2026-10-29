@@ -25,6 +25,12 @@ variable "github_org" {
   default     = "javaBin"
 }
 
+variable "github_org_id" {
+  description = "GitHub organization ID, used in immutable OIDC subjects (repo:<org>@<org_id>/<repo>@<repo_id>:...)"
+  type        = string
+  default     = "95047"
+}
+
 variable "apply_gate_role_arn" {
   description = "ARN of the apply-gate Lambda role (for team role trust policy)"
   type        = string
