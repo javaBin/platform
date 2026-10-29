@@ -360,7 +360,7 @@ Changing `client` between `confidential` and `public` replaces the Cognito clien
 
 Both forms are supported and produce the same wiring.
 
-- `internal` — Javabin heroes. Every internal client signs in through the pool's IdP list (`internal_identity_providers` in `terraform/platform/identity/`): today Google Workspace SAML (`GoogleSAML`), after the Google cutover only `Google`. With a single IdP the hosted UI sends users straight to it, so apps don't need an `identity_provider` parameter; apps that pass one anyway should read `COGNITO_IDENTITY_PROVIDER` instead of hardcoding `GoogleSAML`. There is no password form or sign-up. Only `@java.no` accounts get a token; anyone else is refused at sign-in.
+- `internal` — Javabin heroes. Every internal client signs in through the pool's IdP list (`internal_identity_providers` in `terraform/platform/identity/`): `Google` (Google OIDC; `GoogleSAML` before the cutover). With a single IdP the hosted UI sends users straight to it, so apps don't need an `identity_provider` parameter; apps that pass one anyway should read `COGNITO_IDENTITY_PROVIDER` instead of hardcoding `GoogleSAML`. There is no password form or sign-up. Only `@java.no` accounts get a token; anyone else is refused at sign-in.
 - `external` — public users. Tokens carry only native Cognito groups of the external pool; registry groups are never added there, since anyone can sign up with any email.
 - `none` or omitted — no Cognito integration.
 
