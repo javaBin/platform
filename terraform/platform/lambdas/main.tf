@@ -1624,6 +1624,18 @@ resource "aws_iam_role_policy" "app_auth_sync" {
         Resource = [var.internal_user_pool_arn, var.external_user_pool_arn]
       },
       {
+        # One managed-login style per client: a managed-login domain shows no
+        # sign-in page for a client without one. Never updates a style.
+        Sid    = "ManageAppClientBranding"
+        Effect = "Allow"
+        Action = [
+          "cognito-idp:CreateManagedLoginBranding",
+          "cognito-idp:DescribeManagedLoginBrandingByClient",
+          "cognito-idp:DeleteManagedLoginBranding",
+        ]
+        Resource = [var.internal_user_pool_arn, var.external_user_pool_arn]
+      },
+      {
         # ListUserPools does not support resource-level permissions
         Sid      = "FindPools"
         Effect   = "Allow"

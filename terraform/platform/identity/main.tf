@@ -102,13 +102,13 @@ resource "aws_cognito_identity_provider" "internal_google" {
     authorize_scopes              = "openid email profile"
     attributes_url                = "https://people.googleapis.com/v1/people/me?personFields="
     attributes_url_add_attributes = "true"
-    # hd= preselects java.no accounts and prompt=select_account always shows
-    # Google's account chooser. hd= is a hint only: the Internal consent
-    # screen (and auth-claims) enforce the domain. Cognito keeping query
-    # parameters here is not documented — verify after apply with the probe
-    # in docs/cognito-google-setup.md; if they are dropped, set
-    # google_authorize_url_params = false and use the managed-login fallback.
-    authorize_url        = "https://accounts.google.com/o/oauth2/v2/auth${var.google_authorize_url_params ? "?hd=${var.google_workspace_domain}&prompt=select_account" : ""}"
+    # Plain URL: Cognito drops query parameters from a Google-type
+    # authorize_url (describe-identity-provider shows it without them), so
+    # hd=/prompt= here only produced a perpetual plan diff. The account
+    # chooser comes from prompt=select_account sent by the app (or the ALB)
+    # to /oauth2/authorize, which managed login forwards to Google. See
+    # docs/cognito-google-setup.md.
+    authorize_url        = "https://accounts.google.com/o/oauth2/v2/auth"
     oidc_issuer          = "https://accounts.google.com"
     token_url            = "https://www.googleapis.com/oauth2/v4/token"
     token_request_method = "POST"
@@ -122,10 +122,16 @@ resource "aws_cognito_identity_provider" "internal_google" {
   }
 }
 
-# Cognito domain — needed for SAML ACS URL and hosted UI
+# Cognito domain — needed for SAML ACS URL and hosted UI.
+# managed_login_version: 1 = classic hosted UI, 2 = managed login. Only
+# managed login forwards prompt=select_account to Google (the account
+# chooser), but it has no sign-in page for a client without a branding
+# style: app-auth-sync gives every app client one. Changing the version is an
+# in-place update of the domain.
 resource "aws_cognito_user_pool_domain" "internal" {
-  domain       = "${var.project}-internal"
-  user_pool_id = aws_cognito_user_pool.internal.id
+  domain                = "${var.project}-internal"
+  user_pool_id          = aws_cognito_user_pool.internal.id
+  managed_login_version = var.internal_managed_login_version
 }
 
 # Cognito groups are managed by the team provisioner (from groups.yaml and

@@ -8,10 +8,10 @@ pick another account).
 ## Why OIDC, not SAML
 
 Google's SAML IdP always answers for the browser's *active* Google session and has no account chooser.
-The classic hosted UI drops `prompt=`, so Cognito cannot ask for one either. The Google OIDC provider
-can: its `authorize_url` carries `prompt=select_account`, and the OAuth client lives in a GCP project
-with an **Internal** consent screen, so Google itself refuses non-java.no accounts on a page that lets
-the user switch account.
+The Google provider can: with `prompt=select_account` Google shows its account chooser, and the
+OAuth client lives in a GCP project with an **Internal** consent screen, so Google itself refuses
+non-java.no accounts on a page that lets the user switch account. Getting `prompt` to Google needs
+managed login on the pool domain (step 3).
 
 | Integration | Purpose | Credential | Stored in |
 |---|---|---|---|
@@ -66,39 +66,72 @@ working.
 What Terraform configures (`terraform/platform/identity/main.tf`):
 
 - `authorize_scopes = "openid email profile"`
-- `authorize_url = https://accounts.google.com/o/oauth2/v2/auth?hd=java.no&prompt=select_account`
-  (`hd=` preselects java.no accounts; it is only a hint)
+- `authorize_url = https://accounts.google.com/o/oauth2/v2/auth`, plain: Cognito drops query
+  parameters from a Google-type `authorize_url` (`describe-identity-provider` shows the URL without
+  them, and every plan showed a diff), so `prompt` has to come from the app (step 3)
 - attribute mapping `email`, `email_verified`, `name`, `username = sub`
 
-## 3. Verify the account chooser survives (after the IdP exists)
+## 3. Account chooser: managed login + `prompt=select_account`
 
-Cognito keeping query parameters in a `Google`-type `authorize_url` is not documented. Probe it with
-any internal client ID and one of its callback URLs (no credentials needed; cupcake's are in
-`/javabin/apps/cupcake/cupcake/{cognito-client-id,auth}`):
+Cognito drops query parameters from the provider's `authorize_url`, and the classic hosted UI
+(`ManagedLoginVersion` 1) ignores a `prompt` parameter sent by the app. Managed login (version 2)
+forwards every `prompt` value except `none` to the IdP the user signs in with. So:
+
+| Piece | Where | State |
+|---|---|---|
+| A managed-login branding style per app client (Cognito defaults) | `app-auth-sync` (created with the client, backfilled by reconcile, deleted with the client) | automatic |
+| Apps send `prompt=select_account` to `/oauth2/authorize` | `COGNITO_EXTRA_AUTH_PARAMS` (generate-modules.py); SPA `extraQueryParams` etc. — see app-yaml-reference "Account chooser" | per app |
+| ALB sign-in (`routing.login`) sends it | `authentication_request_extra_params` in `terraform/modules/service-routing` | automatic, internal pool |
+| Internal pool domain on managed login | `internal_managed_login_version` in `terraform/platform/identity/variables.tf` (1 → 2, an in-place update of the domain) | PR |
+
+The external pool's domains stay on the classic hosted UI. Nothing there needs `prompt`, and its
+clients get branding styles too, so it can move later with the same one-line change.
+
+**Order matters.** On a managed-login domain a client without a branding style has no working
+sign-in page. The style is harmless on the classic UI, so styles go first:
+
+1. Merge the app-auth-sync change. Platform CI queues a reconcile after the apply, which gives every
+   existing client (including `login-N` slot clients) a style. Check every internal client:
+   ```bash
+   POOL=$(aws cognito-idp list-user-pools --max-results 60 \
+     --query "UserPools[?Name=='javabin-internal'].Id" --output text)
+   for c in $(aws cognito-idp list-user-pool-clients --user-pool-id $POOL --max-results 60 \
+       --query 'UserPoolClients[].ClientId' --output text); do
+     aws cognito-idp describe-managed-login-branding-by-client --user-pool-id $POOL --client-id $c \
+       --query ManagedLoginBranding.ManagedLoginBrandingId --output text >/dev/null 2>&1 \
+       && echo "$c ok" || echo "$c MISSING STYLE"
+   done
+   ```
+   Clients made outside app-auth-sync (e.g. app-peers-sync's `m2m.*` client-credentials clients) use
+   no sign-in page and need no style.
+2. PR: `internal_managed_login_version = 2`. The plan must show an in-place update of
+   `aws_cognito_user_pool_domain.internal` only (no pool, domain or client replacement).
+3. After apply: open an app's sign-in (or run the probe below) and confirm the managed-login page or a
+   straight redirect to the IdP, not an error page.
+
+Probe (unauthenticated GET, no credentials; use any internal client ID and one of its callback URLs —
+cupcake's are in `/javabin/apps/cupcake/cupcake/{cognito-client-id,auth}`):
 
 ```bash
 DOMAIN=javabin-internal.auth.eu-central-1.amazoncognito.com
 curl -s -o /dev/null -w '%{redirect_url}\n' \
-  "https://$DOMAIN/oauth2/authorize?response_type=code&client_id=<id>&redirect_uri=<callback>&scope=openid&identity_provider=Google" \
+  "https://$DOMAIN/oauth2/authorize?response_type=code&client_id=<id>&redirect_uri=<callback>&scope=openid&identity_provider=Google&prompt=select_account" \
   | grep -q 'prompt=select_account' && echo OK || echo "prompt dropped"
 ```
 
-`identity_provider=Google` works before cutover only if the client lists `Google`; before cutover, use
-a test client (or run the probe right after cutover — `scripts/auth-doctor.py` does the same check and
-warns when `prompt=select_account` is missing).
-
-**If the parameters are dropped (fallback):** set `google_authorize_url_params = false`, switch the
-domain to managed login (`aws_cognito_user_pool_domain.internal` → `managed_login_version = 2`), give
-every client a branding style (app-auth-sync: `CreateManagedLoginBranding(UseCognitoProvidedValues=True)`),
-and send `prompt=select_account` from the app (SPA `extraQueryParams`, ALB
-`authentication_request_extra_params`). Managed login forwards `prompt` to OIDC IdPs; the classic UI
-does not.
+`identity_provider=Google` works only for a client that lists `Google`, so before the cutover this
+needs a client with `Google` (or run it right after cutover). `scripts/auth-doctor.py` sends the pool's
+`COGNITO_EXTRA_AUTH_PARAMS` the same way and warns when Google is not asked for the account chooser.
+If `prompt` still does not reach Google on managed login, the Google-type provider is the problem:
+replace it with an `OIDC`-type provider for `https://accounts.google.com` (Cognito documents
+forwarding `prompt` for OIDC IdPs).
 
 ## 4. Cutover: GoogleSAML → Google
 
 Prerequisites:
 
-- The Google IdP exists (step 2) and the probe passes (step 3).
+- The Google IdP exists (step 2), the internal domain is on managed login and the probe passes
+  (step 3).
 - **Hard requirement:** server-side domain enforcement is live — the internal-pool lockdown (#166:
   auth-claims `REQUIRED_EMAIL_DOMAIN`, no self sign-up, no `COGNITO` on internal clients). The Internal
   consent screen already blocks other Google accounts, but the pool must not rely on one GCP setting.

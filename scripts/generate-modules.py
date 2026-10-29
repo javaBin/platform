@@ -130,6 +130,13 @@ ADOPT_REJECTED = ("instance_class", "allocated_storage", "engine_version", "mult
 # Cognito scope names may not contain "/", quotes, backslashes or spaces
 SCOPE_RE = re.compile(r"^[a-z][a-z0-9._-]{0,39}$")
 
+# Extra /oauth2/authorize parameters per pool, injected as
+# COGNITO_EXTRA_AUTH_PARAMS (URL query string). Internal: Google's account
+# chooser, so a browser signed in to a personal Google account can switch to
+# the java.no one (managed login forwards prompt to Google). Keep in step with
+# internal_auth_params in terraform/modules/service-routing (ALB sign-in).
+POOL_EXTRA_AUTH_PARAMS = {"internal": "prompt=select_account"}
+
 # Injected when the app calls a peer with scopes / provides scopes
 PEER_CALLER_AUTH_ENV = ("PEER_AUTH_TOKEN_URL", "PEER_AUTH_CLIENT_ID", "PEER_AUTH_CLIENT_SECRET")
 PEER_CALLEE_AUTH_ENV = ("PEER_AUTH_ISSUER", "PEER_AUTH_JWKS_URL", "PEER_AUTH_SCOPE_PREFIX")
@@ -914,6 +921,8 @@ def generate(app, account_id, region, platform_ref):
         }
         if auth["groups"]:
             auth_env["COGNITO_GROUPS"] = ",".join(auth["groups"])
+        if client != "none" and auth["pool"] in POOL_EXTRA_AUTH_PARAMS:
+            auth_env["COGNITO_EXTRA_AUTH_PARAMS"] = POOL_EXTRA_AUTH_PARAMS[auth["pool"]]
         auth_secrets = {}
         if client != "none":
             auth_secrets["COGNITO_CLIENT_ID"] = Ref("module.auth.client_id_arn")

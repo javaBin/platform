@@ -78,6 +78,10 @@ resource "aws_lb_listener_rule" "this" {
 ################################################################################
 
 locals {
+  # Sent to the internal pool's /oauth2/authorize (apps get the same as
+  # COGNITO_EXTRA_AUTH_PARAMS from generate-modules.py)
+  internal_auth_params = { prompt = "select_account" }
+
   login_protected = { for k, v in var.login_rules : k => v if !v.public }
   login_public    = { for k, v in var.login_rules : k => v if v.public }
 
@@ -158,6 +162,12 @@ resource "aws_lb_listener_rule" "login" {
       # No identity_provider parameter: app-auth-sync gives every client the
       # pool's sign-in IdP list, and with a single IdP the hosted UI goes
       # straight to it. A hardcoded IdP would break at the IdP cutover.
+      #
+      # Internal pool: ask Google for its account chooser, so a user whose
+      # browser is signed in to another Google account can switch instead of
+      # being refused. Managed login forwards prompt to the IdP; the classic
+      # hosted UI ignores it.
+      authentication_request_extra_params = each.value.pool == "internal" ? local.internal_auth_params : null
     }
   }
 

@@ -39,6 +39,13 @@ app.yaml routing.login, one per ALB sign-in rule). The client is then named
 with another app's client), and its credentials, IdP and auth-status go next
 to that request.
 
+Every client also gets a managed-login branding style (Cognito's default
+look, UseCognitoProvidedValues), created only when it has none, so a style
+someone customised in the console is kept. On a domain with managed login
+(ManagedLoginVersion 2) a client without a style has no working sign-in
+page; on the classic hosted UI (version 1) the style is unused. The style is
+deleted with the client.
+
 The request's allowed groups are written to the auth memberships table as
 {pk: "client#<client_id>", allowed_groups: [...]}; the auth-claims trigger
 refuses tokens for users in none of them.
@@ -84,6 +91,8 @@ POOL_DOMAINS = {
     "external": os.environ.get("EXTERNAL_POOL_DOMAIN", ""),
 }
 # Client fields compared for drift reporting (lists compared as sets)
+# auth-status "branding": the client's managed-login style
+BRANDING_CREATED, BRANDING_EXISTS = "created", "exists"
 DRIFT_FIELDS = ("AllowedOAuthFlows", "AllowedOAuthFlowsUserPoolClient", "AllowedOAuthScopes", "CallbackURLs",
                 "LogoutURLs", "SupportedIdentityProviders", "ExplicitAuthFlows", "PreventUserExistenceErrors")
 # Standard-tier parameter limit: 4 KB (bytes, not characters)
@@ -245,6 +254,42 @@ def primary_identity_provider(idps):
     return next((p for p in idps if p != "COGNITO"), "COGNITO")
 
 
+def ensure_branding(user_pool_id, client_id):
+    """Give the client a managed-login style with Cognito's defaults unless it
+    has one. An existing style (default or customised) is never changed.
+    Returns BRANDING_CREATED or BRANDING_EXISTS."""
+    try:
+        cognito.describe_managed_login_branding_by_client(UserPoolId=user_pool_id, ClientId=client_id)
+        return BRANDING_EXISTS
+    except cognito.exceptions.ResourceNotFoundException:
+        pass
+    try:
+        cognito.create_managed_login_branding(UserPoolId=user_pool_id, ClientId=client_id,
+                                              UseCognitoProvidedValues=True)
+    except cognito.exceptions.ManagedLoginBrandingExistsException:
+        return BRANDING_EXISTS
+    logger.info("Created managed-login branding for client %s", client_id)
+    return BRANDING_CREATED
+
+
+def delete_branding(user_pool_id, client_id):
+    """Delete the client's managed-login style, if it has one."""
+    try:
+        branding = cognito.describe_managed_login_branding_by_client(
+            UserPoolId=user_pool_id, ClientId=client_id)["ManagedLoginBranding"]
+        cognito.delete_managed_login_branding(UserPoolId=user_pool_id,
+                                              ManagedLoginBrandingId=branding["ManagedLoginBrandingId"])
+    except cognito.exceptions.ResourceNotFoundException:
+        pass
+
+
+def delete_client(user_pool_id, client_id):
+    """Delete a client with its branding style and allowed-groups record."""
+    delete_branding(user_pool_id, client_id)
+    cognito.delete_user_pool_client(UserPoolId=user_pool_id, ClientId=client_id)
+    _delete_client_groups(client_id)
+
+
 def client_settings(pool, user_pool_id, client_name, req):
     return {
         "UserPoolId": user_pool_id,
@@ -339,8 +384,7 @@ def sync(team, app, req, reason="event", slot=""):
             other_id = pool_id(other)
             stale = find_client(other_id, name)
             if stale:
-                cognito.delete_user_pool_client(UserPoolId=other_id, ClientId=stale)
-                _delete_client_groups(stale)
+                delete_client(other_id, stale)
                 logger.info("Removed %s from %s pool", name, other)
 
     want_secret = req["client_type"] == "confidential"
@@ -352,8 +396,7 @@ def sync(team, app, req, reason="event", slot=""):
         changed = _diff(current, settings)
         if has_secret != want_secret:
             # A client's secret setting is immutable; switching type means a new client
-            cognito.delete_user_pool_client(UserPoolId=upid, ClientId=client_id)
-            _delete_client_groups(client_id)
+            delete_client(upid, client_id)
             logger.info("Replacing %s: client_type changed to %s", name, req["client_type"])
             client_id = None
     if client_id:
@@ -386,6 +429,10 @@ def sync(team, app, req, reason="event", slot=""):
     if id_changed:
         _put_param(id_param, client_id, False, team, app, slot)
     _put_client_groups(client_id, req["allowed_groups"], name)
+    # Last, after the credentials: a failure here must not hold back a
+    # client that works on the classic hosted UI. It still fails the sync
+    # (status error, alarm), since on managed login the client cannot sign in.
+    branding = ensure_branding(upid, client_id)
     unknown, empty = check_groups(req["allowed_groups"])
     return {
         "status": "synced",
@@ -395,6 +442,7 @@ def sync(team, app, req, reason="event", slot=""):
         "pool_domain": POOL_DOMAINS.get(req["pool"], ""),
         "identity_providers": idps,
         "identity_provider": primary_identity_provider(idps),
+        "branding": branding,
         "callback_urls": req["callback_urls"],
         "logout_urls": req["logout_urls"],
         "scopes": req["scopes"],
@@ -500,8 +548,7 @@ def remove(team, app, slot=""):
         upid = pool_id(pool)
         client_id = find_client(upid, name)
         if client_id:
-            cognito.delete_user_pool_client(UserPoolId=upid, ClientId=client_id)
-            _delete_client_groups(client_id)
+            delete_client(upid, client_id)
             logger.info("Deleted client %s from %s pool", name, pool)
     ssm.delete_parameters(Names=[*_cred_names(team, app, slot), _idp_name(team, app, slot), _status_name(team, app, slot)])
 

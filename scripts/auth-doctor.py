@@ -12,8 +12,10 @@ Checks:
      the one in cognito-client-id. Reports drift the platform corrected and
      allowed groups that do not exist (a typo there denies everyone).
   3. GET /oauth2/authorize for every callback URL redirects to the sign-in
-     IdP (not /error?error=redirect_mismatch). For Google, also that the
-     account chooser is forced (prompt=select_account).
+     IdP (not /error?error=redirect_mismatch). The probe sends the pool's
+     COGNITO_EXTRA_AUTH_PARAMS like the app does; for Google, also checks that
+     the account chooser is forced (prompt=select_account reaches Google,
+     which needs managed login on the pool domain).
   4. GET /logout for every logout URL redirects back to it. Cognito wants
      logout_uri to match a logout URL exactly (trailing slash included) and
      otherwise sends the user to its own /login or /error page.
@@ -40,7 +42,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = "javabin"
@@ -210,9 +212,10 @@ def check_status(report, base, status, current):
     return True
 
 
-def probe_authorize(report, domain, client_id, idp, scopes, callback):
+def probe_authorize(report, domain, client_id, idp, scopes, callback, extra=""):
+    """extra: the pool's COGNITO_EXTRA_AUTH_PARAMS query string, sent like an app would."""
     query = {"response_type": "code", "client_id": client_id, "redirect_uri": callback,
-             "scope": " ".join(scopes)}
+             "scope": " ".join(scopes), **dict(parse_qsl(extra))}
     if idp and idp != "COGNITO":
         query["identity_provider"] = idp
     code, location = http_get(f"https://{domain}/oauth2/authorize?{urlencode(query)}")
@@ -235,7 +238,7 @@ def probe_authorize(report, domain, client_id, idp, scopes, callback):
     if loc.hostname == "accounts.google.com" and "/o/oauth2/" in loc.path:
         if parse_qs(loc.query).get("prompt") != ["select_account"]:
             report.warn("authorize", "Google is not asked to show the account chooser (prompt=select_account "
-                                     "missing) — see docs/cognito-google-setup.md, managed-login fallback")
+                                     "missing: is the pool domain on managed login?) — see docs/cognito-google-setup.md")
 
 
 def probe_logout(report, domain, client_id, logout_url):
@@ -321,9 +324,10 @@ def diagnose(app, team=None, name=None, wait=0, tasks=True, sleep=time.sleep):
     if not domain:
         report.warn("authorize", f"the {status.get('pool')} pool has no hosted-UI domain; skipping HTTP probes")
     else:
+        extra = gen.POOL_EXTRA_AUTH_PARAMS.get(status.get("pool") or auth["pool"], "")
         for cb in status.get("callback_urls") or auth["callback_urls"]:
             probe_authorize(report, domain, status["client_id"], status.get("identity_provider"),
-                            status.get("scopes") or auth["scopes"], cb)
+                            status.get("scopes") or auth["scopes"], cb, extra)
         for lo in status.get("logout_urls") or auth["logout_urls"]:
             probe_logout(report, domain, status["client_id"], lo)
     if tasks:

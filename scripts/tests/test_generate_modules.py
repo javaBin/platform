@@ -257,6 +257,19 @@ class AuthValidationTest(unittest.TestCase):
         self.assertRegex(main, r"COGNITO_IDENTITY_PROVIDER\s+= module.auth.identity_provider_arn")
         self.assertRegex(main, r"NUXT_PUBLIC_OIDC_IDENTITY_PROVIDER\s+= module.auth.identity_provider_arn")
 
+    def test_internal_clients_get_the_account_chooser_param(self):
+        app = {**FROSTING, "auth": {"client": "public",
+                                    "env": {"COGNITO_EXTRA_AUTH_PARAMS": "NUXT_PUBLIC_OIDC_EXTRA_PARAMS"}}}
+        main = generate(app)["main.tf"]
+        self.assertRegex(main, r'COGNITO_EXTRA_AUTH_PARAMS\s+= "prompt=select_account"')
+        self.assertRegex(main, r'NUXT_PUBLIC_OIDC_EXTRA_PARAMS\s+= "prompt=select_account"')
+        self.assertIn("COGNITO_EXTRA_AUTH_PARAMS", generate(CUPCAKE)["main.tf"])  # confidential
+
+    def test_external_and_validate_only_apps_get_no_extra_auth_params(self):
+        self.assertNotIn("COGNITO_EXTRA_AUTH_PARAMS", generate(REAL_CUPCAKE)["main.tf"])
+        external = {**FROSTING, "auth": {"pool": "external", "client": "public"}}
+        self.assertNotIn("COGNITO_EXTRA_AUTH_PARAMS", generate(external)["main.tf"])
+
     def test_validate_only_app_gets_no_identity_provider(self):
         self.assertNotIn("COGNITO_IDENTITY_PROVIDER", generate(REAL_CUPCAKE)["main.tf"])
 
