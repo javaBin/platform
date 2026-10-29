@@ -75,6 +75,15 @@ SCHEMA = {
 CALL_SCHEMA = {"app", "team", "scopes", "env"}
 CONSUMER_SCHEMA = {"app", "team", "scopes"}
 MAX_CALLS, MAX_CONSUMERS, MAX_SCOPES = 20, 50, 25
+MAX_CLIENT_SCOPES = 50  # Cognito: one client holds at most 50 AllowedOAuthScopes
+# The `network` request is a Standard tier SSM parameter (4 KB values)
+MAX_NETWORK_BYTES = 4096
+NETWORK_SG_PLACEHOLDER = "sg-" + "0" * 17  # longest security group ID
+
+# Parameter names in the app's own path that the platform writes for
+# app-to-app calls; a resources.secrets entry may not take them.
+RESERVED_SECRET_NAMES = ("network", "m2m-client-id", "m2m-client-secret", "peers-status")
+RESERVED_SECRET_RE = re.compile(r"^peer-.+-(url|scopes)$")
 
 RESOURCE_SCHEMA = {
     "buckets": {"name", "env", "versioning", "expire_days"},
@@ -319,6 +328,11 @@ def validate(app):
                 raise AppYamlError(f"resources.{rtype}[{i}].env: {item['env']!r} is not a valid variable name")
             if rtype == "databases":
                 _validate_database(f"resources.databases[{i}]", item, app["team"])
+            if rtype == "secrets" and (item["name"] in RESERVED_SECRET_NAMES or RESERVED_SECRET_RE.match(item["name"])):
+                raise AppYamlError(
+                    f"resources.secrets[{i}].name: {item['name']!r} is reserved for a parameter the platform "
+                    "writes for app-to-app calls; rename the secret"
+                )
 
     env = app.get("environment")
     if env is not None:
@@ -330,7 +344,28 @@ def validate(app):
             if isinstance(v, (dict, list)):
                 raise AppYamlError(f"environment.{k}: values must be strings, numbers or booleans")
 
-    parse_peers(app)
+    calls, provides_scopes, consumers = parse_peers(app)
+    size = len(network_request(app, calls, provides_scopes, consumers).encode())
+    if size > MAX_NETWORK_BYTES:
+        raise AppYamlError(
+            f"calls/provides: the app-to-app request is {size} bytes, over the {MAX_NETWORK_BYTES}-byte SSM limit; "
+            "shorten provides.scopes descriptions or list fewer scopes, calls or consumers"
+        )
+
+
+def network_request(app, calls, provides_scopes, consumers):
+    """The `network` parameter value app-network writes (jsonencode), with the
+    longest possible security group ID; used to check its size."""
+    value = {
+        "calls": {c["key"]: c["scopes"] for c in calls},
+        "port": (app.get("compute") or {}).get("port", 8000),
+        "provides": {"consumers": consumers, "scopes": provides_scopes},
+        "security_group_id": NETWORK_SG_PLACEHOLDER,
+        "version": 1,
+    }
+    text = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    # Terraform's jsonencode escapes <, > and & as \u00XX
+    return text.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
 def _scope_list(section, value, allowed=None):
@@ -403,6 +438,13 @@ def parse_peers(app):
                 "scopes": _scope_list(f"{section}.scopes", item.get("scopes")),
                 "url_env": url_env, "scopes_env": scopes_env,
             })
+
+    total = sum(len(c["scopes"]) for c in calls)
+    if total > MAX_CLIENT_SCOPES:
+        raise AppYamlError(
+            f"calls: {total} scopes requested in total; the app's client can hold at most "
+            f"{MAX_CLIENT_SCOPES} (a Cognito limit) — request fewer scopes"
+        )
 
     provides = app.get("provides")
     provides_scopes, consumers = {}, {}

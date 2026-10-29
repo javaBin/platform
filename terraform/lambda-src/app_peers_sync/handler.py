@@ -24,7 +24,9 @@ AND the callee lists the caller in `provides.consumers`. For each edge:
     client-credentials client "m2m.{t}-{a}" per caller (internal pool).
 
 Parameters written into the caller's own path, only when the value changes
-(so a reconcile never restarts apps through app-secret-rollout):
+(so a reconcile never restarts apps through app-secret-rollout). They are
+tagged managed-by={project}-app-peers-sync on create; a parameter without
+that tag is never overwritten or deleted, whatever its name:
 
   peer-{t}-{a}-url     String        http://{t}-{a}.{project}.internal:{port}
   peer-{t}-{a}-scopes  String        scopes the caller's client actually holds for
@@ -79,7 +81,10 @@ WEBHOOK_PARAM = os.environ.get("INFRA_WEBHOOK_PARAM", "")
 MANAGED_BY = f"{PROJECT}-app-peers-sync"
 APPS_PATH = f"/{PROJECT}/apps"
 DEFAULT_PORT = 8000
-RS_MARKER = " (app.yaml)"
+# Suffix of the Name of resource servers this Lambda owns. Cognito allows
+# only [\w\s+=,.@-] in a resource server Name.
+RS_MARKER = " managed-by app.yaml"
+LEGACY_RS_MARKERS = (" (app.yaml)",)  # read only, never written
 CLIENT_PREFIX = "m2m."
 TOKEN_MINUTES = 60
 
@@ -92,6 +97,9 @@ SG_RE = re.compile(r"^sg-[0-9a-f]{8,17}$")
 PEER_PARAM_RE = re.compile(rf"^peer-(?P<team>{TEAM})-(?P<app>{APP})-(?:url|scopes)$")
 NO_SCOPES = "none"
 MAX_CALLS, MAX_CONSUMERS, MAX_SCOPES = 20, 50, 25
+MAX_CLIENT_SCOPES = 50  # Cognito: AllowedOAuthScopes holds at most 50 entries
+# EC2 error codes that mean the rule to revoke is already gone
+REVOKE_GONE = ("InvalidPermission.NotFound", "InvalidGroup.NotFound", "InvalidSecurityGroupRuleId.NotFound")
 
 ssm = boto3.client("ssm")
 ec2 = boto3.client("ec2")
@@ -103,6 +111,11 @@ route53 = boto3.client("route53")
 
 class InvalidRequest(ValueError):
     pass
+
+
+def _error_code(e):
+    """The AWS error code of a botocore ClientError ('' for anything else)."""
+    return (getattr(e, "response", None) or {}).get("Error", {}).get("Code", "")
 
 
 def _ident(key):
@@ -158,6 +171,10 @@ def parse_request(raw, team, app):
 
     own = f"{team}/{app}"
     calls = {k: _scopes(v, f"calls.{k}") for k, v in _refs(req.get("calls") or {}, "calls", own, MAX_CALLS).items()}
+    total = sum(len(v) for v in calls.values())
+    if total > MAX_CLIENT_SCOPES:
+        raise InvalidRequest(
+            f"calls: {total} scopes requested in total; one app's client can hold at most {MAX_CLIENT_SCOPES}")
 
     provides = req.get("provides") or {}
     if not isinstance(provides, dict):
@@ -345,8 +362,13 @@ def sync_rules(desired, errors, requests=None, invalid=None, sg_owner=None):
         try:
             ec2.revoke_security_group_ingress(GroupId=sg, SecurityGroupRuleIds=[rule_id])
             logger.info("revoked %s on %s from %s port %s", rule_id, sg, ref, port)
-        except Exception as e:  # group or rule already gone
-            logger.info("revoke %s on %s: %s", rule_id, sg, e)
+        except Exception as e:
+            if _error_code(e) in REVOKE_GONE:
+                logger.info("revoke %s on %s: already gone (%s)", rule_id, sg, _error_code(e))
+            else:
+                # Access the callee withdrew is still open: make it visible
+                logger.error("revoke %s on %s from %s port %s: %s", rule_id, sg, ref, port, e)
+                errors.append(f"revoke security group rule {rule_id} {ref} -> {sg}:{port}: {e}")
 
     for (sg, ref, port), (caller_key, callee_team) in desired.items():
         if (sg, ref, port) in existing:
@@ -447,7 +469,7 @@ def sync_cognito(plan, errors, requests=None, invalid=None):
     """
     requests, invalid = requests or {}, invalid or {}
     servers = _resource_servers()
-    ours = {i: rs for i, rs in servers.items() if rs.get("Name", "").endswith(RS_MARKER)}
+    ours = {i: rs for i, rs in servers.items() if rs.get("Name", "").endswith((RS_MARKER, *LEGACY_RS_MARKERS))}
 
     # 1. Create servers; widen changed ones to old ∪ new so no client loses a
     #    scope that still exists while it is being updated.
@@ -539,10 +561,21 @@ def cleanup_cognito(plan, clients, ours, wanted_clients, errors, invalid=None):
 # Parameters in the caller's path
 # ---------------------------------------------------------------------------
 
-def _put(name, value, team, app, secure=False, exists=False):
+def _owned(name, cache):
+    """Whether a parameter carries this Lambda's managed-by tag. Names alone
+    are no proof: a team may own a parameter with the same name."""
+    if name not in cache:
+        tags = ssm.list_tags_for_resource(ResourceType="Parameter", ResourceId=name).get("TagList", [])
+        cache[name] = {t["Key"]: t["Value"] for t in tags}.get("managed-by") == MANAGED_BY
+    return cache[name]
+
+
+def _put(name, value, team, app, secure=False, exists=False, owned=None):
     kw = {"Name": name, "Value": value, "Type": "SecureString" if secure else "String",
           "Description": f"Managed by {MANAGED_BY} for {team}-{app} — do not edit"}
     if exists:
+        if not _owned(name, owned if owned is not None else {}):
+            raise RuntimeError(f"{name} exists and is not managed by {MANAGED_BY}; rename or delete it")
         ssm.put_parameter(Overwrite=True, **kw)
     else:
         ssm.put_parameter(Tags=[
@@ -556,6 +589,7 @@ def _put(name, value, team, app, secure=False, exists=False):
 def sync_parameters(params, requests, invalid, plan, creds, errors, held=None):
     """Write what changed, delete what is no longer needed."""
     held = held or {}
+    owned = {}  # parameter name -> carries our managed-by tag (cached per run)
     desired = {}
     for key, spec in requests.items():
         base = f"{APPS_PATH}/{key}"
@@ -585,36 +619,51 @@ def sync_parameters(params, requests, invalid, plan, creds, errors, held=None):
             continue
         team, app = PARAM_RE.match(name).group("team", "app")
         try:
-            _put(name, value, team, app, exists=name in params)
+            _put(name, value, team, app, exists=name in params, owned=owned)
         except Exception as e:
             errors.append(f"write {name}: {e}")
 
     # Client credentials: the secret is rewritten whenever the client ID changes
     # (client recreated) or the secret parameter is missing. SecureString values
-    # are not decrypted, so they are never compared.
-    managed_creds = set()
+    # are not decrypted, so they are never compared. The secret is written
+    # first: if that fails the ID still differs, so the next run retries.
+    def cred_names(key):
+        return f"{APPS_PATH}/{key}/m2m-client-id", f"{APPS_PATH}/{key}/m2m-client-secret"
+
+    # Kept for every caller that requests scopes, even when its client sync
+    # failed this run (a transient Cognito error must not break task starts)
+    managed_creds = {n for key in plan["grants"] for n in cred_names(key)}
     for key, (client_id, secret) in creds.items():
         team, app = key.split("/")
-        id_name, secret_name = f"{APPS_PATH}/{key}/m2m-client-id", f"{APPS_PATH}/{key}/m2m-client-secret"
+        id_name, secret_name = cred_names(key)
         managed_creds |= {id_name, secret_name}
         try:
             changed = params.get(id_name) != client_id
-            if changed:
-                _put(id_name, client_id, team, app, exists=id_name in params)
             if secret and (changed or secret_name not in params):
-                _put(secret_name, secret, team, app, secure=True, exists=secret_name in params)
+                _put(secret_name, secret, team, app, secure=True, exists=secret_name in params, owned=owned)
+            if changed:
+                _put(id_name, client_id, team, app, exists=id_name in params, owned=owned)
         except Exception as e:
             errors.append(f"write credentials of {key}: {e}")
 
     # Delete managed parameters nobody needs. Invalid requests keep theirs, so
     # a broken request does not restart or break the app.
     frozen = tuple(f"{APPS_PATH}/{k}/" for k in invalid)
-    stale = [
+    candidates = [
         name for name in params
         if (m := PARAM_RE.match(name)) and _managed_name(m["name"])
         and name not in desired and name not in managed_creds
         and not (frozen and name.startswith(frozen))
     ]
+    stale = []
+    for name in candidates:
+        try:
+            if _owned(name, owned):
+                stale.append(name)
+            else:
+                logger.info("not deleting %s: no managed-by=%s tag", name, MANAGED_BY)
+        except Exception as e:
+            errors.append(f"read tags of {name}: {e}")
     for i in range(0, len(stale), 10):
         try:
             ssm.delete_parameters(Names=stale[i:i + 10])
@@ -687,31 +736,60 @@ def audit_route53(registered):
     return findings
 
 
+def _task_enis():
+    """{eni id: (cluster name, service name)} for ECS tasks in every cluster
+    of the account (a team can run tasks in a cluster of its own)."""
+    owners = {}
+    for cpage in ecs.get_paginator("list_clusters").paginate():
+        for cluster in cpage["clusterArns"]:
+            cluster_name = cluster.rsplit("/", 1)[-1]
+            task_arns = []
+            # Stopped tasks still hold their ENI for a while
+            for desired in ("RUNNING", "STOPPED"):
+                for page in ecs.get_paginator("list_tasks").paginate(cluster=cluster, desiredStatus=desired):
+                    task_arns.extend(page["taskArns"])
+            for i in range(0, len(task_arns), 100):
+                for task in ecs.describe_tasks(cluster=cluster, tasks=task_arns[i:i + 100])["tasks"]:
+                    service = (task.get("group") or "").removeprefix("service:")
+                    for att in task.get("attachments", []):
+                        for d in att.get("details", []):
+                            if d.get("name") == "networkInterfaceId":
+                                owners[d["value"]] = (cluster_name, service)
+    return owners
+
+
 def audit_borrowed_groups(groups):
-    """A task carrying {t}-{a}-tasks must belong to ECS service {t}-{a}."""
+    """Every network interface in the VPC carrying {t}-{a}-tasks must belong
+    to a task of ECS service {t}-{a} in the platform cluster."""
     findings = []
-    task_arns = []
-    for page in ecs.get_paginator("list_tasks").paginate(cluster=CLUSTER):
-        task_arns.extend(page["taskArns"])
-    eni_owner = {}
-    for i in range(0, len(task_arns), 100):
-        for task in ecs.describe_tasks(cluster=CLUSTER, tasks=task_arns[i:i + 100])["tasks"]:
-            service = (task.get("group") or "").removeprefix("service:")
-            for att in task.get("attachments", []):
-                for d in att.get("details", []):
-                    if d.get("name") == "networkInterfaceId":
-                        eni_owner[d["value"]] = service
-    enis = list(eni_owner)
-    for i in range(0, len(enis), 100):
-        resp = ec2.describe_network_interfaces(NetworkInterfaceIds=enis[i:i + 100])
-        for eni in resp["NetworkInterfaces"]:
-            owner = eni_owner.get(eni["NetworkInterfaceId"], "")
-            for g in eni.get("Groups", []):
-                if g["GroupId"] not in groups:
+    if not groups:
+        return findings
+    owners = _task_enis()
+    group_ids = sorted(groups)
+    seen = set()
+    for i in range(0, len(group_ids), 100):
+        filters = [{"Name": "group-id", "Values": group_ids[i:i + 100]}]
+        if VPC_ID:
+            filters.append({"Name": "vpc-id", "Values": [VPC_ID]})
+        for page in ec2.get_paginator("describe_network_interfaces").paginate(Filters=filters):
+            for eni in page["NetworkInterfaces"]:
+                eni_id = eni["NetworkInterfaceId"]
+                if eni_id in seen:
                     continue
-                expected = groups[g["GroupId"]][0].removesuffix("-tasks")
-                if owner != expected:
-                    findings.append(f"security group {groups[g['GroupId']][0]} is attached to a task of {owner or 'an unknown service'}")
+                seen.add(eni_id)
+                cluster, owner = owners.get(eni_id, (None, None))
+                for g in eni.get("Groups", []):
+                    if g["GroupId"] not in groups:
+                        continue
+                    gname = groups[g["GroupId"]][0]
+                    expected = gname.removesuffix("-tasks")
+                    if cluster is None:
+                        what = eni.get("Description") or eni.get("InterfaceType") or "no description"
+                        findings.append(f"security group {gname} is attached to {eni_id} ({what}), not an ECS task")
+                    elif owner != expected or cluster != CLUSTER:
+                        findings.append(
+                            f"security group {gname} is attached to a task of {owner or 'an unknown service'} "
+                            f"in cluster {cluster}")
     return findings
 
 

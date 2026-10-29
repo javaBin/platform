@@ -536,6 +536,29 @@ class PeersValidationTest(unittest.TestCase):
     def test_limits(self):
         self.assertRejected({**CALLER, "calls": [{"app": f"a{i}"} for i in range(21)]}, "at most 20")
 
+    def test_secret_names_the_platform_writes_are_reserved(self):
+        for name in ("network", "m2m-client-id", "m2m-client-secret", "peers-status",
+                     "peer-moresleep-moresleep-url", "peer-moresleep-moresleep-scopes"):
+            app = {**CUPCAKE, "resources": {"secrets": [{"name": name}]}}
+            self.assertRejected(app, "is reserved")
+        generate({**CUPCAKE, "resources": {"secrets": [{"name": "peer-review-token"}]}})
+
+    def test_one_client_holds_at_most_50_scopes(self):
+        many = [f"s{i}" for i in range(20)]
+        calls = [{"app": f"a{i}", "team": "x", "scopes": many} for i in range(3)]
+        self.assertRejected({**CALLER, "calls": calls}, "60 scopes requested in total")
+        generate({**CALLER, "calls": [*calls[:2], {**calls[2], "scopes": many[:10]}]})
+
+    def test_network_request_must_fit_a_standard_parameter(self):
+        scopes = {f"scope.{i}": "d" * 256 for i in range(25)}
+        self.assertRejected({**CALLEE, "provides": {"scopes": scopes}}, "4096-byte SSM limit")
+        generate({**CALLEE, "provides": {"scopes": {f"scope.{i}": "d" * 100 for i in range(25)}}})
+
+    def test_network_request_size_counts_jsonencode_escapes(self):
+        app = {**CALLEE, "provides": {"scopes": {"a": "<&>"}}}
+        calls, scopes, consumers = gen.parse_peers(app)
+        self.assertIn('"a":"\\u003c\\u0026\\u003e"', gen.network_request(app, calls, scopes, consumers))
+
 
 class PeersGenerationTest(unittest.TestCase):
     def test_every_app_gets_its_own_security_group_and_registry(self):

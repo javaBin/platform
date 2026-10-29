@@ -2061,9 +2061,11 @@ resource "aws_iam_role_policy" "app_peers_sync" {
     Version = "2012-10-17"
     Statement = [
       {
+        # ListTagsForResource: the managed-by tag is the proof of ownership
+        # checked before overwriting or deleting a parameter
         Sid    = "ReadAppRequests"
         Effect = "Allow"
-        Action = ["ssm:GetParameter", "ssm:GetParametersByPath"]
+        Action = ["ssm:GetParameter", "ssm:GetParametersByPath", "ssm:ListTagsForResource"]
         Resource = [
           "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps",
           "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/apps/*",
@@ -2117,7 +2119,8 @@ resource "aws_iam_role_policy" "app_peers_sync" {
         }
       },
       {
-        # EC2 Describe*, Cloud Map List* and ecs:ListTasks have no resource-level permissions
+        # EC2 Describe*, Cloud Map List*, ecs:ListClusters and ecs:ListTasks (any
+        # cluster) have no resource-level permissions
         Sid    = "Describe"
         Effect = "Allow"
         Action = [
@@ -2127,6 +2130,7 @@ resource "aws_iam_role_policy" "app_peers_sync" {
           "servicediscovery:ListServices",
           "servicediscovery:ListInstances",
           "servicediscovery:ListTagsForResource",
+          "ecs:ListClusters",
           "ecs:ListTasks",
         ]
         Resource = "*"
@@ -2140,10 +2144,12 @@ resource "aws_iam_role_policy" "app_peers_sync" {
         Resource = "arn:aws:route53:::hostedzone/*"
       },
       {
+        # Every cluster: a team can run tasks carrying an app's group in a
+        # cluster of its own (borrowed-group audit)
         Sid      = "DescribeAppTasks"
         Effect   = "Allow"
         Action   = "ecs:DescribeTasks"
-        Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:task/${var.project}-platform/*"
+        Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:task/*"
       },
       {
         Sid    = "ManageM2M"

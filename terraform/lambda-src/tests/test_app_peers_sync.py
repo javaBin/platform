@@ -18,10 +18,20 @@ class Pager:
         return [self.fn(**kw)]
 
 
+class ClientError(Exception):
+    """Shaped like botocore's ClientError."""
+
+    def __init__(self, code):
+        super().__init__(f"An error occurred ({code})")
+        self.response = {"Error": {"Code": code}}
+
+
 class FakeSSM:
-    def __init__(self, params=None):
+    def __init__(self, params=None, tags=None):
         self.params = dict(params or {})
+        self.tags = {k: dict(v) for k, v in (tags or {}).items()}  # name -> {key: value}
         self.puts, self.deleted = [], []
+        self.fail_puts = set()
 
     def get_paginator(self, name):
         assert name == "get_parameters_by_path"
@@ -32,12 +42,21 @@ class FakeSSM:
             raise AssertionError(f"{Name} exists, Overwrite missing")
         if Overwrite and Tags:
             raise AssertionError("Tags cannot be combined with Overwrite")
+        if Name in self.fail_puts:
+            raise ClientError("ThrottlingException")
         self.params[Name] = Value
+        if Tags:
+            self.tags[Name] = {t["Key"]: t["Value"] for t in Tags}
         self.puts.append((Name, Type))
+
+    def list_tags_for_resource(self, ResourceType, ResourceId):
+        assert ResourceType == "Parameter"
+        return {"TagList": [{"Key": k, "Value": v} for k, v in self.tags.get(ResourceId, {}).items()]}
 
     def delete_parameters(self, Names):
         for n in Names:
             self.params.pop(n, None)
+            self.tags.pop(n, None)
         self.deleted.extend(Names)
 
 
@@ -46,9 +65,17 @@ class FakeEC2:
         self.groups = groups  # sg -> (name, team)
         self.rules = {}  # rule_id -> (sg, ref, port, managed, peer)
         self.authorized, self.revoked = [], []
+        self.revoke_error = None
+        self.enis = []  # describe_network_interfaces result
         self.n = 0
 
     def get_paginator(self, name):
+        if name == "describe_network_interfaces":
+            def enis(Filters):
+                wanted = set(next(f["Values"] for f in Filters if f["Name"] == "group-id"))
+                return {"NetworkInterfaces": [
+                    e for e in self.enis if wanted & {g["GroupId"] for g in e["Groups"]}]}
+            return Pager(enis)
         if name == "describe_security_groups":
             return Pager(lambda **kw: {"SecurityGroups": [
                 {"GroupId": g, "GroupName": n, "Tags": [{"Key": "team", "Value": t}]}
@@ -74,6 +101,8 @@ class FakeEC2:
         self.authorized.append((GroupId, ref, perm["FromPort"]))
 
     def revoke_security_group_ingress(self, GroupId, SecurityGroupRuleIds):
+        if self.revoke_error:
+            raise ClientError(self.revoke_error)
         for rid in SecurityGroupRuleIds:
             sg, ref, port, *_ = self.rules.pop(rid)
             assert sg == GroupId
@@ -171,14 +200,24 @@ class FakeRoute53:
 
 class FakeECS:
     def __init__(self, tasks=()):
-        self.tasks = list(tasks)  # (service, eni)
+        # (service, eni) in javabin-platform, or (service, eni, cluster)
+        self.tasks = [t if len(t) == 3 else (*t, "javabin-platform") for t in tasks]
+
+    def _arn(self, cluster):
+        return f"arn:aws:ecs:eu-central-1:1:cluster/{cluster}"
 
     def get_paginator(self, name):
-        return Pager(lambda **kw: {"taskArns": [f"t{i}" for i in range(len(self.tasks))]})
+        if name == "list_clusters":
+            return Pager(lambda: {"clusterArns": sorted({self._arn(c) for *_, c in self.tasks})})
+        assert name == "list_tasks"
+        return Pager(lambda cluster, desiredStatus: {"taskArns": [
+            f"t{i}" for i, (*_, c) in enumerate(self.tasks)
+            if self._arn(c) == cluster and desiredStatus == "RUNNING"]})
 
     def describe_tasks(self, cluster, tasks):
         return {"tasks": [{"group": f"service:{s}", "attachments": [
-            {"details": [{"name": "networkInterfaceId", "value": e}]}]} for s, e in self.tasks]}
+            {"details": [{"name": "networkInterfaceId", "value": e}]}]}
+            for i, (s, e, c) in enumerate(self.tasks) if f"t{i}" in tasks]}
 
 
 def load(ssm, ec2, cognito, sd=None, ecs=None, env=None, r53=None):
@@ -472,6 +511,90 @@ class FrozenTest(unittest.TestCase):
         self.assertEqual(ssm.params[f"{CALLER}/peer-moresleep-moresleep-scopes"], "none")
 
 
+class SafetyTest(unittest.TestCase):
+    def test_resource_server_name_uses_only_characters_cognito_accepts(self):
+        h, ssm, ec2, cognito = world(both_sides())
+        h.handler({}, None)
+        self.assertRegex(cognito.servers["moresleep-moresleep"]["Name"], r"^[\w\s+=,.@-]+$")
+
+    def test_resource_server_with_the_old_marker_is_still_ours(self):
+        h, ssm, ec2, cognito = world(both_sides())
+        cognito.servers["moresleep-moresleep"] = {"Identifier": "moresleep-moresleep",
+                                                  "Name": "moresleep-moresleep (app.yaml)", "Scopes": []}
+        self.assertEqual(h.handler({}, None)["status"], "ok")
+        self.assertEqual(len(cognito.servers["moresleep-moresleep"]["Scopes"]), 2)
+
+    def test_failed_revoke_is_reported(self):
+        h, ssm, ec2, cognito = world(both_sides())
+        ec2.add_rule("sg-0000000b", "sg-0000000a", 9999)  # stale
+        ec2.revoke_error = "UnauthorizedOperation"
+        result = h.handler({}, None)
+        self.assertEqual(result["status"], "error")
+        self.assertTrue(any("revoke" in e for e in result["errors"]), result["errors"])
+
+    def test_revoke_of_a_rule_already_gone_is_fine(self):
+        h, ssm, ec2, cognito = world(both_sides())
+        ec2.add_rule("sg-0000000b", "sg-0000000a", 9999)
+        ec2.revoke_error = "InvalidPermission.NotFound"
+        self.assertEqual(h.handler({}, None)["status"], "ok")
+
+    def test_transient_cognito_failure_keeps_credentials(self):
+        h, ssm, ec2, cognito = world(both_sides())
+        h.handler({}, None)
+
+        def fail(**kw):
+            raise ClientError("TooManyRequestsException")
+        cognito.describe_user_pool_client = fail
+        result = h.handler({}, None)
+        self.assertEqual(result["status"], "error")
+        self.assertIn(f"{CALLER}/m2m-client-id", ssm.params)
+        self.assertIn(f"{CALLER}/m2m-client-secret", ssm.params)
+
+    def test_failed_secret_write_leaves_the_old_id_so_the_next_run_retries(self):
+        h, ssm, ec2, cognito = world(both_sides())
+        h.handler({}, None)
+        old_id = ssm.params[f"{CALLER}/m2m-client-id"]
+        cognito.clients.clear()  # client gone: the next run recreates it
+        ssm.fail_puts.add(f"{CALLER}/m2m-client-secret")
+        self.assertEqual(h.handler({}, None)["status"], "error")
+        self.assertEqual(ssm.params[f"{CALLER}/m2m-client-id"], old_id)
+
+        ssm.fail_puts.clear()
+        self.assertEqual(h.handler({}, None)["status"], "ok")
+        (client,) = cognito.clients.values()
+        self.assertEqual(ssm.params[f"{CALLER}/m2m-client-id"], client["ClientId"])
+        self.assertEqual(ssm.params[f"{CALLER}/m2m-client-secret"], client["ClientSecret"])
+
+    def test_parameters_without_our_tag_are_never_deleted(self):
+        user = {f"{CALLER}/m2m-client-secret": "team secret", f"{CALLER}/peer-x-y-url": "mine"}
+        params = {f"{CALLER}/network": request("sg-0000000a"), **user}
+        ssm, ec2, cognito = FakeSSM(params, tags={f"{CALLER}/peer-x-y-url": {"managed-by": "terraform"}}), \
+            FakeEC2(dict(GROUPS)), FakeCognito()
+        h = load(ssm, ec2, cognito)
+        self.assertEqual(h.handler({}, None)["status"], "ok")
+        self.assertEqual(ssm.deleted, [])
+        for name, value in user.items():
+            self.assertEqual(ssm.params[name], value)
+
+    def test_parameter_without_our_tag_is_not_overwritten(self):
+        params = both_sides()
+        params[f"{CALLER}/peers-status"] = "the team's own"
+        h, ssm, ec2, cognito = world(params)
+        result = h.handler({}, None)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(ssm.params[f"{CALLER}/peers-status"], "the team's own")
+        self.assertTrue(any("not managed by" in e for e in result["errors"]), result["errors"])
+
+    def test_more_scopes_than_one_client_can_hold_is_invalid(self):
+        h, *_ = world({})
+        many = [f"s{i}" for i in range(20)]
+        raw = request("sg-0000000a", calls={f"t/a{i}": many for i in range(3)})
+        with self.assertRaisesRegex(h.InvalidRequest, "at most 50"):
+            h.parse_request(raw, "cupcake", "cupcake-backend")
+        ok = request("sg-0000000a", calls={"t/a0": many, "t/a1": many, "t/a2": many[:10]})
+        h.parse_request(ok, "cupcake", "cupcake-backend")
+
+
 class AuditTest(unittest.TestCase):
     def test_reconcile_reports_squatting_and_borrowed_groups(self):
         sd = FakeServiceDiscovery([
@@ -481,10 +604,10 @@ class AuditTest(unittest.TestCase):
         ])
         ecs = FakeECS([("evil-thing", "eni-1"), ("cupcake-cupcake-backend", "eni-2")])
         h, ssm, ec2, cognito = world({}, sd=sd, ecs=ecs)
-        ec2.describe_network_interfaces = lambda NetworkInterfaceIds: {"NetworkInterfaces": [
+        ec2.enis = [
             {"NetworkInterfaceId": "eni-1", "Groups": [{"GroupId": "sg-0000000a"}]},
             {"NetworkInterfaceId": "eni-2", "Groups": [{"GroupId": "sg-0000000a"}]},
-        ]}
+        ]
         findings = h.handler({"action": "reconcile"}, None)["findings"]
         self.assertEqual(len(findings), 3, findings)
         self.assertTrue(any("evil-thing" in f and "security group" in f for f in findings))
@@ -502,6 +625,24 @@ class AuditTest(unittest.TestCase):
         findings = h.handler({"action": "reconcile"}, None)["findings"]
         self.assertEqual(len(findings), 3, findings)
         self.assertTrue(any("10.0.9.9" in f and "cupcake-cupcake" in f for f in findings))
+
+    def test_borrowed_group_outside_the_platform_cluster_is_reported(self):
+        ecs = FakeECS([
+            ("cupcake-cupcake-backend", "eni-1"),                          # fine
+            ("cupcake-cupcake-backend", "eni-2", "moresleep-own-cluster"),  # same name, other cluster
+        ])
+        h, ssm, ec2, cognito = world({}, ecs=ecs)
+        ec2.enis = [
+            {"NetworkInterfaceId": "eni-1", "Groups": [{"GroupId": "sg-0000000a"}]},
+            {"NetworkInterfaceId": "eni-2", "Groups": [{"GroupId": "sg-0000000a"}]},
+            # Not an ECS task at all (e.g. a Lambda or an instance)
+            {"NetworkInterfaceId": "eni-3", "Description": "AWS Lambda VPC ENI-evil",
+             "Groups": [{"GroupId": "sg-0000000b"}]},
+        ]
+        findings = h.audit_borrowed_groups(dict(GROUPS))
+        self.assertEqual(len(findings), 2, findings)
+        self.assertTrue(any("moresleep-own-cluster" in f for f in findings))
+        self.assertTrue(any("eni-3" in f and "moresleep-moresleep-tasks" in f for f in findings))
 
     def test_audits_only_run_on_reconcile(self):
         sd = FakeServiceDiscovery([("moresleep-moresleep", "cupcake", [])])

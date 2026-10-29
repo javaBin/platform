@@ -66,6 +66,17 @@ locals {
   pool_id     = local.uses_scopes ? tolist(data.aws_cognito_user_pools.internal[0].ids)[0] : ""
   issuer_url  = local.uses_scopes ? "https://cognito-idp.${local.region}.amazonaws.com/${local.pool_id}" : ""
 
+  # The `network` request without the security group ID
+  request = {
+    version = 1
+    port    = var.port
+    calls   = var.calls
+    provides = {
+      scopes    = var.provides_scopes
+      consumers = var.consumers
+    }
+  }
+
   # /<project>/apps/<team>/<name>, as an ARN prefix
   param_arn_prefix = trimsuffix(aws_ssm_parameter.network.arn, "/network")
 }
@@ -127,14 +138,14 @@ resource "aws_ssm_parameter" "network" {
   name        = "/${var.project}/apps/${var.team}/${var.name}/network"
   description = "App-to-app request for ${var.team}-${var.name} — read by the platform app-peers-sync Lambda"
   type        = "String"
-  value = jsonencode({
-    version           = 1
-    security_group_id = aws_security_group.tasks.id
-    port              = var.port
-    calls             = var.calls
-    provides = {
-      scopes    = var.provides_scopes
-      consumers = var.consumers
+  value       = jsonencode(merge(local.request, { security_group_id = aws_security_group.tasks.id }))
+
+  lifecycle {
+    # Standard tier: values up to 4 KB. Checked with the longest security
+    # group ID; generate-modules.py checks the same with a clearer message.
+    precondition {
+      condition     = length(jsonencode(merge(local.request, { security_group_id = "sg-00000000000000000" }))) <= 4096
+      error_message = "The app-to-app request (calls / provides) is over 4096 bytes; shorten provides.scopes descriptions or list fewer scopes, calls or consumers."
     }
-  })
+  }
 }

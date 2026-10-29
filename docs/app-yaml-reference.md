@@ -575,6 +575,11 @@ deploy.
 
 - Names: `app` as in `name:`, `team` as in `team:`. Scope names: lowercase letters, digits, `.`, `_`,
   `-`, max 40 characters. At most 20 calls, 50 consumers, 25 scopes.
+- At most 50 scopes requested across all `calls` (one Cognito client holds at most 50). The whole
+  request (`calls`, `provides.scopes` with descriptions, `consumers`) must fit the 4096-byte SSM
+  parameter `network`; `expand` reports the size when it does not.
+- `resources.secrets` cannot use the names the platform writes: `network`, `m2m-client-id`,
+  `m2m-client-secret`, `peers-status`, `peer-*-url`, `peer-*-scopes`.
 - The injected names must not also be set in `environment:`, a resource `env` or `auth.env`. Two calls
   to apps with the same name in different teams need an explicit `env:`.
 - Traffic is plain HTTP inside the VPC. Already-issued tokens stay valid for up to 60 minutes after a
