@@ -60,7 +60,7 @@ once both parameters exist. Until then the plan creates nothing, which is why th
 first.
 
 Adding the IdP changes **no app client**: clients use only the IdPs in `internal_identity_providers`
-(`terraform/platform/identity/variables.tf`, default `["GoogleSAML"]`). GoogleSAML keeps
+(`terraform/platform/identity/variables.tf`, default `["GoogleSAML"]` until the cutover in step 4). GoogleSAML keeps
 working.
 
 What Terraform configures (`terraform/platform/identity/main.tf`):

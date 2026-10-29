@@ -79,7 +79,7 @@ variable "org_boundary_arn" {
 variable "internal_identity_providers" {
   description = "Identity providers on internal-pool app clients (GoogleSAML is created outside Terraform)"
   type        = list(string)
-  default     = ["GoogleSAML"]
+  default     = ["Google"]
 
   validation {
     condition     = length(var.internal_identity_providers) > 0 && !contains(var.internal_identity_providers, "COGNITO")
