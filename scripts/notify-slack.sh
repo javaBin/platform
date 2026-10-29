@@ -7,7 +7,9 @@
 #   1. SLACK_WEBHOOK_URL env var (if set)
 #   2. SSM_WEBHOOK_PARAM env var → fetched from AWS SSM
 #
-# If neither is set, the notification is silently skipped.
+# If neither is set, the notification is silently skipped. slack_post.py builds
+# the payload (escaped, size-limited), checks Slack's reply and falls back to
+# plain text if the blocks are rejected.
 
 set -e
 
@@ -28,23 +30,7 @@ if [ -z "$SLACK_WEBHOOK_URL" ]; then
   exit 0
 fi
 
-# Build blocks JSON
-URL_BLOCK=""
-if [ -n "$URL" ]; then
-  URL_BLOCK=",{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"<${URL}|${URL_LABEL}>\"}}"
-fi
-
-PAYLOAD=$(cat <<EOF
-{
-  "blocks": [
-    {"type":"header","text":{"type":"plain_text","text":"${TITLE}","emoji":true}},
-    {"type":"section","text":{"type":"mrkdwn","text":"${MESSAGE}"}}
-    ${URL_BLOCK}
-  ],
-  "text": "${TITLE}"
-}
-EOF
-)
-
-curl -s -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$SLACK_WEBHOOK_URL" > /dev/null
-echo "Slack notification sent: ${TITLE}"
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+export SLACK_WEBHOOK_URL
+python3 "$SCRIPT_DIR/slack_post.py" message "$TITLE" "$MESSAGE" "$URL" "$URL_LABEL" ||
+  echo "::error::Slack notification '${TITLE}' was not delivered (see above)."

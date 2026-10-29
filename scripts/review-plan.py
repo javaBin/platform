@@ -263,9 +263,44 @@ permission grant when the plan shows `Effect = "Allow"` or the statement is new.
 
     for content in response.get("output", {}).get("message", {}).get("content", []):
         if "toolUse" in content and content["toolUse"]["name"] == "submit_review":
-            return content["toolUse"]["input"]
+            return normalize_review(content["toolUse"]["input"])
 
     return None
+
+
+def _maybe_json(value):
+    """The model sometimes returns a nested array/object as a JSON string."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def normalize_review(review):
+    """Coerce a tool-call answer to the schema, or return None if it can't be.
+
+    Bedrock occasionally serialises `findings` (or one finding) as a JSON string
+    instead of an array of objects; that used to crash the review and block the
+    apply with risk FAILED.
+    """
+    review = _maybe_json(review)
+    if not isinstance(review, dict) or review.get("risk") not in RISK_EMOJI:
+        return None
+    findings = _maybe_json(review.get("findings", []))
+    if isinstance(findings, dict):
+        findings = [findings]
+    if not isinstance(findings, list):
+        findings = []
+    clean = []
+    for f in findings:
+        f = _maybe_json(f)
+        if isinstance(f, dict) and f.get("detail"):
+            clean.append({"category": str(f.get("category", "routine")), "detail": str(f["detail"])})
+        elif isinstance(f, str) and f.strip():
+            clean.append({"category": "routine", "detail": f.strip()})
+    return {"risk": review["risk"], "summary": str(review.get("summary", "")), "findings": clean}
 
 
 def format_review(review):
@@ -278,7 +313,7 @@ def format_review(review):
     lines = [f"**Risk: {emoji} {risk}**", "", summary, ""]
 
     for f in findings:
-        cat_emoji = CATEGORY_EMOJI.get(f["category"], "\u2022")
+        cat_emoji = CATEGORY_EMOJI.get(f.get("category"), "\u2022")
         lines.append(f"- {cat_emoji} **[{f['category']}]** {f['detail']}")
 
     return "\n".join(lines)

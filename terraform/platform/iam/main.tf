@@ -755,7 +755,8 @@ resource "aws_iam_role_policy" "ci_deploy_ssm" {
 # Trust: GitHub OIDC pinned to approve-override.yml workflow on main.
 # Access control is handled by GitHub: only repo admins/CODEOWNERS can trigger
 # workflow_dispatch, and the override-approval environment can require reviewers.
-# Permissions: ONLY ssm:PutParameter on /javabin/platform-overrides/*
+# Permissions: invoke the apply-gate Lambda (it signs the override) and read the
+# override-alerts Slack webhook.
 ################################################################################
 
 resource "aws_iam_role" "ci_override_approver" {
@@ -799,11 +800,20 @@ resource "aws_iam_role_policy" "ci_override_approver" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = "lambda:InvokeFunction"
-      Resource = "arn:aws:lambda:${var.region}:${var.aws_account_id}:function:${var.project}-apply-gate"
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = "arn:aws:lambda:${var.region}:${var.aws_account_id}:function:${var.project}-apply-gate"
+      },
+      {
+        # "Risk Override Approved" Slack message (approve-override.yml)
+        Sid      = "ReadOverrideAlertsWebhook"
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/slack/platform-override-alerts-webhook"
+      },
+    ]
   })
 }
 

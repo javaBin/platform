@@ -194,3 +194,37 @@ class ReviewFeedbackTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def tool_input_response(tool_input):
+    return {"output": {"message": {"content": [{"toolUse": {"name": "submit_review", "input": tool_input}}]}}}
+
+
+class NormalizeReviewTest(unittest.TestCase):
+    def review(self, tool_input):
+        return rp.review_plan(plan(1), converse=lambda m, t: tool_input_response(tool_input))
+
+    def test_findings_returned_as_json_string_are_parsed(self):
+        # The model sometimes serialises the array; this crashed format_review (risk FAILED).
+        findings = '[{"category": "security", "detail": "boundary change"}]'
+        review = self.review({"risk": "HIGH", "summary": "s", "findings": findings})
+        self.assertEqual(review["findings"], [{"category": "security", "detail": "boundary change"}])
+        self.assertIn("boundary change", rp.format_review(review))
+
+    def test_single_finding_as_json_string_is_parsed(self):
+        review = self.review({"risk": "LOW", "summary": "s",
+                              "findings": ['{"category": "cost", "detail": "small"}', "plain text finding"]})
+        self.assertEqual(review["findings"], [{"category": "cost", "detail": "small"},
+                                              {"category": "routine", "detail": "plain text finding"}])
+
+    def test_unparseable_findings_are_dropped_not_fatal(self):
+        review = self.review({"risk": "MEDIUM", "summary": "s", "findings": "not json"})
+        self.assertEqual(review["findings"], [])
+        rp.format_review(review)
+
+    def test_whole_input_as_json_string(self):
+        review = self.review('{"risk": "LOW", "summary": "s", "findings": []}')
+        self.assertEqual(review["risk"], "LOW")
+
+    def test_unknown_risk_is_not_trusted(self):
+        self.assertIsNone(self.review({"risk": "SAFE", "summary": "s", "findings": []}))
