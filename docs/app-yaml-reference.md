@@ -158,6 +158,7 @@ What happens:
 - Sessions last 8 hours. A registry change (e.g. removing someone from a group) takes effect at their next sign-in, so at most 8 hours later.
 - An app.yaml change to a rule's `pool` or `groups`, or a reorder that gives a rule a new position, renames that rule's session cookie, so everyone signs in again and the new groups apply at once. Changing only `paths` keeps existing sessions.
 - One sign-in covers all rules of the app: Cognito remembers the user, so a second rule only redirects.
+- Internal pool: the load balancer sends `prompt=select_account`, so Google shows its account chooser (once the pool domain is on managed login; see `docs/cognito-google-setup.md`).
 
 Rules and priorities:
 
@@ -418,6 +419,17 @@ python3 ../platform/scripts/auth-doctor.py --app-yaml app.yaml   # add --json fo
 | `COGNITO_CLIENT_SECRET` | SSM SecureString (ECS task `secrets`) | `confidential` only |
 | `COGNITO_IDENTITY_PROVIDER` | SSM (ECS task `secrets`) | `confidential` and `public` only. The IdP the client signs in through (`GoogleSAML`, `Google`, or `COGNITO`), for apps that send `identity_provider` themselves. Changes at the IdP cutover, which restarts the service |
 | `COGNITO_GROUPS` | Comma-joined list from `auth.groups` | Only when `groups` is set |
+| `COGNITO_EXTRA_AUTH_PARAMS` | Fixed per pool, URL query string | Internal pool, `confidential` and `public` only: `prompt=select_account`. Add it to your `/oauth2/authorize` request (see below) |
+
+#### Account chooser (internal pool)
+
+Send the parameters in `COGNITO_EXTRA_AUTH_PARAMS` (today `prompt=select_account`) with every sign-in redirect to `/oauth2/authorize`. With them, Google shows its account chooser, so a hero whose browser is signed in to a personal Google account can pick the `@java.no` one instead of being refused. Without them, Google silently uses the active account.
+
+- oidc-client-ts / nuxt-oidc-auth: `extraQueryParams: { prompt: 'select_account' }`
+- Spring Security: an `OAuth2AuthorizationRequestResolver` that adds `prompt=select_account` to `additionalParameters`
+- NextAuth / Auth.js: `authorization: { params: { prompt: 'select_account' } }`
+
+Cognito forwards `prompt` only when the pool domain uses managed login; the classic hosted UI ignores it, so sending it is always safe. ALB sign-in (`routing.login`) sends it for you.
 
 `auth.env` adds the same values under extra names (both names are injected). Only names injected for your `client` type can be aliased.
 

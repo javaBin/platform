@@ -14,10 +14,19 @@ variable "google_workspace_domain" {
   default     = "java.no"
 }
 
-variable "google_authorize_url_params" {
-  description = "Add hd=<workspace domain>&prompt=select_account to the internal pool's Google authorize_url (false = plain URL, for the managed-login fallback)"
-  type        = bool
-  default     = true
+# 2 only once every internal-pool app client has a managed-login branding
+# style (app-auth-sync creates them; check with
+# aws cognito-idp describe-managed-login-branding-by-client), or that
+# client's sign-in page breaks.
+variable "internal_managed_login_version" {
+  description = "Internal pool domain: 1 = classic hosted UI, 2 = managed login (forwards prompt=select_account to Google)"
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = contains([1, 2], var.internal_managed_login_version)
+    error_message = "internal_managed_login_version must be 1 or 2."
+  }
 }
 
 variable "google_client_id" {

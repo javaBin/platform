@@ -74,6 +74,15 @@ class DoctorTest(unittest.TestCase):
         self.assertFalse(report.failed)
         self.assertIn(("WARN", "authorize"), self.levels(report))
 
+    def test_probe_sends_the_pools_extra_auth_params(self):
+        urls = []
+        doc.http_get = lambda url: (urls.append(url), self.redirects[
+            "authorize" if "/oauth2/authorize" in url else "logout"])[1]
+        self.run_doctor()
+        authorize = [u for u in urls if "/oauth2/authorize" in u]
+        self.assertTrue(authorize)
+        self.assertTrue(all("prompt=select_account" in u for u in authorize), authorize)
+
     def test_staying_on_hosted_ui_fails_for_federated_idp(self):
         self.redirects["authorize"] = (302, f"https://{DOMAIN}/login?client_id=abc")
         self.assertIn(("FAIL", "authorize"), self.levels(self.run_doctor()))

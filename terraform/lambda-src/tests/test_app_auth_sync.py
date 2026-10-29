@@ -74,6 +74,14 @@ class FakeDynamo:
         self.items[f"group#{name}"] = {"pk": {"S": f"group#{name}"}, "members": {"L": [{"S": m} for m in members]}}
 
 
+class ResourceNotFoundException(Exception):
+    pass
+
+
+class ManagedLoginBrandingExistsException(Exception):
+    pass
+
+
 class FakeCognito:
     POOLS = {"pool-int": "javabin-internal", "pool-ext": "javabin-external"}
 
@@ -81,6 +89,41 @@ class FakeCognito:
         self.clients = {}  # client_id -> dict
         self.n = 0
         self.internal_idps = list(internal_idps)
+        # Managed-login styles: branding_id -> {"UserPoolId", "ClientId", "UseCognitoProvidedValues"}.
+        # Deleting a client leaves its style here, so tests see whether the handler removes it.
+        self.branding = {}
+        self.exceptions = types.SimpleNamespace(ResourceNotFoundException=ResourceNotFoundException,
+                                                ManagedLoginBrandingExistsException=ManagedLoginBrandingExistsException)
+
+    def _branding_of(self, UserPoolId, ClientId):
+        return next((bid for bid, b in self.branding.items()
+                     if b["UserPoolId"] == UserPoolId and b["ClientId"] == ClientId), None)
+
+    def describe_managed_login_branding_by_client(self, UserPoolId, ClientId):
+        bid = self._branding_of(UserPoolId, ClientId)
+        if bid is None:
+            raise ResourceNotFoundException(ClientId)
+        return {"ManagedLoginBranding": {"ManagedLoginBrandingId": bid, "UserPoolId": UserPoolId,
+                                         **self.branding[bid]}}
+
+    def create_managed_login_branding(self, UserPoolId, ClientId, UseCognitoProvidedValues):
+        if self.clients.get(ClientId, {}).get("UserPoolId") != UserPoolId:
+            raise ResourceNotFoundException(ClientId)
+        if self._branding_of(UserPoolId, ClientId):
+            raise ManagedLoginBrandingExistsException(ClientId)
+        bid = f"style-{ClientId}"
+        self.branding[bid] = {"UserPoolId": UserPoolId, "ClientId": ClientId,
+                              "UseCognitoProvidedValues": UseCognitoProvidedValues}
+        return {"ManagedLoginBranding": {"ManagedLoginBrandingId": bid}}
+
+    def delete_managed_login_branding(self, UserPoolId, ManagedLoginBrandingId):
+        if self.branding.get(ManagedLoginBrandingId, {}).get("UserPoolId") != UserPoolId:
+            raise ResourceNotFoundException(ManagedLoginBrandingId)
+        del self.branding[ManagedLoginBrandingId]
+
+    def styles(self):
+        """client_id -> UseCognitoProvidedValues, for clients that still exist."""
+        return {b["ClientId"]: b["UseCognitoProvidedValues"] for b in self.branding.values()}
 
     def get_paginator(self, name):
         if name == "list_user_pools":
@@ -601,6 +644,106 @@ class LoginSlotTest(AppAuthSyncTest):
             self.ssm.params[name] = json.dumps(self.ALB)
             self.assertEqual(self.h.handler(event(name, "Create"), None)["status"], "ignored", name)
         self.assertEqual(self.cognito.clients, {})
+
+
+class ManagedLoginBrandingTest(AppAuthSyncTest):
+    """Managed login (domain version 2) has no sign-in page for a client without a style."""
+    SLOT_REQ = LoginSlotTest.SLOT_REQ
+    STATUS = "/javabin/apps/cupcake/frosting/auth-status"
+
+    def test_new_client_gets_a_default_style(self):
+        self.put_request()
+        self.h.handler(event(REQ, "Create"), None)
+        cid, _ = self.only_client()
+        self.assertEqual(self.cognito.styles(), {cid: True})
+        self.assertEqual(json.loads(self.ssm.params[self.STATUS])["branding"], "created")
+
+    def test_slot_client_gets_its_own_style(self):
+        self.put_request(LoginSlotTest.ALB, name=self.SLOT_REQ)
+        self.h.handler(event(self.SLOT_REQ, "Create"), None)
+        cid, _ = self.only_client()
+        self.assertEqual(self.cognito.styles(), {cid: True})
+
+    def test_resync_keeps_the_existing_style(self):
+        self.put_request()
+        self.h.handler(event(REQ, "Create"), None)
+        cid, _ = self.only_client()
+        # Someone customised the style in the branding editor
+        bid = self.cognito._branding_of("pool-int", cid)
+        self.cognito.branding[bid]["UseCognitoProvidedValues"] = False
+
+        self.h.handler(event(REQ, "Update"), None)
+        self.h.handler({"action": "reconcile"}, None)
+
+        self.assertEqual(self.cognito.styles(), {cid: False})
+        self.assertEqual(json.loads(self.ssm.params[self.STATUS])["branding"], "exists")
+
+    def test_reconcile_backfills_clients_created_before_branding(self):
+        self.put_request()
+        self.h.handler(event(REQ, "Create"), None)
+        self.put_request(LoginSlotTest.ALB, name=self.SLOT_REQ)
+        self.h.handler(event(self.SLOT_REQ, "Create"), None)
+        self.cognito.branding.clear()
+
+        result = self.h.handler({"action": "reconcile"}, None)
+
+        self.assertEqual(result["error"], [])
+        self.assertEqual(set(self.cognito.styles()), set(self.cognito.clients))
+
+    def test_style_created_concurrently_is_not_an_error(self):
+        self.put_request()
+        self.h.handler(event(REQ, "Create"), None)
+        cid, _ = self.only_client()
+        self.cognito.describe_managed_login_branding_by_client = lambda **kw: (_ for _ in ()).throw(
+            ResourceNotFoundException(cid))
+        self.assertEqual(self.h.handler(event(REQ, "Update"), None)["status"], "synced")
+        self.assertEqual(self.cognito.styles(), {cid: True})
+
+    def test_deleting_the_client_deletes_its_style(self):
+        self.put_request()
+        self.h.handler(event(REQ, "Create"), None)
+        del self.ssm.params[REQ]
+        self.h.handler(event(REQ, "Delete"), None)
+        self.assertEqual(self.cognito.branding, {})
+
+    def test_orphan_cleanup_deletes_the_style(self):
+        self.put_request()
+        self.h.handler(event(REQ, "Create"), None)
+        del self.ssm.params[REQ]
+        self.h.handler({"action": "reconcile"}, None)
+        self.assertEqual((self.cognito.clients, self.cognito.branding), ({}, {}))
+
+    def test_client_without_a_style_is_deleted_cleanly(self):
+        self.put_request()
+        self.h.handler(event(REQ, "Create"), None)
+        self.cognito.branding.clear()
+        del self.ssm.params[REQ]
+        self.assertEqual(self.h.handler(event(REQ, "Delete"), None)["status"], "deleted")
+        self.assertEqual(self.cognito.clients, {})
+
+    def test_pool_switch_and_type_change_take_the_old_style_along(self):
+        self.put_request()
+        self.h.handler(event(REQ, "Create"), None)
+        self.put_request({**REQUEST, "pool": "external"})
+        self.h.handler(event(REQ, "Update"), None)
+        self.put_request({**REQUEST, "pool": "external", "client_type": "public"})
+        self.h.handler(event(REQ, "Update"), None)
+
+        cid, client = self.only_client()
+        self.assertEqual(client["UserPoolId"], "pool-ext")
+        self.assertEqual(self.cognito.styles(), {cid: True})
+        self.assertEqual(len(self.cognito.branding), 1)
+
+    def test_branding_failure_reports_an_error_after_writing_credentials(self):
+        def denied(**kw):
+            raise RuntimeError("AccessDenied: cognito-idp:CreateManagedLoginBranding")
+        self.cognito.create_managed_login_branding = denied
+        self.put_request()
+        with self.assertRaises(RuntimeError):
+            self.h.handler(event(REQ, "Create"), None)
+        cid, _ = self.only_client()
+        self.assertEqual(self.ssm.params["/javabin/apps/cupcake/frosting/cognito-client-id"], cid)
+        self.assertEqual(json.loads(self.ssm.params[self.STATUS])["status"], "error")
 
 
 if __name__ == "__main__":
