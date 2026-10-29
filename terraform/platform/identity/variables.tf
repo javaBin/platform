@@ -21,7 +21,7 @@ variable "google_workspace_domain" {
 variable "internal_managed_login_version" {
   description = "Internal pool domain: 1 = classic hosted UI, 2 = managed login (forwards prompt=select_account to Google)"
   type        = number
-  default     = 1
+  default     = 2
 
   validation {
     condition     = contains([1, 2], var.internal_managed_login_version)

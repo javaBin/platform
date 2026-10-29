@@ -82,7 +82,7 @@ forwards every `prompt` value except `none` to the IdP the user signs in with. S
 | A managed-login branding style per app client (Cognito defaults) | `app-auth-sync` (created with the client, backfilled by reconcile, deleted with the client) | automatic |
 | Apps send `prompt=select_account` to `/oauth2/authorize` | `COGNITO_EXTRA_AUTH_PARAMS` (generate-modules.py); SPA `extraQueryParams` etc. — see app-yaml-reference "Account chooser" | per app |
 | ALB sign-in (`routing.login`) sends it | `authentication_request_extra_params` in `terraform/modules/service-routing` | automatic, internal pool |
-| Internal pool domain on managed login | `internal_managed_login_version` in `terraform/platform/identity/variables.tf` (1 → 2, an in-place update of the domain) | PR |
+| Internal pool domain on managed login | `internal_managed_login_version = 2` in `terraform/platform/identity/variables.tf` (an in-place update of the domain; 1 = back to the classic UI) | done |
 
 The external pool's domains stay on the classic hosted UI. Nothing there needs `prompt`, and its
 clients get branding styles too, so it can move later with the same one-line change.
