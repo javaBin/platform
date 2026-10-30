@@ -75,13 +75,14 @@ What Terraform configures (`terraform/platform/identity/main.tf`):
 
 Cognito drops query parameters from the provider's `authorize_url`, and the classic hosted UI
 (`ManagedLoginVersion` 1) ignores a `prompt` parameter sent by the app. Managed login (version 2)
-forwards every `prompt` value except `none` to the IdP the user signs in with. So:
+forwards `prompt` (except `none`) to the IdP, **but only when the request names it with
+`identity_provider=`**: on the single-IdP auto-redirect it drops `prompt` (probe, 2026-10-30). So:
 
 | Piece | Where | State |
 |---|---|---|
 | A managed-login branding style per app client (Cognito defaults) | `app-auth-sync` (created with the client, backfilled by reconcile, deleted with the client) | automatic |
-| Apps send `prompt=select_account` to `/oauth2/authorize` | `COGNITO_EXTRA_AUTH_PARAMS` (generate-modules.py); SPA `extraQueryParams` etc. — see app-yaml-reference "Account chooser" | per app |
-| ALB sign-in (`routing.login`) sends it | `authentication_request_extra_params` in `terraform/modules/service-routing` | automatic, internal pool |
+| Apps send `prompt=select_account` and `identity_provider=$COGNITO_IDENTITY_PROVIDER` to `/oauth2/authorize` | `COGNITO_EXTRA_AUTH_PARAMS` (generate-modules.py); SPA `extraQueryParams` etc. — see app-yaml-reference "Account chooser" | per app |
+| ALB sign-in (`routing.login`) sends both (the IdP read from the client's `cognito-client-identity-provider`) | `authentication_request_extra_params` in `terraform/modules/service-routing` | automatic, internal pool |
 | Internal pool domain on managed login | `internal_managed_login_version = 2` in `terraform/platform/identity/variables.tf` (an in-place update of the domain; 1 = back to the classic UI) | done |
 
 The external pool's domains stay on the classic hosted UI. Nothing there needs `prompt`, and its
@@ -131,14 +132,14 @@ for extra in "&prompt=select_account" "&prompt=select_account&identity_provider=
 done
 ```
 
-Expected on managed login: the first two go to `accounts.google.com` with `prompt=select_account`; the
-last (an app that sends no `prompt`) has none. To probe another IdP (e.g. a replacement OIDC provider),
+Result (2026-10-30, managed login, Google-type IdP): all three go straight to `accounts.google.com`,
+but only the second carries `prompt=select_account`; with `prompt` alone (no `identity_provider`) and
+with nothing, Google gets no `prompt`. `hd=` never appears (Cognito drops it, also when the app sends
+it); the Internal consent screen and auth-claims enforce the domain instead. To probe another IdP (e.g. a replacement OIDC provider),
 point `internal_idp_probe_identity_providers` at it and use that name in `identity_provider=`.
-For app clients, `scripts/auth-doctor.py` sends the pool's `COGNITO_EXTRA_AUTH_PARAMS` the same way and
-warns when Google is not asked for the account chooser.
-If `prompt` still does not reach Google on managed login, the Google-type provider is the problem:
-replace it with an `OIDC`-type provider for `https://accounts.google.com` (Cognito documents
-forwarding `prompt` for OIDC IdPs).
+For app clients, `scripts/auth-doctor.py` sends the pool's `COGNITO_EXTRA_AUTH_PARAMS` plus
+`identity_provider` (as apps must) and warns when Google is not asked for the account chooser.
+Since `prompt` does reach Google once the IdP is named, no `OIDC`-type replacement provider is needed.
 
 ## 4. Cutover: GoogleSAML → Google
 

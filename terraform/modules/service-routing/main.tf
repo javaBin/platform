@@ -130,6 +130,15 @@ data "aws_ssm_parameter" "login_client_id" {
   depends_on = [time_sleep.login_client]
 }
 
+# The client's sign-in IdP (GoogleSAML, Google), sent as identity_provider:
+# managed login forwards prompt= to the IdP only when the request names it.
+data "aws_ssm_parameter" "login_client_idp" {
+  for_each = local.login_protected
+
+  name       = module.login_client[each.key].identity_provider_parameter_name
+  depends_on = [time_sleep.login_client]
+}
+
 data "aws_ssm_parameter" "login_client_secret" {
   for_each = local.login_protected
 
@@ -159,15 +168,16 @@ resource "aws_lb_listener_rule" "login" {
       session_cookie_name        = local.login_cookie[each.key]
       session_timeout            = var.login_session_timeout
       on_unauthenticated_request = "authenticate"
-      # No identity_provider parameter: app-auth-sync gives every client the
-      # pool's sign-in IdP list, and with a single IdP the hosted UI goes
-      # straight to it. A hardcoded IdP would break at the IdP cutover.
-      #
       # Internal pool: ask Google for its account chooser, so a user whose
       # browser is signed in to another Google account can switch instead of
-      # being refused. Managed login forwards prompt to the IdP; the classic
-      # hosted UI ignores it.
-      authentication_request_extra_params = each.value.pool == "internal" ? local.internal_auth_params : null
+      # being refused. Managed login forwards prompt to the IdP only when the
+      # request names it (identity_provider): on the single-IdP auto-redirect
+      # it drops prompt (probed with platform-idp-probe). The IdP comes from
+      # app-auth-sync's parameter, never hardcoded, so the cutover needs no
+      # change here. The classic hosted UI ignores prompt.
+      authentication_request_extra_params = each.value.pool == "internal" ? merge(local.internal_auth_params, {
+        identity_provider = nonsensitive(data.aws_ssm_parameter.login_client_idp[each.key].value)
+      }) : null
     }
   }
 

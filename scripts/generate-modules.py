@@ -133,8 +133,10 @@ SCOPE_RE = re.compile(r"^[a-z][a-z0-9._-]{0,39}$")
 # Extra /oauth2/authorize parameters per pool, injected as
 # COGNITO_EXTRA_AUTH_PARAMS (URL query string). Internal: Google's account
 # chooser, so a browser signed in to a personal Google account can switch to
-# the java.no one (managed login forwards prompt to Google). Keep in step with
-# internal_auth_params in terraform/modules/service-routing (ALB sign-in).
+# the java.no one. Managed login forwards prompt to Google only when the
+# request also names the IdP, so apps send identity_provider=
+# $COGNITO_IDENTITY_PROVIDER with it (docs/app-yaml-reference.md). Keep in step
+# with internal_auth_params in terraform/modules/service-routing (ALB sign-in).
 POOL_EXTRA_AUTH_PARAMS = {"internal": "prompt=select_account"}
 
 # Injected when the app calls a peer with scopes / provides scopes

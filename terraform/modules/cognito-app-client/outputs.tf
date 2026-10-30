@@ -33,6 +33,11 @@ output "identity_provider_arn" {
   value       = "${local.param_arn}/cognito-client-identity-provider"
 }
 
+output "identity_provider_parameter_name" {
+  description = "Name of the SSM parameter the platform writes the client's sign-in IdP to"
+  value       = "${local.param_prefix}/cognito-client-identity-provider"
+}
+
 output "auth_status_parameter_name" {
   description = "SSM parameter where the platform reports the sync result (JSON; read by scripts/auth-doctor.py)"
   value       = "${local.param_prefix}/auth-status"
