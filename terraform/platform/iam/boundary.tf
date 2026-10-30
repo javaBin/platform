@@ -217,11 +217,13 @@ locals {
       # -- REQUEST TAG ENFORCEMENT --
       # SGs use IDs in ARNs so DenyBadName can't enforce naming.
       # Require team tag on create — Terraform default_tags handles this.
+      # Only the SG resource: CreateSecurityGroup is also authorized against
+      # the VPC, where request tags are never present, so "*" denied it always.
       {
         Sid      = "DenyNoTag"
         Effect   = "Deny"
         Action   = "ec2:CreateSecurityGroup"
-        Resource = "*"
+        Resource = "arn:aws:ec2:*:*:security-group/*"
         Condition = {
           StringNotEqualsIfExists = {
             "aws:RequestTag/team" = "$${aws:PrincipalTag/team}"
