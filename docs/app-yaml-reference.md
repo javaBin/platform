@@ -360,7 +360,7 @@ Changing `client` between `confidential` and `public` replaces the Cognito clien
 
 Both forms are supported and produce the same wiring.
 
-- `internal` — Javabin heroes. Every internal client signs in through the pool's IdP list (`internal_identity_providers` in `terraform/platform/identity/`): today Google Workspace SAML (`GoogleSAML`), after the Google cutover only `Google`. With a single IdP the hosted UI sends users straight to it, so apps don't need an `identity_provider` parameter; apps that pass one anyway should read `COGNITO_IDENTITY_PROVIDER` instead of hardcoding `GoogleSAML`. There is no password form or sign-up. Only `@java.no` accounts get a token; anyone else is refused at sign-in.
+- `internal` — Javabin heroes. Every internal client signs in through the pool's IdP list (`internal_identity_providers` in `terraform/platform/identity/`): `Google` (Google OIDC; `GoogleSAML` before the cutover). With a single IdP the hosted UI sends users straight to it, so apps don't need an `identity_provider` parameter; apps that pass one anyway should read `COGNITO_IDENTITY_PROVIDER` instead of hardcoding `GoogleSAML`. There is no password form or sign-up. Only `@java.no` accounts get a token; anyone else is refused at sign-in.
 - `external` — public users. Tokens carry only native Cognito groups of the external pool; registry groups are never added there, since anyone can sign up with any email.
 - `none` or omitted — no Cognito integration.
 
@@ -423,13 +423,13 @@ python3 ../platform/scripts/auth-doctor.py --app-yaml app.yaml   # add --json fo
 
 #### Account chooser (internal pool)
 
-Send the parameters in `COGNITO_EXTRA_AUTH_PARAMS` (today `prompt=select_account`) with every sign-in redirect to `/oauth2/authorize`. With them, Google shows its account chooser, so a hero whose browser is signed in to a personal Google account can pick the `@java.no` one instead of being refused. Without them, Google silently uses the active account.
+Send the parameters in `COGNITO_EXTRA_AUTH_PARAMS` (today `prompt=select_account`) **and** `identity_provider=<COGNITO_IDENTITY_PROVIDER>` with every sign-in redirect to `/oauth2/authorize`. With them, Google shows its account chooser, so a hero whose browser is signed in to a personal Google account can pick the `@java.no` one instead of being refused. Without them, Google silently uses the active account. Managed login drops `prompt` when the request does not name the IdP (it still redirects straight to it), so `prompt` alone is not enough. Read the IdP from `COGNITO_IDENTITY_PROVIDER`, never hardcode it: it changes at the IdP cutover.
 
-- oidc-client-ts / nuxt-oidc-auth: `extraQueryParams: { prompt: 'select_account' }`
-- Spring Security: an `OAuth2AuthorizationRequestResolver` that adds `prompt=select_account` to `additionalParameters`
-- NextAuth / Auth.js: `authorization: { params: { prompt: 'select_account' } }`
+- oidc-client-ts / nuxt-oidc-auth: `extraQueryParams: { prompt: 'select_account', identity_provider: process.env.COGNITO_IDENTITY_PROVIDER }`
+- Spring Security: an `OAuth2AuthorizationRequestResolver` that adds `prompt=select_account` and `identity_provider` to `additionalParameters`
+- NextAuth / Auth.js: `authorization: { params: { prompt: 'select_account', identity_provider: process.env.COGNITO_IDENTITY_PROVIDER } }`
 
-Cognito forwards `prompt` only when the pool domain uses managed login; the classic hosted UI ignores it, so sending it is always safe. ALB sign-in (`routing.login`) sends it for you.
+Cognito forwards `prompt` only when the pool domain uses managed login; the classic hosted UI ignores it, so sending it is always safe. ALB sign-in (`routing.login`) sends both for you.
 
 `auth.env` adds the same values under extra names (both names are injected). Only names injected for your `client` type can be aliased.
 
