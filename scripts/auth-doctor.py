@@ -13,9 +13,13 @@ Checks:
      allowed groups that do not exist (a typo there denies everyone).
   3. GET /oauth2/authorize for every callback URL redirects to the sign-in
      IdP (not /error?error=redirect_mismatch). The probe sends the pool's
-     COGNITO_EXTRA_AUTH_PARAMS like the app does; for Google, also checks that
-     the account chooser is forced (prompt=select_account reaches Google,
-     which needs managed login on the pool domain).
+     COGNITO_EXTRA_AUTH_PARAMS and identity_provider like a correctly wired
+     app does; for Google, also checks that the account chooser is forced
+     (prompt=select_account reaches Google, which needs managed login on the
+     pool domain AND identity_provider in the request: Cognito drops prompt
+     when the request does not name the IdP). An app that renames its auth
+     env vars (auth.env) but not COGNITO_IDENTITY_PROVIDER gets a WARN, since
+     it most likely sends prompt without identity_provider.
   4. GET /logout for every logout URL redirects back to it. Cognito wants
      logout_uri to match a logout URL exactly (trailing slash included) and
      otherwise sends the user to its own /login or /error page.
@@ -238,7 +242,26 @@ def probe_authorize(report, domain, client_id, idp, scopes, callback, extra=""):
     if loc.hostname == "accounts.google.com" and "/o/oauth2/" in loc.path:
         if parse_qs(loc.query).get("prompt") != ["select_account"]:
             report.warn("authorize", "Google is not asked to show the account chooser (prompt=select_account "
-                                     "missing: is the pool domain on managed login?) — see docs/cognito-google-setup.md")
+                                     "missing even with identity_provider: is the pool domain on managed login?) "
+                                     "— see docs/cognito-google-setup.md")
+
+
+def check_chooser_wiring(report, auth):
+    """Managed login forwards prompt=select_account only with identity_provider.
+
+    Apps read the platform's variables either directly or through auth.env
+    aliases. An app that aliases auth variables but not
+    COGNITO_IDENTITY_PROVIDER has almost certainly not wired it, so its
+    sign-in skips Google's account chooser.
+    """
+    extra = auth.get("extra_auth_params")
+    aliases = auth.get("aliases") or {}
+    if not extra or "prompt=" not in extra or not aliases:
+        return
+    if "COGNITO_IDENTITY_PROVIDER" not in aliases:
+        report.warn("chooser", "auth.env renames auth variables but not COGNITO_IDENTITY_PROVIDER: Cognito drops "
+                               "prompt=select_account unless the request also sends identity_provider — alias it "
+                               "and send it with COGNITO_EXTRA_AUTH_PARAMS (docs/app-yaml-reference.md)")
 
 
 def probe_logout(report, domain, client_id, logout_url):
@@ -325,6 +348,7 @@ def diagnose(app, team=None, name=None, wait=0, tasks=True, sleep=time.sleep):
         report.warn("authorize", f"the {status.get('pool')} pool has no hosted-UI domain; skipping HTTP probes")
     else:
         extra = gen.POOL_EXTRA_AUTH_PARAMS.get(status.get("pool") or auth["pool"], "")
+        check_chooser_wiring(report, {**auth, "extra_auth_params": extra})
         for cb in status.get("callback_urls") or auth["callback_urls"]:
             probe_authorize(report, domain, status["client_id"], status.get("identity_provider"),
                             status.get("scopes") or auth["scopes"], cb, extra)

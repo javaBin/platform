@@ -83,6 +83,29 @@ class DoctorTest(unittest.TestCase):
         self.assertTrue(authorize)
         self.assertTrue(all("prompt=select_account" in u for u in authorize), authorize)
 
+    def test_aliased_env_without_identity_provider_warns(self):
+        # Managed login drops prompt unless identity_provider is sent too
+        app = {**APP, "auth": {**APP["auth"], "env": {"COGNITO_CLIENT_ID": "NUXT_PUBLIC_OIDC_CLIENT_ID"}}}
+        report = self.run_doctor(app)
+        self.assertFalse(report.failed)
+        self.assertIn(("WARN", "chooser"), self.levels(report))
+
+    def test_aliased_identity_provider_does_not_warn(self):
+        env = {"COGNITO_CLIENT_ID": "NUXT_PUBLIC_OIDC_CLIENT_ID",
+               "COGNITO_IDENTITY_PROVIDER": "NUXT_PUBLIC_OIDC_IDENTITY_PROVIDER"}
+        app = {**APP, "auth": {**APP["auth"], "env": env}}
+        self.assertNotIn(("WARN", "chooser"), self.levels(self.run_doctor(app)))
+
+    def test_no_aliases_does_not_warn(self):
+        self.assertNotIn(("WARN", "chooser"), self.levels(self.run_doctor()))
+
+    def test_probe_names_the_identity_provider(self):
+        urls = []
+        doc.http_get = lambda url: (urls.append(url), self.redirects[
+            "authorize" if "/oauth2/authorize" in url else "logout"])[1]
+        self.run_doctor()
+        self.assertTrue(all("identity_provider=Google" in u for u in urls if "/oauth2/authorize" in u), urls)
+
     def test_staying_on_hosted_ui_fails_for_federated_idp(self):
         self.redirects["authorize"] = (302, f"https://{DOMAIN}/login?client_id=abc")
         self.assertIn(("FAIL", "authorize"), self.levels(self.run_doctor()))
