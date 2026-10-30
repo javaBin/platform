@@ -134,6 +134,37 @@ resource "aws_cognito_user_pool_domain" "internal" {
   managed_login_version = var.internal_managed_login_version
 }
 
+# IdP probe client — a platform-owned internal-pool client that lists only
+# var.internal_idp_probe_identity_providers (default: Google), so the
+# redirect managed login sends to an IdP can be checked (prompt=, hd=) before
+# any app client is cut over to it. app-auth-sync creates it from this
+# request like any app's (branding style included); only platform requests
+# may set identity_providers. It can never sign anyone in usefully: public
+# client, a localhost callback, and an allowed group that does not exist, so
+# auth-claims refuses every token. Probe: docs/cognito-google-setup.md.
+locals {
+  idp_probe_enabled = length(var.internal_idp_probe_identity_providers) > 0 && (
+    !contains(var.internal_idp_probe_identity_providers, "Google") || local.google_internal_ready
+  )
+}
+
+resource "aws_ssm_parameter" "idp_probe_auth" {
+  count = local.idp_probe_enabled ? 1 : 0
+
+  name        = "/${var.project}/apps/platform/idp-probe/auth"
+  description = "IdP probe client request for app-auth-sync (platform-owned)"
+  type        = "String"
+  value = jsonencode({
+    pool               = "internal"
+    client_type        = "public"
+    callback_urls      = ["https://localhost/idp-probe"]
+    logout_urls        = []
+    scopes             = ["openid", "email"]
+    allowed_groups     = ["idp-probe-nobody"]
+    identity_providers = var.internal_idp_probe_identity_providers
+  })
+}
+
 # Cognito groups are managed by the team provisioner (from groups.yaml and
 # team YAMLs), not by Terraform. The provisioner creates them dynamically.
 

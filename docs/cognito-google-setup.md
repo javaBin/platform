@@ -109,19 +109,33 @@ sign-in page. The style is harmless on the classic UI, so styles go first:
 3. After apply: open an app's sign-in (or run the probe below) and confirm the managed-login page or a
    straight redirect to the IdP, not an error page.
 
-Probe (unauthenticated GET, no credentials; use any internal client ID and one of its callback URLs —
-cupcake's are in `/javabin/apps/cupcake/cupcake/{cognito-client-id,auth}`):
+Probe: the platform keeps a probe client in the internal pool, `platform-idp-probe`, that lists only
+`internal_idp_probe_identity_providers` (identity module, default `["Google"]`; created once the
+Google IdP exists). It is an ordinary app-auth-sync request written by the identity module
+(`/javabin/apps/platform/idp-probe/auth`; only `platform` requests may set `identity_providers`), so it
+gets a managed-login branding style like every app client. It cannot sign anyone in: public client,
+callback `https://localhost/idp-probe`, and allowed group `idp-probe-nobody`, which does not exist, so
+auth-claims refuses every token (its auth-status lists that group under `unknown_groups`, as expected).
+
+The probe is an unauthenticated GET; it only reads the redirect Cognito returns (the client ID is not
+secret):
 
 ```bash
 DOMAIN=javabin-internal.auth.eu-central-1.amazoncognito.com
-curl -s -o /dev/null -w '%{redirect_url}\n' \
-  "https://$DOMAIN/oauth2/authorize?response_type=code&client_id=<id>&redirect_uri=<callback>&scope=openid&identity_provider=Google&prompt=select_account" \
-  | grep -q 'prompt=select_account' && echo OK || echo "prompt dropped"
+CID=$(aws ssm get-parameter --name /javabin/apps/platform/idp-probe/cognito-client-id --query Parameter.Value --output text)
+Q="response_type=code&client_id=$CID&redirect_uri=https://localhost/idp-probe&scope=openid+email"
+for extra in "&prompt=select_account" "&prompt=select_account&identity_provider=Google" ""; do
+  loc=$(curl -s -o /dev/null -w '%{redirect_url}' "https://$DOMAIN/oauth2/authorize?$Q$extra")
+  echo "${extra:-<no prompt>}: host=$(echo "$loc" | cut -d/ -f3)" \
+    "prompt=$(echo "$loc" | grep -o 'prompt=[^&]*' || echo -)" "hd=$(echo "$loc" | grep -o 'hd=[^&]*' || echo -)"
+done
 ```
 
-`identity_provider=Google` works only for a client that lists `Google`, so before the cutover this
-needs a client with `Google` (or run it right after cutover). `scripts/auth-doctor.py` sends the pool's
-`COGNITO_EXTRA_AUTH_PARAMS` the same way and warns when Google is not asked for the account chooser.
+Expected on managed login: the first two go to `accounts.google.com` with `prompt=select_account`; the
+last (an app that sends no `prompt`) has none. To probe another IdP (e.g. a replacement OIDC provider),
+point `internal_idp_probe_identity_providers` at it and use that name in `identity_provider=`.
+For app clients, `scripts/auth-doctor.py` sends the pool's `COGNITO_EXTRA_AUTH_PARAMS` the same way and
+warns when Google is not asked for the account chooser.
 If `prompt` still does not reach Google on managed login, the Google-type provider is the problem:
 replace it with an `OIDC`-type provider for `https://accounts.google.com` (Cognito documents
 forwarding `prompt` for OIDC IdPs).
