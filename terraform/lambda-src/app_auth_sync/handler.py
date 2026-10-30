@@ -32,6 +32,14 @@ the user straight to it (no password form, no sign-up link). If a configured
 IdP does not exist in the pool, the request is skipped and logged as an error
 (status "error"); the existing client is left as it is.
 
+Platform-owned requests (team PLATFORM_TEAM, "platform": no registered team
+has that name, so only the platform's own Terraform can write under
+/{project}/apps/platform/) may set "identity_providers" to override the
+pool's list, e.g. the IdP probe client (terraform/platform/identity/) that
+lists only an IdP no app uses yet. Every listed IdP must exist in the pool;
+the internal pool never allows COGNITO. Any other team's request with the
+field is invalid.
+
 An app can also request extra clients in a slot, one level down:
 /{project}/apps/{team}/{app}/login-N/auth (service-routing writes these for
 app.yaml routing.login, one per ALB sign-in rule). The client is then named
@@ -85,6 +93,10 @@ POOL_IDPS = {
     "external": _idp_list(os.environ.get("EXTERNAL_IDENTITY_PROVIDERS", "COGNITO")),
 }
 MEMBERSHIPS_TABLE = os.environ.get("MEMBERSHIPS_TABLE", "")
+# The only owner whose requests may override the pool's IdP list
+PLATFORM_TEAM = "platform"
+# Pools whose clients must never offer local (COGNITO) sign-in
+POOL_FORBIDDEN_IDPS = {"internal": {"COGNITO"}}
 # Hosted-UI domains, reported in auth-status for the doctor's probes
 POOL_DOMAINS = {
     "internal": os.environ.get("INTERNAL_POOL_DOMAIN", ""),
@@ -147,8 +159,9 @@ def client_name(team, app, slot=""):
     return f"{team}-{app}.{slot}" if slot else f"{team}-{app}"
 
 
-def parse_request(raw):
-    """Validate the JSON written by the cognito-app-client module."""
+def parse_request(raw, team=None):
+    """Validate the JSON written by the cognito-app-client module (or, for
+    team PLATFORM_TEAM, by the platform's own Terraform)."""
     try:
         req = json.loads(raw)
     except (TypeError, ValueError) as e:
@@ -188,8 +201,19 @@ def parse_request(raw):
     if not isinstance(groups, list) or not all(isinstance(g, str) and g for g in groups):
         raise InvalidRequest("allowed_groups must be a list of group names")
 
+    idps = req.get("identity_providers")
+    if idps is not None:
+        if team != PLATFORM_TEAM:
+            raise InvalidRequest("identity_providers can only be set by the platform")
+        if not isinstance(idps, list) or not idps or not all(isinstance(p, str) and p for p in idps):
+            raise InvalidRequest("identity_providers must be a non-empty list of IdP names")
+        forbidden = set(idps) & POOL_FORBIDDEN_IDPS.get(pool, set())
+        if forbidden:
+            raise InvalidRequest(f"identity_providers {sorted(forbidden)} are not allowed in the {pool} pool")
+
     return {
         "pool": pool,
+        "identity_providers": list(dict.fromkeys(idps)) if idps else None,
         "client_type": client_type,
         "callback_urls": urls("callback_urls", required=True),
         "logout_urls": urls("logout_urls", required=False),
@@ -228,13 +252,14 @@ def find_client(user_pool_id, client_name):
 _idp_cache = {}
 
 
-def identity_providers(pool, user_pool_id):
-    """The pool's configured sign-in IdPs, after checking each one exists.
+def identity_providers(pool, user_pool_id, override=None):
+    """The pool's configured sign-in IdPs (or a platform request's override),
+    after checking each one exists.
 
     With exactly one IdP on a client, the hosted UI redirects straight to it,
     so apps need no identity_provider parameter.
     """
-    wanted = POOL_IDPS[pool]
+    wanted = override or POOL_IDPS[pool]
     if not wanted:
         raise PoolMisconfigured(f"no identity providers configured for the {pool} pool")
     if user_pool_id not in _idp_cache:
@@ -299,7 +324,7 @@ def client_settings(pool, user_pool_id, client_name, req):
         "AllowedOAuthScopes": req["scopes"],
         "CallbackURLs": req["callback_urls"],
         "LogoutURLs": req["logout_urls"],
-        "SupportedIdentityProviders": identity_providers(pool, user_pool_id),
+        "SupportedIdentityProviders": identity_providers(pool, user_pool_id, req.get("identity_providers")),
         "ExplicitAuthFlows": ["ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_SRP_AUTH"],
         "PreventUserExistenceErrors": "ENABLED",
     }
@@ -571,7 +596,7 @@ def sync_and_report(team, app, raw, version, reason, slot=""):
     """
     name = client_name(team, app, slot)
     try:
-        status = sync(team, app, parse_request(raw), reason, slot)
+        status = sync(team, app, parse_request(raw, team), reason, slot)
     except InvalidRequest as e:
         logger.error("Invalid auth request for %s: %s", name, e)
         status = {"status": "invalid", "error": str(e)}

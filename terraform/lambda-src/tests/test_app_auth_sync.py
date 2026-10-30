@@ -365,6 +365,59 @@ class IdentityProviderTest(unittest.TestCase):
         self.assertEqual(self.ssm.params[self.ID_PARAM], self.cid)
 
 
+class PlatformIdentityProviderOverrideTest(unittest.TestCase):
+    """Platform-owned requests (the IdP probe) may pick their own IdPs."""
+    PROBE = "/javabin/apps/platform/idp-probe/auth"
+    PROBE_REQUEST = {"pool": "internal", "client_type": "public", "callback_urls": ["https://localhost/idp-probe"],
+                     "scopes": ["openid", "email"], "allowed_groups": ["idp-probe-nobody"],
+                     "identity_providers": ["Google"]}
+
+    def setUp(self):
+        self.ssm, self.cognito, self.dynamo = FakeSSM(), FakeCognito(internal_idps=("GoogleSAML", "Google")), FakeDynamo()
+        self.h = load_handler(self.ssm, self.cognito, self.dynamo)
+
+    def sync(self, req, name=PROBE):
+        self.ssm.params[name] = json.dumps(req)
+        return self.h.handler(event(name, "Create"), None)
+
+    def test_platform_request_gets_only_its_own_idps_and_a_branding_style(self):
+        result = self.sync(self.PROBE_REQUEST)
+        self.assertEqual(result["status"], "synced")
+        cid, client = next(iter(self.cognito.clients.items()))
+        self.assertEqual(client["ClientName"], "platform-idp-probe")
+        self.assertEqual(client["SupportedIdentityProviders"], ["Google"])
+        self.assertNotIn("ClientSecret", client)
+        self.assertEqual(self.cognito.styles(), {cid: True})
+        self.assertEqual(self.ssm.params["/javabin/apps/platform/idp-probe/cognito-client-identity-provider"], "Google")
+        status = json.loads(self.ssm.params["/javabin/apps/platform/idp-probe/auth-status"])
+        self.assertEqual(status["identity_providers"], ["Google"])
+
+    def test_app_clients_keep_the_pool_list(self):
+        self.sync(self.PROBE_REQUEST)
+        self.sync(REQUEST, REQ)
+        by_name = {c["ClientName"]: c for c in self.cognito.clients.values()}
+        self.assertEqual(by_name["cupcake-frosting"]["SupportedIdentityProviders"], ["GoogleSAML"])
+
+    def test_other_teams_cannot_override(self):
+        result = self.sync({**REQUEST, "identity_providers": ["Google"]}, REQ)
+        self.assertEqual(result["status"], "invalid")
+        self.assertIn("platform", result["error"])
+        self.assertEqual(self.cognito.clients, {})
+
+    def test_override_must_exist_in_the_pool(self):
+        with self.assertLogs(level="ERROR"):
+            result = self.sync({**self.PROBE_REQUEST, "identity_providers": ["GoogleOIDC"]})
+        self.assertEqual(result["status"], "error")
+        self.assertIn("GoogleOIDC", result["error"])
+        self.assertEqual(self.cognito.clients, {})
+
+    def test_internal_pool_override_cannot_offer_local_sign_in(self):
+        for bad in (["COGNITO"], ["Google", "COGNITO"], [], "Google", [""]):
+            result = self.sync({**self.PROBE_REQUEST, "identity_providers": bad})
+            self.assertEqual(result["status"], "invalid", bad)
+        self.assertEqual(self.cognito.clients, {})
+
+
 class AuthFeaturesTest(AppAuthSyncTest):
     SECRET = "/javabin/apps/cupcake/frosting/cognito-client-secret"
 

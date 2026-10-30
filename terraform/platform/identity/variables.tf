@@ -29,6 +29,19 @@ variable "internal_managed_login_version" {
   }
 }
 
+# Empty disables the probe client. A list naming Google waits for the internal
+# Google IdP (its OAuth client in SSM).
+variable "internal_idp_probe_identity_providers" {
+  description = "IdPs on the platform's internal-pool probe client (platform-idp-probe); [] removes it"
+  type        = list(string)
+  default     = ["Google"]
+
+  validation {
+    condition     = !contains(var.internal_idp_probe_identity_providers, "COGNITO")
+    error_message = "The internal pool must not offer COGNITO (local sign-up)."
+  }
+}
+
 variable "google_client_id" {
   description = "Google OAuth 2.0 client ID for the external pool's Google IdP (from GCP console)"
   type        = string
