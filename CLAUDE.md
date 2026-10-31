@@ -218,7 +218,7 @@ terraform/state/
 | SSM params (app) | `/javabin/apps/{team}/{service}/{name}` |
 | ECS cluster | `javabin-platform` |
 | ECS execution roles | `javabin-ecs-exec-{team}` (platform-owned, reads only `/javabin/apps/{team}/*`) |
-| SSO team guardrails | `javabin-team-{team}-guardrails` (developer boundary with the team written in, for `javabin-team-{team}` permission sets) |
+| SSO team guardrails | `javabin-team-{team}-guardrails` (developer boundary with the team written in; the permissions boundary of `javabin-team-{team}` permission sets) |
 | ECR repos | `{team}-{service}` |
 | SNS topics | `javabin-{alerts,security,budget-enforcement}` |
 | Log groups | `/ecs/{team}/{service}` |
@@ -325,7 +325,7 @@ Team group OWNERs are admin-managed and never removed by the sync; non-@java.no 
 ### Known Issues
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
 - **Cognito**: pools deployed; internal pool's `GoogleSAML` IdP was created outside Terraform. It is replaced by the Terraform-managed Google OIDC IdP at cutover (docs/cognito-google-setup.md), then deleted
-- **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) instead. The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
+- **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) as their permissions boundary instead. It must stay a boundary: its baseline `Allow *` attached as a policy grants everything its Denies miss (every untagged resource). The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
 - **App databases share one network path** (fixed by `app-network`): service-rds now allows ingress only from the app's own `{team}-{app}-tasks` SG; each app moves off the shared ECS tasks SG on its next pipeline run
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
 - **`registered_app_repos` manually managed**: Being replaced with team-scoped IAM roles (repo→team resolved via GitHub API at runtime)

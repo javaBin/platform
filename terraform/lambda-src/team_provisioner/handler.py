@@ -1450,6 +1450,7 @@ def sync_group_to_identity_center(group):
 
 
 DEVELOPER_BOUNDARY_NAME = f"{PROJECT}-developer-boundary"
+VIEW_ONLY_POLICY_ARN = "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess"
 
 
 def _create_account_assignment(ps_arn, group_id, label=""):
@@ -1503,12 +1504,14 @@ def _create_account_assignment(ps_arn, group_id, label=""):
 def _ensure_team_permission_set(team_name, group_id):
     """Create a per-team permission set and assign it to the team's IC group.
 
-    Guardrails come from javabin-team-{team}-guardrails (platform Terraform):
-    the developer boundary's rules with the team name written in. The shared
-    developer boundary can't be used here: its rules compare resource tags
-    with ${aws:PrincipalTag/team}, and Identity Center sessions carry no team
-    tag, so it would deny every team-scoped resource. The inline policy
-    allows broad access scoped to resources tagged with the team name.
+    The permissions boundary is javabin-team-{team}-guardrails (platform
+    Terraform): the developer boundary's rules with the team name written
+    in. The shared developer boundary can't be used here: its rules compare
+    resource tags with ${aws:PrincipalTag/team}, and Identity Center sessions
+    carry no team tag, so it would deny every team-scoped resource. The
+    boundary only limits; access itself comes
+    from AWS ViewOnlyAccess (console browsing, no data reads) plus the inline
+    policy from _team_inline_policy (the team's own resources).
     """
     ps_name = f"{PROJECT}-team-{team_name}"
 
@@ -1534,7 +1537,10 @@ def _ensure_team_permission_set(team_name, group_id):
     if not ps_arn:
         return {"error": "could not create or find permission set"}
 
-    # Attach the team's guardrails; drop the shared boundary from older setups.
+    # The team's guardrails are the permissions boundary. Older setups had
+    # them (or the shared developer boundary) attached as a policy, where
+    # their baseline "Allow *" granted everything the Denies didn't cover;
+    # detach those only once the boundary is in place.
     # Only a policy platform Terraform created: platform CI may not have made
     # it yet for a brand-new team (or never, for non-app teams like
     # platform). Then leave the permission set as it is and report pending.
@@ -1544,41 +1550,146 @@ def _ensure_team_permission_set(team_name, group_id):
         logger.warning("Not switching %s to %s: %s", ps_name, guardrails, state)
         return {"permission_set": ps_name, "guardrails": state}
     try:
-        sso_client.attach_customer_managed_policy_reference_to_permission_set(
+        sso_client.put_permissions_boundary_to_permission_set(
             InstanceArn=SSO_INSTANCE_ARN,
             PermissionSetArn=ps_arn,
-            CustomerManagedPolicyReference={"Name": guardrails},
+            PermissionsBoundary={"CustomerManagedPolicyReference": {"Name": guardrails}},
+        )
+    except Exception as e:
+        logger.error("Failed to set %s as boundary of %s: %s", guardrails, ps_name, e)
+        return {"permission_set": ps_name, "error": str(e)[:200]}
+    for name in (guardrails, DEVELOPER_BOUNDARY_NAME):
+        try:
+            sso_client.detach_customer_managed_policy_reference_from_permission_set(
+                InstanceArn=SSO_INSTANCE_ARN,
+                PermissionSetArn=ps_arn,
+                CustomerManagedPolicyReference={"Name": name},
+            )
+            logger.info("Detached policy %s from %s", name, ps_name)
+        except sso_client.exceptions.ResourceNotFoundException:
+            pass  # not attached
+        except Exception as e:
+            logger.error("Failed to detach %s from %s: %s", name, ps_name, e)
+
+    view_only = _attach_view_only(ps_arn, ps_name)
+    policy = _team_inline_policy(team_name)
+
+    try:
+        sso_client.put_inline_policy_to_permission_set(
+            InstanceArn=SSO_INSTANCE_ARN,
+            PermissionSetArn=ps_arn,
+            InlinePolicy=json.dumps(policy),
+        )
+    except Exception as e:
+        logger.error("Failed to set inline policy for %s: %s", ps_name, e)
+        return {"error": str(e)[:200]}
+
+    # Assign to group and wait for completion
+    result = _create_account_assignment(ps_arn, group_id, ps_name)
+    result["permission_set"] = ps_name
+    result["view_only"] = view_only
+    # Push policy changes to the role in the account (needed for existing
+    # assignments; a new assignment provisions on creation)
+    result["provisioned"] = _provision_permission_set(ps_arn, ps_name)
+    return result
+
+
+def _attach_view_only(ps_arn, ps_name):
+    """Attach AWS ViewOnlyAccess (the same read-only browsing as
+    javabin-readonly). 'ok', or the error: the inline policy is still set,
+    so the team keeps access to its own resources either way."""
+    try:
+        sso_client.attach_managed_policy_to_permission_set(
+            InstanceArn=SSO_INSTANCE_ARN,
+            PermissionSetArn=ps_arn,
+            ManagedPolicyArn=VIEW_ONLY_POLICY_ARN,
         )
     except sso_client.exceptions.ConflictException:
         pass  # already attached
     except Exception as e:
-        logger.error("Failed to attach %s to %s: %s", guardrails, ps_name, e)
-    try:
-        sso_client.detach_customer_managed_policy_reference_from_permission_set(
-            InstanceArn=SSO_INSTANCE_ARN,
-            PermissionSetArn=ps_arn,
-            CustomerManagedPolicyReference={"Name": DEVELOPER_BOUNDARY_NAME},
-        )
-        logger.info("Detached %s from %s", DEVELOPER_BOUNDARY_NAME, ps_name)
-    except sso_client.exceptions.ResourceNotFoundException:
-        pass  # not attached
-    except Exception as e:
-        logger.error("Failed to detach %s from %s: %s", DEVELOPER_BOUNDARY_NAME, ps_name, e)
+        logger.error("Failed to attach ViewOnlyAccess to %s: %s", ps_name, e)
+        return f"error: {str(e)[:200]}"
+    return "ok"
 
-    # Set inline policy — broad allow scoped to team-tagged resources
-    policy = {
+
+def _team_inline_policy(team_name):
+    """Inline policy of javabin-team-{team}: write access only to the team's
+    own resources, on top of ViewOnlyAccess and under the team guardrails.
+
+    The tag allow is StringEquals, not StringEqualsIfExists: an action whose
+    request carries no aws:ResourceTag (S3 objects, Route53, creates, any
+    untagged legacy resource) is not allowed by it. The team's own resources
+    that can't be matched by tag are allowed by name instead: SSM parameters
+    (PutParameter has no aws:ResourceTag), log groups, buckets
+    ({team}-{name}-{account}) and ECS Exec on the shared cluster (the task is
+    checked by its propagated team tag).
+    """
+    params = f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/{team_name}"
+    buckets = f"arn:aws:s3:::{team_name}-*-{ACCOUNT_ID}"
+    return {
         "Version": "2012-10-17",
         "Statement": [
             {
-                "Sid": "AllowTeamResources",
+                "Sid": "AllowTeamTaggedResources",
                 "Effect": "Allow",
                 "Action": "*",
                 "Resource": "*",
-                "Condition": {
-                    "StringEqualsIfExists": {
-                        "aws:ResourceTag/team": team_name,
-                    }
-                },
+                "Condition": {"StringEquals": {"aws:ResourceTag/team": team_name}},
+            },
+            {
+                "Sid": "AllowTeamParameters",
+                "Effect": "Allow",
+                "Action": ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath",
+                           "ssm:GetParameterHistory", "ssm:PutParameter"],
+                "Resource": [params, f"{params}/*"],
+            },
+            {
+                # Guardrails DenyXLogs already limits log reads to these groups
+                "Sid": "AllowTeamLogs",
+                "Effect": "Allow",
+                "Action": ["logs:GetLogEvents", "logs:FilterLogEvents", "logs:DescribeLogStreams",
+                           "logs:StartQuery", "logs:StartLiveTail", "logs:GetLogGroupFields"],
+                "Resource": f"arn:aws:logs:*:{ACCOUNT_ID}:log-group:/ecs/{team_name}/*",
+            },
+            {
+                "Sid": "AllowTeamBuckets",
+                "Effect": "Allow",
+                "Action": ["s3:ListBucket", "s3:ListBucketVersions", "s3:GetBucketLocation",
+                           "s3:GetObject", "s3:GetObjectVersion", "s3:PutObject",
+                           "s3:DeleteObject", "s3:DeleteObjectVersion",
+                           "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"],
+                "Resource": [buckets, f"{buckets}/*"],
+            },
+            {
+                # The cluster half of ECS Exec; the task half needs the team tag
+                "Sid": "AllowExecOnPlatformCluster",
+                "Effect": "Allow",
+                "Action": "ecs:ExecuteCommand",
+                "Resource": f"arn:aws:ecs:*:{ACCOUNT_ID}:cluster/{PROJECT}-platform",
+            },
+            {
+                # Kept although ViewOnlyAccess covers most of it: javabin-cli
+                # (status, secret) must not depend on the managed attachment
+                "Sid": "AllowUntaggedReads",
+                "Effect": "Allow",
+                "Action": [
+                    "ecs:ListClusters",
+                    "ecs:ListServices",
+                    "ecs:ListTasks",
+                    "ecs:DescribeServices",
+                    "ecs:DescribeTasks",
+                    "ecr:GetAuthorizationToken",
+                    "elasticloadbalancing:Describe*",
+                    "route53:ListHostedZones",
+                    "logs:DescribeLogGroups",
+                    "ssm:DescribeParameters",
+                    "cloudwatch:ListMetrics",
+                    "cloudwatch:GetMetricData",
+                    "cloudwatch:GetMetricStatistics",
+                    "ce:GetCostAndUsage",
+                    "ce:GetCostForecast",
+                ],
+                "Resource": "*",
             },
             {
                 # Platform-managed parameters in the team path: Cognito
@@ -1606,42 +1717,8 @@ def _ensure_team_permission_set(team_name, group_id):
                 "Resource": f"arn:aws:ssm:*:{ACCOUNT_ID}:parameter/{PROJECT}/apps/*",
                 "Condition": {"BoolIfExists": {"ssm:Overwrite": "false"}},
             },
-            {
-                "Sid": "AllowUntaggedReads",
-                "Effect": "Allow",
-                "Action": [
-                    "ecs:ListClusters",
-                    "ecs:ListServices",
-                    "ecr:GetAuthorizationToken",
-                    "elasticloadbalancing:Describe*",
-                    "route53:ListHostedZones",
-                    "logs:DescribeLogGroups",
-                    "cloudwatch:ListMetrics",
-                    "ce:GetCostAndUsage",
-                    "ce:GetCostForecast",
-                ],
-                "Resource": "*",
-            },
         ],
     }
-
-    try:
-        sso_client.put_inline_policy_to_permission_set(
-            InstanceArn=SSO_INSTANCE_ARN,
-            PermissionSetArn=ps_arn,
-            InlinePolicy=json.dumps(policy),
-        )
-    except Exception as e:
-        logger.error("Failed to set inline policy for %s: %s", ps_name, e)
-        return {"error": str(e)[:200]}
-
-    # Assign to group and wait for completion
-    result = _create_account_assignment(ps_arn, group_id, ps_name)
-    result["permission_set"] = ps_name
-    # Push policy changes to the role in the account (needed for existing
-    # assignments; a new assignment provisions on creation)
-    result["provisioned"] = _provision_permission_set(ps_arn, ps_name)
-    return result
 
 
 def _guardrails_state(policy_name):
