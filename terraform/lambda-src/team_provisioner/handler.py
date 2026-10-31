@@ -1472,12 +1472,46 @@ def sync_group_to_identity_center(group):
 DEVELOPER_BOUNDARY_NAME = f"{PROJECT}-developer-boundary"
 
 
+def _assignment_exists(ps_arn, group_id):
+    """True if the group already holds the permission set in the account,
+    False if not, None if the lookup failed."""
+    kwargs = {"InstanceArn": SSO_INSTANCE_ARN, "AccountId": ACCOUNT_ID, "PermissionSetArn": ps_arn}
+    try:
+        while True:
+            resp = sso_client.list_account_assignments(**kwargs)
+            for a in resp.get("AccountAssignments", []):
+                if a.get("PrincipalType") == "GROUP" and a.get("PrincipalId") == group_id:
+                    return True
+            if not resp.get("NextToken"):
+                return False
+            kwargs["NextToken"] = resp["NextToken"]
+    except Exception as e:
+        logger.warning("Could not list assignments of %s: %s", ps_arn, e)
+        return None
+
+
 def _create_account_assignment(ps_arn, group_id, label=""):
     """Create an account assignment and wait for it to complete.
 
     The SSO create_account_assignment API is asynchronous. This function
     polls until the assignment reaches SUCCEEDED or FAILED status.
+
+    Creating an assignment that already exists is accepted (no
+    ConflictException), so whether it is new is looked up first:
+    "already_existed" is True for an existing one, False for a new one and
+    absent when the lookup failed.
     """
+    existed = _assignment_exists(ps_arn, group_id)
+    if existed:
+        logger.info("Permission set %s already assigned to group %s", label, group_id)
+        return {"assigned": True, "already_existed": True}
+    result = _start_account_assignment(ps_arn, group_id, label)
+    if existed is False and result.get("assigned") and "already_existed" not in result:
+        result["already_existed"] = False
+    return result
+
+
+def _start_account_assignment(ps_arn, group_id, label):
     try:
         resp = sso_client.create_account_assignment(
             InstanceArn=SSO_INSTANCE_ARN,
@@ -1819,7 +1853,7 @@ def handle_sync_team_access(event):
         provisioned = r.get("provisioned") or {}
         return bool(
             r.get("error")
-            or (r.get("assigned") and not r.get("already_existed"))
+            or (r.get("assigned") and r.get("already_existed") is False)
             or (isinstance(provisioned, dict) and provisioned.get("status") == "FAILED")
         )
 

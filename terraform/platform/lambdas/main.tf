@@ -673,6 +673,7 @@ resource "aws_iam_role_policy" "team_provisioner" {
         Action = [
           "sso:CreateAccountAssignment",
           "sso:DescribeAccountAssignmentCreationStatus",
+          "sso:ListAccountAssignments",
           "sso:ListPermissionSets",
           "sso:DescribePermissionSet",
           "sso:CreatePermissionSet",

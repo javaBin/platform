@@ -53,6 +53,26 @@ def identity_store(users, members=()):
     return store
 
 
+def sso_admin(assigned_groups=(), list_fails=False, provision_status="SUCCEEDED"):
+    """SSO admin client: `assigned_groups` already hold the permission set.
+    Like AWS, creating an existing assignment succeeds without a conflict."""
+    sso = mock.MagicMock()
+    sso.exceptions.ConflictException = type("Conflict", (Exception,), {})
+    sso.exceptions.ResourceNotFoundException = type("NotFound", (Exception,), {})
+    if list_fails:
+        sso.list_account_assignments.side_effect = Exception("AccessDenied")
+    else:
+        sso.list_account_assignments.return_value = {"AccountAssignments": [
+            {"PrincipalType": "GROUP", "PrincipalId": g} for g in assigned_groups]}
+    sso.create_account_assignment.return_value = {"AccountAssignmentCreationStatus": {"RequestId": "a1"}}
+    sso.describe_account_assignment_creation_status.return_value = {
+        "AccountAssignmentCreationStatus": {"Status": "SUCCEEDED"}}
+    sso.provision_permission_set.return_value = {"PermissionSetProvisioningStatus": {"RequestId": "p1"}}
+    sso.describe_permission_set_provisioning_status.return_value = {
+        "PermissionSetProvisioningStatus": {"Status": provision_status, "FailureReason": "boom"}}
+    return sso
+
+
 class SyncTeamAccessTest(unittest.TestCase):
     def setUp(self):
         self.h = load()
@@ -63,20 +83,16 @@ class SyncTeamAccessTest(unittest.TestCase):
             {"Groups": [{"DisplayName": "team-platform", "GroupId": "g-p"},
                         {"DisplayName": "team-Bad-Name", "GroupId": "g-x"}]},
         ]
-        self.ensured = []
+        self.h._resolve_permission_set_arn = lambda name: f"arn:ps/{name}"
         self.h._guardrails_state = lambda name: "ok" if name == "javabin-team-cupcake-guardrails" else "pending: x"
 
-    def _ensure_returns(self, result):
-        def ensure(team, group_id):
-            self.ensured.append((team, group_id))
-            return dict(result, permission_set=f"javabin-team-{team}")
-        self.h._ensure_team_permission_set = ensure
-
     def test_grants_access_to_teams_whose_guardrails_exist(self):
-        self._ensure_returns({"assigned": True, "provisioned": {"status": "SUCCEEDED"}})
+        self.h.sso_client = sso_admin()
         body = json.loads(self.h.handler({"action": "sync_team_access"}, None)["body"])
 
-        self.assertEqual(self.ensured, [("cupcake", "g-c")])
+        create = self.h.sso_client.create_account_assignment.call_args.kwargs
+        self.assertEqual((create["PermissionSetArn"], create["PrincipalId"]), ("arn:ps/team-cupcake", "g-c"))
+        self.assertEqual(self.h.sso_client.create_account_assignment.call_count, 1)
         self.assertEqual(body["synced"], ["cupcake", "platform"])
         self.assertTrue(body["results"]["platform"]["guardrails"].startswith("pending"))
         # A newly made assignment is announced, the pending team is not
@@ -86,22 +102,29 @@ class SyncTeamAccessTest(unittest.TestCase):
         self.assertNotIn("platform", text)
 
     def test_existing_assignment_stays_quiet(self):
-        self._ensure_returns({"assigned": True, "already_existed": True, "provisioned": {"status": "SUCCEEDED"}})
+        self.h.sso_client = sso_admin(assigned_groups=["g-other", "g-c"])
+        body = json.loads(self.h.handler({"action": "sync_team_access"}, None)["body"])
+        self.h.sso_client.create_account_assignment.assert_not_called()
+        self.h.sso_client.provision_permission_set.assert_called_once()  # policy changes still roll out
+        self.assertTrue(body["results"]["cupcake"]["already_existed"])
+        self.assertEqual(self.h.slack_posts, [])
+
+    def test_unknown_assignment_state_stays_quiet(self):
+        self.h.sso_client = sso_admin(list_fails=True)
         self.h.handler({"action": "sync_team_access"}, None)
-        self.assertEqual(self.ensured, [("cupcake", "g-c")])
+        self.h.sso_client.create_account_assignment.assert_called_once()
         self.assertEqual(self.h.slack_posts, [])
 
     def test_failed_provisioning_is_announced(self):
-        self._ensure_returns({"assigned": True, "already_existed": True,
-                              "provisioned": {"status": "FAILED", "reason": "boom"}})
+        self.h.sso_client = sso_admin(assigned_groups=["g-c"], provision_status="FAILED")
         self.h.handler({"action": "sync_team_access"}, None)
         self.assertIn("provisioning failed: boom", json.dumps(self.h.slack_posts[0]))
 
     def test_teams_filter(self):
-        self._ensure_returns({"assigned": True, "already_existed": True})
+        self.h.sso_client = sso_admin()
         body = json.loads(self.h.handler({"action": "sync_team_access", "teams": ["platform"]}, None)["body"])
         self.assertEqual(body["synced"], ["platform"])
-        self.assertEqual(self.ensured, [])
+        self.h.sso_client.create_account_assignment.assert_not_called()
 
 
 class NotInIdentityCenterTest(unittest.TestCase):

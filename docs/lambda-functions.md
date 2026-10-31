@@ -150,7 +150,9 @@ Platform CI finishes the job: after every apply it queues `{"action": "sync_team
 policy exists and is tagged `managed-by=terraform`, `repo=javaBin/platform`, it attaches the
 guardrails, writes the inline policy, makes the account assignment and re-provisions the permission
 set; teams without one (e.g. `platform`) are left alone. `{"teams": [...]}` limits the run. It posts
-to #javabin-infra-alerts only when a team got access for the first time or something failed. Since it
+to #javabin-infra-alerts only when a team got access for the first time or something failed
+(`CreateAccountAssignment` accepts an assignment that already exists without a conflict, so the
+handler checks `ListAccountAssignments` first; if that lookup fails it stays quiet). Since it
 runs on every apply it also rolls inline policy changes out to existing teams.
 
 **Members missing from Identity Center.** Users reach Identity Center only through Google's SCIM
