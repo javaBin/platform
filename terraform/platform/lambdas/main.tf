@@ -1109,6 +1109,44 @@ resource "aws_iam_role_policy" "budget_enforcer" {
         Action   = ["ecs:UpdateService", "ecs:TagResource"]
         Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:service/${var.project}-platform/*"
       },
+      {
+        # Suspension markers: read by the ecs-service module in app Terraform
+        Sid    = "SuspensionMarkers"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParametersByPath",
+          "ssm:PutParameter",
+          "ssm:DeleteParameter",
+        ]
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/budget-suspensions",
+          "arn:aws:ssm:${var.region}:${var.aws_account_id}:parameter/${var.project}/budget-suspensions/*",
+        ]
+      },
+      {
+        Sid      = "RDSDescribe"
+        Effect   = "Allow"
+        Action   = "rds:DescribeDBInstances"
+        Resource = "arn:aws:rds:${var.region}:${var.aws_account_id}:db:*"
+      },
+      {
+        # Only team-tagged instances; the handler matches the team tag
+        Sid      = "RDSStopStart"
+        Effect   = "Allow"
+        Action   = ["rds:StopDBInstance", "rds:StartDBInstance"]
+        Resource = "arn:aws:rds:${var.region}:${var.aws_account_id}:db:*"
+        Condition = {
+          Null = { "aws:ResourceTag/team" = "false" }
+        }
+      },
+      {
+        # Lift a suspension once spend is back under 200%
+        Sid      = "BudgetsRead"
+        Effect   = "Allow"
+        Action   = "budgets:ViewBudget"
+        Resource = "arn:aws:budgets::${var.aws_account_id}:budget/${var.project}-team-*"
+      },
     ]
   })
 }
@@ -1133,6 +1171,8 @@ resource "aws_lambda_function" "budget_enforcer" {
       ECS_CLUSTER        = "${var.project}-platform"
       COST_WEBHOOK_PARAM = "/javabin/slack/platform-cost-alerts-webhook"
       BUDGET_NAME_PREFIX = "${var.project}-team-"
+      SUSPENSION_PATH    = "/${var.project}/budget-suspensions"
+      AWS_ACCOUNT_ID     = var.aws_account_id
     }
   }
 }
@@ -1149,6 +1189,30 @@ resource "aws_lambda_permission" "budget_enforcer_sns" {
   function_name = aws_lambda_function.budget_enforcer.function_name
   principal     = "sns.amazonaws.com"
   source_arn    = aws_sns_topic.budget_enforcement.arn
+}
+
+# Keeps suspensions in force (re-stops RDS, which restarts itself after 7
+# days; re-zeros services scaled up by hand) and lifts them once the team's
+# spend is back under 200% (new month or raised budget_nok).
+resource "aws_cloudwatch_event_rule" "budget_enforcer_reconcile" {
+  name                = "${var.project}-budget-enforcer-reconcile"
+  description         = "Reconcile team budget suspensions every 6 hours"
+  schedule_expression = "rate(6 hours)"
+}
+
+resource "aws_cloudwatch_event_target" "budget_enforcer_reconcile" {
+  rule      = aws_cloudwatch_event_rule.budget_enforcer_reconcile.name
+  target_id = "reconcile-budget-enforcer"
+  arn       = aws_lambda_function.budget_enforcer.arn
+  input     = jsonencode({ action = "reconcile" })
+}
+
+resource "aws_lambda_permission" "budget_enforcer_reconcile" {
+  statement_id  = "AllowEventBridgeReconcile"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.budget_enforcer.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.budget_enforcer_reconcile.arn
 }
 
 ################################################################################

@@ -224,16 +224,21 @@ IdP-synced groups are refused.
 
 ## budget-enforcer
 
-**Trigger:** SNS notification from AWS Budgets (200% threshold)
-**Purpose:** Scales a team's ECS services to `desired_count=0` when spending exceeds 200% of their monthly budget. Does NOT destroy resources — services can be scaled back up after resolution.
+**Triggers:** SNS notification from AWS Budgets (200% threshold, plain-text message); EventBridge every 6 hours with `{"action": "reconcile"}`; manual invoke with `{"action": "lift", "team": "<team>"}`
+**Purpose:** Suspends a team that spends more than 200% of its monthly budget, and keeps it suspended until the suspension is lifted. Nothing is destroyed.
 
-**Flow:** Parse budget name (`javabin-team-{team}`) → list ECS services tagged with team → scale to zero → post Slack alert.
+**Suspend (SNS):** parse `Budget Name:` (`javabin-team-{team}`) → write marker `/javabin/budget-suspensions/{team}` → scale the team's ECS services to `desired_count=0` and set their `javabin:desired-count` tag to `0` (previous counts and tag values recorded in the marker) → stop the team's `available` RDS instances (IDs recorded) → Slack. The `ecs-service` module plans the tag as `0` while the marker exists, so tf-apply and ecs-deploy keep 0 tasks.
 
-| SSM Parameter | Channel |
-|---------------|---------|
+**Reconcile (schedule):** for each marker, read the team budget. Spend still above 200% of the limit (or unreadable) → re-zero services, re-pin their tag and re-stop RDS (RDS restarts stopped instances after 7 days). Otherwise (new month, raised `budget_nok`) → lift.
+
+**Lift:** delete the marker → set the recorded services (still at 0) and their `javabin:desired-count` tag back to their previous values → start the recorded RDS instances → Slack. See [cost-management.md](cost-management.md#budget-suspension).
+
+| SSM Parameter | Use |
+|---------------|-----|
 | `/javabin/slack/platform-cost-alerts-webhook` | #javabin-cost-alerts |
+| `/javabin/budget-suspensions/{team}` | Suspension marker (written and deleted here) |
 
-**Environment vars:** `ECS_CLUSTER` (default: `javabin-platform`)
+**Environment vars:** `ECS_CLUSTER` (default: `javabin-platform`), `COST_WEBHOOK_PARAM`, `BUDGET_NAME_PREFIX`, `SUSPENSION_PATH`, `AWS_ACCOUNT_ID`
 
 ## resource-tagger
 
