@@ -202,6 +202,7 @@ terraform/state/
 | `scripts/upload-plan.sh` | CI: upload plan artifact to S3 |
 | `scripts/auth-doctor.py` | CI (after app apply) / local: checks an app's Cognito sign-in end to end from auth-status + HTTP probes (tests: `scripts/tests/`) |
 | `scripts/reconcile-app-auth.sh` | CI (after platform apply): queue an app-auth-sync reconcile |
+| `scripts/sync-team-access.sh` | CI (after platform apply): queue team-provisioner `sync_team_access` (new teams' permission set + account assignment once their guardrails policy exists) |
 
 ## Naming
 
@@ -243,6 +244,7 @@ Scheduled:
 EventBridge (Create/Run) ──► compliance-reporter (report to Slack, no auto-fix)
   Hourly             ──► override-cleanup (delete stale SSM override tokens)
 Registry merge ──► team-provisioner (Google/GitHub/Budget/Cognito/Identity Center sync + member provisioning + access group sync)
+Platform apply ──► team-provisioner sync_team_access (team permission sets once guardrails exist; #javabin-infra-alerts on new access or failure)
 AWS Budgets (200%) ──► budget-enforcer Lambda ──► ECS scale-to-zero + #javabin-cost-alerts
 EventBridge (Create/Run) ──► resource-tagger Lambda ──► Tag created-by + commit
 ```

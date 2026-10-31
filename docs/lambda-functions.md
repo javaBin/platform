@@ -73,7 +73,7 @@ Queries Security Hub for active findings at HIGH and CRITICAL severity, aggregat
 
 ## team-provisioner
 
-**Trigger:** Registry repo merge events (via `provision-app.yml` workflow dispatch)
+**Trigger:** Registry repo merge events (direct invocation from registry CI via `javabin-ci-registry`); `sync_team_access` from platform CI after apply
 **Purpose:** Syncs team definitions from registry YAML across Google Groups, GitHub teams, AWS Budgets (80% warning + 200% enforcement thresholds), Cognito groups, and Identity Center groups. Also handles hero account provisioning.
 
 | SSM Parameter | Purpose |
@@ -126,6 +126,46 @@ more; read the current list there first and add to it rather than pasting this o
 `admin.directory.group`, `admin.directory.group.member`, `admin.directory.user`,
 `admin.directory.user.alias`, `gmail.send`, `gmail.settings.sharing`, `apps.groups.settings`
 (all under `https://www.googleapis.com/auth/`).
+
+### Team GitHub team (`sync_github_team`)
+
+Each team gets the GitHub team `{name}`. Members without a `role:` field are team **maintainers**
+(`GITHUB_DEFAULT_TEAM_ROLE`), so whoever registered the team can add its repos to it; `role: member`
+makes someone a plain member. Registering a team (`javabin register-team`) writes no `role:`. A
+member's existing role is changed in place, and logins not in the registry are removed. The Google
+group keeps **MEMBER** as its default (only `role: maintainer` makes a Google MANAGER).
+
+### Team AWS access (`sync_identity_center_group`, `sync_team_access`)
+
+The team sync puts members in the Identity Center group `team-{name}` and gives that group the
+permission set `javabin-team-{name}` on the account, with the customer-managed policy
+`javabin-team-{name}-guardrails`. That policy is made by platform Terraform, which only learns of a
+new team when platform CI runs on the registry's `teams-changed` dispatch, after the team sync.
+Until it exists the team sync stops before the inline policy and the account assignment and reports
+`guardrails: pending` (`:hourglass_flowing_sand:` in Slack): without the guardrails the inline
+policy's `Action: *` would be unbounded.
+
+Platform CI finishes the job: after every apply it queues `{"action": "sync_team_access"}`
+(`scripts/sync-team-access.sh`, async). For every `team-*` Identity Center group whose guardrails
+policy exists and is tagged `managed-by=terraform`, `repo=javaBin/platform`, it attaches the
+guardrails, writes the inline policy, makes the account assignment and re-provisions the permission
+set; teams without one (e.g. `platform`) are left alone. `{"teams": [...]}` limits the run. It posts
+to #javabin-infra-alerts only when a team got access for the first time or something failed. Since it
+runs on every apply it also rolls inline policy changes out to existing teams.
+
+**Members missing from Identity Center.** Users reach Identity Center only through Google's SCIM
+auto-provisioning, which creates a user only if the Google Workspace AWS IAM Identity Center app is
+turned on for them (Admin console > Apps > Web and mobile apps > the AWS app > User access). A team or
+`identity_center` group member without an Identity Center user can't be added to the group: the sync
+returns them in `not_in_identity_center`, counts only members actually in the group in
+`member_count`, and the Slack summary lists each such person with the fix. After an admin turns the
+app on for them and SCIM creates the user, the next registry sync adds them.
+
+The provisioner does not create these users itself through the Identity Store API, although the
+API would accept it: a user made that way has no link to the Google account, so suspending or
+deleting the person in Google would not remove their AWS access (SCIM never manages it), and when
+Google later tries to provision the same `UserName` its create conflicts with the existing user and
+fails. Identity Center users stay SCIM-owned (`CreatedBy: SCIM/...`).
 
 ### Atlassian group sync (`sync_atlassian`)
 

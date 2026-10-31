@@ -1315,7 +1315,8 @@ resource "aws_lambda_permission" "override_cleanup_schedule" {
   source_arn    = aws_cloudwatch_event_rule.override_cleanup_schedule.arn
 }
 
-# --- team-provisioner: no schedule — triggered via direct Lambda invocation from registry CI ---
+# --- team-provisioner: no schedule — invoked directly by registry CI, and by
+# platform CI after apply (sync_team_access, scripts/sync-team-access.sh) ---
 
 # --- securityhub-summary: Monday 08:00 UTC (same as cost report) ---
 resource "aws_cloudwatch_event_rule" "securityhub_summary_schedule" {

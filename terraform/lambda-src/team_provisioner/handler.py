@@ -851,11 +851,18 @@ def _github_api(method, path, token, body=None):
         raise
 
 
+# GitHub team role for members without a role: field. Maintainer, so every
+# member can add the team's repos to it (registering a team never writes
+# role:). Google keeps MEMBER as its default (_google_role_for).
+GITHUB_DEFAULT_TEAM_ROLE = "maintainer"
+
+
 def sync_github_team(team):
     """Create or update a GitHub team and sync its membership.
 
-    Members get the role from their YAML entry (default: "member").
-    Only members with role: maintainer can manage the team on GitHub.
+    Members get the role from their YAML entry (default: "maintainer", see
+    GITHUB_DEFAULT_TEAM_ROLE). Set role: member to limit someone to the
+    team's repos without managing the team.
     """
     team_name = team["name"]
     token = _get_github_installation_token()
@@ -919,7 +926,7 @@ def sync_github_team(team):
             )
             continue
         desired_users.add(github_user)
-        github_role = m.get("role", "member")
+        github_role = m.get("role", GITHUB_DEFAULT_TEAM_ROLE)
         if github_role not in ("maintainer", "member"):
             logger.warning("Invalid role '%s' for %s — defaulting to member", github_role, github_user)
             github_role = "member"
@@ -1162,8 +1169,9 @@ def sync_cognito_group(team):
 def sync_identity_center_group(team):
     """Create or update an Identity Center group and sync membership.
 
-    Members are matched by email in the identity store. Members not yet
-    provisioned in Identity Center are skipped.
+    Members are matched by email in the identity store. Members Google SCIM
+    hasn't provisioned to Identity Center can't be added; they are reported
+    in `not_in_identity_center` (see _not_in_identity_center).
     """
     if not IDENTITY_STORE_ID:
         logger.info(
@@ -1224,6 +1232,7 @@ def sync_identity_center_group(team):
 
     # Desired members
     desired_emails = set()
+    not_provisioned = []
     for member in team.get("members", []):
         m = _normalize_member(member)
         email = m.get("email", "").lower()
@@ -1249,7 +1258,8 @@ def sync_identity_center_group(team):
                 except identitystore_client.exceptions.ConflictException:
                     logger.info("User %s already in Identity Center group %s", email, group_name)
             else:
-                logger.info("User %s not in Identity Center — skipping", email)
+                logger.warning("User %s not in Identity Center (not SCIM-provisioned) — skipping", email)
+                not_provisioned.append(email)
 
     # Remove members no longer in the team
     for email, user_id in current_emails.items():
@@ -1267,7 +1277,13 @@ def sync_identity_center_group(team):
     if SSO_INSTANCE_ARN and ACCOUNT_ID:
         ps_result = _ensure_team_permission_set(team_name, group_id)
 
-    result = {"synced": True, "group": group_name, "member_count": len(desired_emails)}
+    result = {
+        "synced": True,
+        "group": group_name,
+        "member_count": len(desired_emails) - len(not_provisioned),
+    }
+    if not_provisioned:
+        result["not_in_identity_center"] = sorted(not_provisioned)
     if ps_result:
         result["permission_set"] = ps_result
     return result
@@ -1406,6 +1422,7 @@ def sync_group_to_identity_center(group):
 
     # Add Google group members not yet in Identity Center group
     synced_count = 0
+    not_provisioned = []
     for email in google_members:
         if email in current_emails:
             synced_count += 1
@@ -1428,7 +1445,8 @@ def sync_group_to_identity_center(group):
             except identitystore_client.exceptions.ConflictException:
                 synced_count += 1
         else:
-            logger.info("User %s not in Identity Center (not SCIM-provisioned) — skipping", email)
+            logger.warning("User %s not in Identity Center (not SCIM-provisioned) — skipping", email)
+            not_provisioned.append(email)
 
     # Remove members no longer in the Google group
     desired = set(google_members)
@@ -1443,6 +1461,8 @@ def sync_group_to_identity_center(group):
 
     # Assign permission set (if specified)
     result = {"synced": True, "group": group_name, "member_count": synced_count}
+    if not_provisioned:
+        result["not_in_identity_center"] = sorted(not_provisioned)
     if permission_set_name and SSO_INSTANCE_ARN:
         result["permission_set"] = _assign_permission_set(group_id, permission_set_name)
 
@@ -1652,7 +1672,8 @@ def _guardrails_state(policy_name):
     try:
         tags = {t["Key"]: t["Value"] for t in iam_client.list_policy_tags(PolicyArn=arn)["Tags"]}
     except iam_client.exceptions.NoSuchEntityException:
-        return "pending: policy not created yet (platform CI creates it for registry teams)"
+        return ("pending: policy not created yet (platform CI creates it for registry "
+                "teams, then grants access after its apply)")
     if tags.get("managed-by") != "terraform" or tags.get("repo") != f"{GITHUB_ORG}/platform":
         return "refused: policy exists but was not created by platform Terraform"
     return "ok"
@@ -1724,6 +1745,108 @@ def _assign_permission_set(group_id, permission_set_name):
         return {"skipped": True, "reason": f"permission set '{permission_set_name}' not found"}
 
     return _create_account_assignment(ps_arn, group_id, permission_set_name)
+
+
+# ---------------------------------------------------------------------------
+# Team AWS access — finish permission sets once platform CI made guardrails
+# ---------------------------------------------------------------------------
+
+TEAM_GROUP_PREFIX = "team-"
+
+
+def _team_groups():
+    """{team_name: group_id} for every team-<name> Identity Center group."""
+    teams = {}
+    next_token = None
+    while True:
+        kwargs = {"IdentityStoreId": IDENTITY_STORE_ID}
+        if next_token:
+            kwargs["NextToken"] = next_token
+        resp = identitystore_client.list_groups(**kwargs)
+        for g in resp.get("Groups", []):
+            name = g.get("DisplayName", "")
+            team = name[len(TEAM_GROUP_PREFIX):]
+            if name.startswith(TEAM_GROUP_PREFIX) and _validate_team_name(team):
+                teams[team] = g["GroupId"]
+        next_token = resp.get("NextToken")
+        if not next_token:
+            break
+    return teams
+
+
+def _sync_one_team_access(team_name, group_id):
+    """Attach guardrails, set the inline policy and assign the team's permission
+    set. Teams without a platform-made guardrails policy are left untouched."""
+    state = _guardrails_state(f"{PROJECT}-team-{team_name}-guardrails")
+    if state != "ok":
+        return {"permission_set": f"{PROJECT}-team-{team_name}", "guardrails": state}
+    return _ensure_team_permission_set(team_name, group_id)
+
+
+def handle_sync_team_access(event):
+    """Handle the sync_team_access action — queued by platform CI after apply.
+
+    A new team's guardrails policy only exists once platform CI applies on
+    teams-changed, which runs after the registry's team sync, so that sync
+    stops at "guardrails pending". This finishes the job for every team-*
+    Identity Center group (or the teams in event["teams"]): idempotent, it
+    also rolls inline policy changes out to existing teams. Posts to Slack
+    only when access was newly granted or something failed.
+    """
+    if not (IDENTITY_STORE_ID and SSO_INSTANCE_ARN and ACCOUNT_ID):
+        return {"statusCode": 200, "body": "Identity Center not configured"}
+
+    groups = _team_groups()
+    wanted = event.get("teams")
+    if wanted:
+        groups = {t: g for t, g in groups.items() if t in set(wanted)}
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=GROUP_SYNC_WORKERS) as executor:
+        futures = {
+            executor.submit(_sync_one_team_access, team, group_id): team
+            for team, group_id in groups.items()
+        }
+        for future in as_completed(futures):
+            team = futures[future]
+            try:
+                results[team] = future.result()
+            except Exception as e:
+                logger.error("Team access sync failed for %s: %s", team, e)
+                results[team] = {"error": str(e)[:200]}
+
+    def _noteworthy(r):
+        provisioned = r.get("provisioned") or {}
+        return bool(
+            r.get("error")
+            or (r.get("assigned") and not r.get("already_existed"))
+            or (isinstance(provisioned, dict) and provisioned.get("status") == "FAILED")
+        )
+
+    changed = {
+        team: {"aws_access": _access_line(r)}
+        for team, r in sorted(results.items()) if _noteworthy(r)
+    }
+    if changed:
+        try:
+            notify_slack(changed, ci_context=event.get("ci_context"))
+        except Exception as e:
+            logger.error("Slack notification failed: %s", e)
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps({"synced": sorted(results), "results": results}, default=str),
+    }
+
+
+def _access_line(result):
+    """Shape a permission-set result for _result_line."""
+    provisioned = result.get("provisioned") or {}
+    if result.get("error"):
+        return {"error": result["error"]}
+    if isinstance(provisioned, dict) and provisioned.get("status") == "FAILED":
+        return {"error": f"provisioning failed: {provisioned.get('reason', '')}"}
+    return {"synced": True, "group": result.get("permission_set", "")}
 
 
 def _sync_hero_account(hero, access_token):
@@ -2321,7 +2444,55 @@ def _result_line(provider, outcome):
             parts.append(f":warning: group settings: {settings['error'][:150]}")
     if outcome.get("skipped_external"):
         parts.append(f":warning: not added (not @java.no): {', '.join(outcome['skipped_external'])}")
+    if outcome.get("not_in_identity_center"):
+        parts.append(
+            f":warning: no AWS access, not in Identity Center: {', '.join(outcome['not_in_identity_center'])}"
+        )
+    ps = outcome.get("permission_set")
+    if isinstance(ps, dict):
+        if ps.get("guardrails"):
+            parts.append(f":hourglass_flowing_sand: AWS access {ps['guardrails']}")
+        elif ps.get("error"):
+            parts.append(f":warning: AWS access: {ps['error'][:150]}")
     return " ".join(parts)
+
+
+NOT_IN_IDENTITY_CENTER_HELP = (
+    "Google only provisions users the AWS IAM Identity Center app is turned on for. "
+    "In Google Admin, open Apps > Web and mobile apps > the AWS app > User access and turn "
+    "it on for them (or their OU/group); auto-provisioning then creates them in Identity "
+    "Center and the next registry sync adds them to their groups."
+)
+
+
+def _not_in_identity_center(results):
+    """{email: [group, ...]} for members the IC sync couldn't add."""
+    missing = {}
+    for name, result in results.items():
+        if not isinstance(result, dict):
+            continue
+        outcome = result.get("identity_center")
+        if not isinstance(outcome, dict):
+            continue
+        group = outcome.get("group", name)
+        for email in outcome.get("not_in_identity_center", []):
+            missing.setdefault(email, []).append(group)
+    return missing
+
+
+def _not_in_identity_center_block(results):
+    """Slack section listing everyone without AWS access, or None."""
+    missing = _not_in_identity_center(results)
+    if not missing:
+        return None
+    lines = [f"• {email} ({', '.join(sorted(groups))})" for email, groups in sorted(missing.items())]
+    text = (
+        f":warning: *{len(missing)} member(s) have no AWS access: not in Identity Center*\n"
+        + "\n".join(lines[:40])
+        + ("\n…" if len(lines) > 40 else "")
+        + f"\n{NOT_IN_IDENTITY_CENTER_HELP}"
+    )
+    return {"type": "section", "text": {"type": "mrkdwn", "text": text[:2900]}}
 
 
 def _status_cell(status):
@@ -2490,6 +2661,10 @@ def notify_slack(results, ci_context=None):
             }
         )
 
+    missing_block = _not_in_identity_center_block(results)
+    if missing_block:
+        blocks.append(missing_block)
+
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     blocks.extend(
         [
@@ -2536,6 +2711,8 @@ def handler(event, context):
         return handle_sync_groups(payload)
     if payload.get("action") == "sync_atlassian":
         return handle_sync_atlassian(payload)
+    if payload.get("action") == "sync_team_access":
+        return handle_sync_team_access(payload)
 
     teams = parse_team_payload(event)
     if not teams:
