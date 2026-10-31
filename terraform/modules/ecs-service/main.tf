@@ -82,7 +82,7 @@ resource "aws_ecs_service" "this" {
   name            = "${var.team}-${var.name}"
   cluster         = var.cluster_id
   task_definition = aws_ecs_task_definition.this.arn
-  desired_count   = var.desired_count
+  desired_count   = local.budget_suspended ? 0 : var.desired_count
   launch_type     = "FARGATE"
 
   network_configuration {

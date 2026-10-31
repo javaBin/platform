@@ -170,7 +170,7 @@ terraform/state/
 | `team-provisioner` | Syncs Google Groups, GitHub teams, AWS Budgets from registry team YAML; Atlassian groups from `groups/atlassian.yaml` |
 | `securityhub-summary` | Weekly Security Hub findings summary (Monday 08:00 UTC) |
 | `password-set` | Self-service password-set for new hero accounts (ALB only: password.javazone.no) |
-| `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget |
+| `budget-enforcer` | Suspends a team over 200% of budget: SSM marker, ECS to zero, RDS stopped; reconcile every 6 h re-applies it and lifts it when spend is back under 200% |
 | `resource-tagger` | EventBridge-triggered, auto-tags created-by + commit on new resources |
 | `ci-broker` | Verifies the job's GitHub OIDC token (repo from signed claims), checks repo ∈ app.yaml team, vends short-lived team role credentials |
 | `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` and `routing.login` (SSM request → client + credentials + allowed groups) |
@@ -243,7 +243,8 @@ Scheduled:
 EventBridge (Create/Run) ──► compliance-reporter (report to Slack, no auto-fix)
   Hourly             ──► override-cleanup (delete stale SSM override tokens)
 Registry merge ──► team-provisioner (Google/GitHub/Budget/Cognito/Identity Center sync + member provisioning + access group sync)
-AWS Budgets (200%) ──► budget-enforcer Lambda ──► ECS scale-to-zero + #javabin-cost-alerts
+AWS Budgets (200%) ──► budget-enforcer Lambda ──► suspension marker + ECS scale-to-zero + RDS stop + #javabin-cost-alerts
+  Every 6 hours      ──► budget-enforcer reconcile (keep suspensions in force, lift when spend < 200%)
 EventBridge (Create/Run) ──► resource-tagger Lambda ──► Tag created-by + commit
 ```
 
@@ -272,6 +273,7 @@ All parameters are in `eu-central-1`. Use `--profile javabin --region eu-central
 | `/javabin/apps/{team}/{app}/network` | String | app.yaml `calls:`/`provides:` request (written by app TF, read by app-peers-sync) |
 | `/javabin/apps/{team}/{app}/peer-{t}-{a}-{url,scopes}`, `m2m-client-{id,secret}` | String / SecureString | Written by app-peers-sync, read by ECS execution role |
 | `/javabin/apps/{team}/{app}/peers-status` | String | Written by app-peers-sync: state of the app's calls and consumers |
+| `/javabin/budget-suspensions/{team}` | String (JSON) | Written/deleted by budget-enforcer; read by the ecs-service module (plans `desired_count=0` while it exists) |
 
 ## GCP Connection
 

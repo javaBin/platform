@@ -18,7 +18,7 @@ Lambda posts to **#javabin-cost-alerts**.
 | Account budget `javabin-account-monthly` | `terraform/platform/cost-analytics/main.tf` | Forecast for the month > 100%; actual > 100%; actual > 150% |
 | Cost Anomaly Detection `javabin-anomaly-monitor` | `terraform/platform/monitoring/main.tf` | Per-service anomaly with total impact >= $10 (IMMEDIATE) |
 | Team budgets `javabin-team-<team>` | `team-provisioner` Lambda (from registry `budget_nok`, default 500 NOK) | Actual > 80% (Slack); actual > 200% triggers `budget-enforcer` |
-| `budget-enforcer` | `terraform/lambda-src/budget_enforcer` | Scales the team's ECS services to `desired_count=0` (nothing is deleted) |
+| `budget-enforcer` | `terraform/lambda-src/budget_enforcer` | Suspends the team: ECS services to `desired_count=0`, RDS instances stopped (nothing is deleted). See [Budget suspension](#budget-suspension) |
 | `daily-cost-check` / `cost-report` | `terraform/lambda-src/` | Daily spike check; weekly breakdown every Monday |
 
 The account budget limit is `account_budget_usd` in `terraform/platform/main.tf`
@@ -34,6 +34,51 @@ subscribed to. The budget's FORECASTED notification is the early warning.
 A per-team anomaly monitor was considered and skipped: a tag-based
 `aws_ce_anomaly_monitor` needs every team value listed explicitly and is
 replaced whenever the list changes, and per-team budgets already cover it.
+
+## Budget suspension
+
+When a team's actual spend passes 200% of its monthly budget, AWS Budgets
+notifies `javabin-budget-enforcement` and `budget-enforcer`:
+
+1. Writes the marker `/javabin/budget-suspensions/{team}` (JSON: when, which
+   budget, each service's previous desired count, the RDS instances it stopped).
+2. Sets every ECS service tagged `team={team}` in `javabin-platform` to
+   `desired_count=0`.
+3. Stops every RDS instance tagged `team={team}` that is `available` (Aurora
+   members and read replicas are skipped; they cannot be stopped this way).
+4. Posts to #javabin-cost-alerts.
+
+**The suspension sticks.** The `ecs-service` module reads the marker and plans
+`desired_count = 0` while it exists, so the team's next `terraform apply` or
+deploy does not scale the services back up (`ecs-deploy` only forces a new
+deployment; it never changes the count). Every 6 hours a reconcile run re-zeros
+services scaled up by hand and stops the databases again: RDS starts a stopped
+instance by itself after 7 days, and reconcile catches that within 6 hours.
+Terraform changes to a stopped RDS instance fail until it is started.
+
+**How a team gets unsuspended** (any of):
+
+- **Raise the budget.** Raise `budget_nok` in the team's registry YAML. Once
+  team-provisioner has updated the budget, the next reconcile sees spend under
+  200% of the new limit and lifts the suspension (within 6 hours).
+- **Wait for the next month.** Budgets reset on the 1st (UTC); the first
+  reconcile of the month lifts every suspension.
+- **Lift it now.** A platform admin invokes the Lambda:
+  `aws lambda invoke --function-name javabin-budget-enforcer --payload '{"action":"lift","team":"<team>"}' --cli-binary-format raw-in-base64-out /dev/stdout`.
+  AWS Budgets notifies once per threshold per month, so a manual lift holds
+  until next month even if spend stays above 200%.
+
+Lifting deletes the marker, sets each service the enforcer scaled back to its
+previous desired count (if it is still at 0), starts the RDS instances it
+stopped, and posts to #javabin-cost-alerts. Services created during the
+suspension come up on their next deploy. If the team's budget cannot be read,
+reconcile keeps the suspension rather than lifting it.
+
+The marker is not tamper-proof: it is untagged so that every team's Terraform
+can read it, which also means a team role could delete it. The developer
+boundary is ~45 bytes under AWS's 6,144-character limit, so a Deny for the
+`budget-suspensions` path does not fit yet. Deleting the marker stops
+reconcile from enforcing the suspension and shows in CloudTrail.
 
 ## Attribution: cost-allocation tags
 

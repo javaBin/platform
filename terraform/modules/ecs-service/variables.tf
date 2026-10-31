@@ -113,3 +113,9 @@ variable "readonly_root_filesystem" {
   type        = bool
   default     = true
 }
+
+variable "budget_suspension_path" {
+  description = "SSM path of budget suspension markers ({path}/{team}, written by the budget-enforcer Lambda). While the team's marker exists the service is planned at desired_count=0."
+  type        = string
+  default     = "/javabin/budget-suspensions"
+}

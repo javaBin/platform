@@ -70,6 +70,8 @@ Supports `environment` (map) and `secrets` (map of name => ARN) for container co
 
 `service_registry_arns` (list, default `[]`) registers the tasks in Cloud Map (from `app-network`).
 
+**Budget suspension:** while the SSM marker `{budget_suspension_path}/{team}` exists (default path `/javabin/budget-suspensions`, written by the `budget-enforcer` Lambda), the service is planned at `desired_count = 0` whatever `desired_count` says, so an apply does not undo the suspension. See [cost-management.md](cost-management.md#budget-suspension).
+
 **Outputs:** `service_name`, `task_definition_arn`, `log_group_name`
 
 ## service-bucket
