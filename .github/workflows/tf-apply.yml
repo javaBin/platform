@@ -28,7 +28,7 @@ on:
         type: string
         default: "terraform"
       team:
-        description: "Team from app.yaml (the gate verifies the repo belongs to it)"
+        description: "Team tf-plan used (tf-plan's team output; the gate verifies the repo belongs to it)"
         type: string
         default: ""
 
@@ -40,6 +40,10 @@ jobs:
   apply:
     name: Terraform Apply
     runs-on: ubuntu-latest
+    # One apply per repo state at a time, also for callers outside javabin.yml.
+    concurrency:
+      group: javabin-tf-apply-${{ github.repository }}-${{ inputs.tf_root }}
+      cancel-in-progress: false
     env:
       PLAN_BUCKET: javabin-ci-plan-artifacts-${{ inputs.aws_account_id }}
     steps:
@@ -86,13 +90,30 @@ jobs:
         run: sh .platform/scripts/invoke-apply-gate.sh "${{ inputs.plan_key }}" "${{ github.event.repository.name }}" "${{ inputs.team }}"
 
       # Step 4: Apply with credentials from the gate Lambda
+      # Same backend.tf/providers.tf as tf-plan generated for repos that bring
+      # their own Terraform without them.
+      - name: Ensure Terraform boilerplate
+        env:
+          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          AWS_REGION: ${{ inputs.aws_region || 'eu-central-1' }}
+          TEAM: ${{ inputs.team }}
+        run: sh .platform/scripts/ensure-tf-boilerplate.sh "${{ inputs.tf_root }}"
+
+      # The saved plan carries the dependency lock file tf-plan's init wrote,
+      # and it is covered by the SHA256 check above. Restoring it makes init
+      # install exactly the provider versions the plan was made with, even if
+      # a newer provider was released in between.
+      - name: Restore provider lock file from plan
+        working-directory: ${{ inputs.tf_root }}
+        run: unzip -o -q tfplan .terraform.lock.hcl
+
       - name: Terraform Init
         working-directory: ${{ inputs.tf_root }}
         run: terraform init -input=false
 
       - name: Terraform Apply
         working-directory: ${{ inputs.tf_root }}
-        run: terraform apply -auto-approve tfplan
+        run: terraform apply -auto-approve -lock-timeout=5m tfplan
 
       # Non-blocking: checks Cognito sign-in right after apply (sync errors,
       # redirect_mismatch, logout URL mismatch, unknown auth.groups). Waits

@@ -11,6 +11,16 @@ data "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
 }
 
+# GitHub's immutable OIDC subject replaces "<org>/<repo>" with
+# "<org>@<org_id>/<repo>@<repo_id>". New repos get it by default and can't
+# opt out; existing repos can opt in. The infra roles below accept both forms,
+# with the immutable one pinned to the exact repo ID so a renamed or
+# recreated repo with the same name can't match.
+locals {
+  platform_immutable_repo = "${var.github_org}@${var.github_org_id}/platform@${var.github_platform_repo_id}"
+  registry_immutable_repo = "${var.github_org}@${var.github_org_id}/registry@${var.github_registry_repo_id}"
+}
+
 ################################################################################
 # Permission Boundary Reference
 #
@@ -22,7 +32,8 @@ data "aws_iam_openid_connect_provider" "github" {
 ################################################################################
 # 1a. javabin-ci-infra-plan — Platform repo plan + review (read-only)
 #
-# Trust: GitHub OIDC, repo:javaBin/platform on ANY ref (PRs need plan too).
+# Trust: GitHub OIDC, repo:javaBin/platform on ANY ref (PRs need plan too),
+# legacy or immutable (repo:javaBin@95047/platform@<repo_id>) subject.
 # Permissions: ReadOnlyAccess + specific writes for plan operations:
 #   - S3: upload plan artifacts
 #   - DynamoDB: Terraform state locking
@@ -50,8 +61,12 @@ resource "aws_iam_role" "ci_infra_plan" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            # Any ref — PRs and main both need plan
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/platform:*"
+            # Any ref — PRs and main both need plan. The second form is
+            # GitHub's immutable subject, pinned to the platform repo ID.
+            "token.actions.githubusercontent.com:sub" = [
+              "repo:${var.github_org}/platform:*",
+              "repo:${local.platform_immutable_repo}:*",
+            ]
           }
         }
       }
@@ -179,6 +194,8 @@ resource "aws_iam_role" "ci_infra" {
             "token.actions.githubusercontent.com:sub" = [
               "repo:${var.github_org}/platform:ref:refs/heads/main",
               "repo:${var.github_org}/platform:environment:production",
+              "repo:${local.platform_immutable_repo}:ref:refs/heads/main",
+              "repo:${local.platform_immutable_repo}:environment:production",
             ]
             # The job_workflow_ref pin is what ties this role to main: only
             # platform-ci.yml as committed on main can assume it, whatever
@@ -682,11 +699,40 @@ resource "aws_iam_role_policy" "ci_deploy_ecs" {
         Action = [
           "ecs:UpdateService",
           "ecs:DescribeServices",
+          # ecs-deploy reads the javabin:desired-count tag and copies the
+          # task definition's tags; DescribeTasks explains a failed rollout
+          "ecs:ListTagsForResource",
+          "ecs:DescribeTasks",
         ]
         Resource = "*"
         Condition = {
           StringEquals = {
             "aws:ResourceTag/team" = each.key
+          }
+        }
+      },
+      {
+        # The stopped tasks of a failed rollout (ListTasks has no tag condition)
+        Sid      = "EcsListTasks"
+        Effect   = "Allow"
+        Action   = ["ecs:ListTasks"]
+        Resource = "*"
+        Condition = {
+          ArnEquals = {
+            "ecs:cluster" = "arn:aws:ecs:${var.region}:${var.aws_account_id}:cluster/${var.project}-platform"
+          }
+        }
+      },
+      {
+        # Tags on the task definition revisions ecs-deploy registers (tag
+        # resource authorization is on, so tag-on-create needs TagResource)
+        Sid      = "EcsTagOnRegister"
+        Effect   = "Allow"
+        Action   = ["ecs:TagResource"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "ecs:CreateAction" = "RegisterTaskDefinition"
           }
         }
       },
@@ -820,7 +866,8 @@ resource "aws_iam_role_policy" "ci_override_approver" {
 ################################################################################
 # 5. javabin-ci-registry — Registry repo team provisioning
 #
-# Trust: GitHub OIDC pinned to javaBin/registry on main branch.
+# Trust: GitHub OIDC pinned to javaBin/registry on main branch (legacy or
+# immutable subject, the latter pinned to the registry repo ID).
 # Permissions: ONLY lambda:InvokeFunction on the team-provisioner Lambda.
 # This lets the registry invoke the Lambda directly on merge, without
 # dispatching through the platform repo.
@@ -844,7 +891,10 @@ resource "aws_iam_role" "ci_registry" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/registry:ref:refs/heads/main"
+            "token.actions.githubusercontent.com:sub" = [
+              "repo:${var.github_org}/registry:ref:refs/heads/main",
+              "repo:${local.registry_immutable_repo}:ref:refs/heads/main",
+            ]
           }
         }
       }

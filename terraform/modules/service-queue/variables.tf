@@ -1,5 +1,5 @@
 variable "name" {
-  description = "Queue purpose (e.g. 'tasks', 'events'). Queue name: {team}-{name}"
+  description = "Queue purpose (e.g. 'tasks', 'events'). Queue name: {team}-{service}-{name}"
   type        = string
 }
 
@@ -9,7 +9,7 @@ variable "team" {
 }
 
 variable "service" {
-  description = "Service tag value (e.g. 'moresleep')"
+  description = "App name (e.g. 'moresleep'), part of the resource name and the service tag"
   type        = string
 }
 

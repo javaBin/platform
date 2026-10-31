@@ -128,10 +128,10 @@ terraform/state/
 | `terraform/modules/ecr-repo/` | ECR repository with lifecycle policy |
 | `terraform/modules/service-routing/` | ALB target group + listener rule + DNS; optional per-path ALB sign-in (`routing.login`) |
 | `terraform/modules/service-role/` | ECS task IAM role with composable policies |
-| `terraform/modules/ecs-service/` | ECS Fargate service |
+| `terraform/modules/ecs-service/` | ECS Fargate service (created with 0 tasks; ecs-deploy owns image + desired count) |
 | `terraform/modules/service-bucket/` | S3 bucket with IAM policy output |
 | `terraform/modules/service-database/` | DynamoDB table with IAM policy output |
-| `terraform/modules/service-rds/` | RDS PostgreSQL instance with generated master password |
+| `terraform/modules/service-rds/` | RDS PostgreSQL instance `{team}-{app}-{name}` with generated master password (password auth; URL/user/password injected via `env`/`jdbc_env`/`user_env`/`password_env`) |
 | `terraform/modules/service-rds-adopted/` | Existing RDS instance imported as-is (`databases[].adopt`); manages tags and deletion protection only |
 | `terraform/modules/service-secret/` | SSM Parameter Store SecureString with IAM policy output |
 | `terraform/modules/service-queue/` | SQS queue + DLQ with IAM policy output |
@@ -151,7 +151,7 @@ terraform/state/
   tf-plan.yml          Terraform plan + S3 artifact upload
   tf-apply.yml         SHA verify + apply via project role
   eb-deploy.yml        Elastic Beanstalk deploy (transition)
-  ecs-deploy.yml       ECS task definition update
+  ecs-deploy.yml       Register revision pinned to the image digest, roll the service, check rolloutState
   approve-override.yml Risk gate override (board members)
   expand-terraform.yml Validate app.yaml, generate terraform/, commit it
 ```
@@ -170,7 +170,7 @@ terraform/state/
 | `team-provisioner` | Syncs Google Groups, GitHub teams, AWS Budgets from registry team YAML; Atlassian groups from `groups/atlassian.yaml` |
 | `securityhub-summary` | Weekly Security Hub findings summary (Monday 08:00 UTC) |
 | `password-set` | Self-service password-set for new hero accounts (ALB only: password.javazone.no) |
-| `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget |
+| `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget and sets `javabin:desired-count=0` so ecs-deploy keeps them at 0 until a tf-apply |
 | `resource-tagger` | EventBridge-triggered, auto-tags created-by + commit on new resources |
 | `ci-broker` | Verifies the job's GitHub OIDC token (repo from signed claims), checks repo ∈ app.yaml team, vends short-lived team role credentials |
 | `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` and `routing.login` (SSM request → client + credentials + allowed groups) |
@@ -198,10 +198,15 @@ terraform/state/
 | `scripts/notify-high-risk.sh` | CI: blocked-apply alert (risk HIGH or review FAILED) with plan key + override link (via `slack_post.py`) |
 | `scripts/slack_post.py` | CI: builds escaped, size-limited Block Kit, checks Slack's reply, falls back to plain text (tests: `scripts/tests/`) |
 | `scripts/invoke-apply-gate.sh` | CI: invoke gate Lambda for apply credentials |
+| `scripts/ecs-deploy.sh` | CI: register a task definition revision pinned to the image digest, roll the service, fail on anything but rolloutState COMPLETED (tests: `scripts/tests/`) |
 | `scripts/run-plan.sh` | CI: terraform plan with exit code handling |
 | `scripts/upload-plan.sh` | CI: upload plan artifact to S3 |
+| `scripts/commit-generated-tf.sh` | CI (expand): commit + push generated Terraform; a rejected push fails with the reason and fix (tests: `scripts/tests/`) |
+| `scripts/ensure-tf-boilerplate.sh` | CI (app tf-plan + tf-apply): backend.tf/providers.tf for repos that bring their own Terraform, from the broker-verified `TEAM` (tests: `scripts/tests/`) |
+| `scripts/check-aws-access.sh` | CI (app tf-plan): skips AWS steps with a notice when the run has no OIDC token (fork/Dependabot PRs) (tests: `scripts/tests/`) |
 | `scripts/auth-doctor.py` | CI (after app apply) / local: checks an app's Cognito sign-in end to end from auth-status + HTTP probes (tests: `scripts/tests/`) |
 | `scripts/reconcile-app-auth.sh` | CI (after platform apply): queue an app-auth-sync reconcile |
+| `scripts/sync-team-access.sh` | CI (after platform apply): queue team-provisioner `sync_team_access` (switches teams from read-only to full access once their guardrails policy exists; rolls inline policy changes out) |
 
 ## Naming
 
@@ -242,7 +247,9 @@ Scheduled:
 
 EventBridge (Create/Run) ──► compliance-reporter (report to Slack, no auto-fix)
   Hourly             ──► override-cleanup (delete stale SSM override tokens)
-Registry merge ──► team-provisioner (Google/GitHub/Budget/Cognito/Identity Center sync + member provisioning + access group sync)
+  Every 3 hours      ──► team-provisioner sync_access_members (team members into javabin-developer@; Identity Center group memberships for members Google SCIM has provisioned since)
+Registry merge ──► team-provisioner (Google/GitHub/Budget/Cognito/Identity Center sync + member provisioning + access group sync; team and kodesmia members become direct members of javabin-developer@ so Google SCIM provisions them)
+Platform apply ──► team-provisioner sync_team_access (team permission sets once guardrails exist; #javabin-infra-alerts on new access or failure)
 AWS Budgets (200%) ──► budget-enforcer Lambda ──► ECS scale-to-zero + #javabin-cost-alerts
 EventBridge (Create/Run) ──► resource-tagger Lambda ──► Tag created-by + commit
 ```
@@ -325,6 +332,7 @@ Team group OWNERs are admin-managed and never removed by the sync; non-@java.no 
 ### Known Issues
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
 - **Cognito**: pools deployed; internal pool's `GoogleSAML` IdP was created outside Terraform. It is replaced by the Terraform-managed Google OIDC IdP at cutover (docs/cognito-google-setup.md), then deleted
+- **Google SCIM provisions only direct members** of `drift@`, `styret@` and `javabin-developer@java.no` to Identity Center; it does not expand nested groups. Nobody gets an Identity Center user (and so no AWS access, team role included) unless they are a direct member of one of those. The team provisioner adds team members and (via `flatten: true` in the registry's `groups/access.yaml`) kodesmia members to `javabin-developer@` one by one; SCIM creates the user later, and the 3-hourly `sync_access_members` run adds them to their Identity Center groups. Don't create Identity Center users through the API: they'd have no link to Google (see `docs/lambda-functions.md`).
 - **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) as their permissions boundary instead. It must stay a boundary: its baseline `Allow *` attached as a policy grants everything its Denies miss (every untagged resource). A team with no guardrails policy (`platform`, or a new team before platform CI) gets read-only access only. The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
 - **App databases share one network path** (fixed by `app-network`): service-rds now allows ingress only from the app's own `{team}-{app}-tasks` SG; each app moves off the shared ECS tasks SG on its next pipeline run
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
