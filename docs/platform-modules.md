@@ -57,7 +57,8 @@ GitHub OIDC provider (data source), CI roles, permission boundary, ECS execution
 | `javabin-ci-deploy-{team}` | CI broker Lambda (not OIDC) | ECR push, ECS deploy |
 | `javabin-ci-override-approver` | Board members, pinned to `approve-override.yml` | SSM override tokens |
 | `javabin-ci-registry` | Registry repo | Team provisioning dispatch |
-| `javabin-ecs-execution` | ECS tasks | Pull images, write logs, read secrets |
+| `javabin-ecs-exec-{team}` | ECS tasks | Pull images, write logs, read the team's own secrets (`/javabin/apps/{team}/*`). One per registry team |
+| `javabin-ecs-execution` | ECS tasks | Deprecated shared role: image pull and logs only, no secrets. Teams can no longer pass it |
 
 **Key design:** `job_workflow_ref` condition prevents app repos from writing rogue workflows.
 
@@ -115,5 +116,4 @@ Team SSO roles' `CredentialAccess:IAMUser/AnomalousBehavior` on `ssm:GetParamete
 
 ## identity
 
-**Not yet implemented.** Will contain IAM Identity Center + Cognito user pools.
-Blocked on Google Admin access for SAML federation.
+Cognito user pools (internal + external) and the `auth-claims` trigger. The internal pool signs in through Google OIDC (provider `Google`, from the `internal_identity_providers` variable); the hand-made `GoogleSAML` provider is still in the pool but no longer offered on app clients. See [cognito-google-setup.md](cognito-google-setup.md). IAM Identity Center is in `terraform/org/`, not here.

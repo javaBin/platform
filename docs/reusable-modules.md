@@ -16,7 +16,7 @@ source = "git::https://github.com/javaBin/platform.git//terraform/modules/{name}
 | Security group | `javabin-ecs-tasks-sg` |
 | ALB | `javabin-alb` |
 | ECS cluster | `javabin-platform` |
-| Execution role | `javabin-ecs-execution` |
+| Execution role | `javabin-ecs-exec-{team}` (from the `team` input; reads only that team's secrets) |
 | Route53 zones | `javazone.no` (`route53_zone_id`); `javazone.no`, `java.no`, `javabin.no` (`route53_zone_ids` map) |
 
 **Key outputs:** `vpc_id`, `private_subnet_ids`, `ecs_cluster_id`, `https_listener_arn`, `execution_role_arn`, `route53_zone_id`, `route53_zone_ids`

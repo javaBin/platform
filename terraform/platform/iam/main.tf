@@ -948,10 +948,10 @@ resource "aws_iam_role_policy" "ci_apply_gate" {
 }
 
 ################################################################################
-# ECS Execution Role — pulls images, writes logs, reads secrets
+# ECS Execution Role (shared, deprecated) — pulls images, writes logs
 #
-# This is the shared execution role for all ECS tasks on the platform.
-# Individual task roles are created per-app via the service-role module.
+# Tasks now use the per-team execution roles below. Individual task roles are
+# created per-app via the service-role module.
 ################################################################################
 
 # Deprecated shared execution role. Kept (image pull + logs only, no secrets)

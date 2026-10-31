@@ -18,7 +18,8 @@
 #
 # Those parameters are owned by the Lambda, not by this Terraform. Their ARNs
 # are deterministic, so the ECS task definition can reference them up front;
-# the shared execution role reads /<project>/apps/* at task launch.
+# the team's execution role (<project>-ecs-exec-<team>, which can read only
+# /<project>/apps/<team>/*) resolves them at task launch.
 #
 # With `slot` set (e.g. "login-1", used by service-routing for ALB sign-in),
 # everything moves one level down — /<project>/apps/<team>/<app>/<slot>/auth —
