@@ -1607,6 +1607,17 @@ def _ensure_team_permission_set(team_name, group_id):
                 "Condition": {"BoolIfExists": {"ssm:Overwrite": "false"}},
             },
             {
+                # ECS Exec into the team's tasks (apps with compute.exec).
+                # ExecuteCommand is authorized against the cluster and the
+                # task: the shared cluster is allowed here, the task only by
+                # AllowTeamResources (its propagated team tag), so another
+                # team's tasks stay out of reach.
+                "Sid": "AllowExecOnPlatformCluster",
+                "Effect": "Allow",
+                "Action": "ecs:ExecuteCommand",
+                "Resource": f"arn:aws:ecs:*:{ACCOUNT_ID}:cluster/{PROJECT}-platform",
+            },
+            {
                 "Sid": "AllowUntaggedReads",
                 "Effect": "Allow",
                 "Action": [

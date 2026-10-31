@@ -103,13 +103,42 @@ variable "region" {
 }
 
 variable "container_user" {
-  description = "User to run the container as (non-root for ECS.20 compliance)"
+  description = "User to run the app container as: user, uid, user:group or uid:gid. Non-root (ECS.20)."
   type        = string
   default     = "1000"
+
+  validation {
+    condition     = var.container_user != "" && !contains(["0", "root"], split(":", var.container_user)[0])
+    error_message = "container_user must be a non-root user (not 0 or root)."
+  }
+}
+
+variable "tmp_init_image" {
+  description = "Image of the init container that makes /tmp writable (needs chmod). Pinned by digest; pulled through the NAT gateway."
+  type        = string
+  # busybox 1.37 (multi-arch index)
+  default = "public.ecr.aws/docker/library/busybox@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec"
+}
+
+variable "health_check_grace_period_seconds" {
+  description = "Seconds ECS ignores failing load balancer health checks on a new task. Ignored without a target group."
+  type        = number
+  default     = 120
+
+  validation {
+    condition     = var.health_check_grace_period_seconds >= 0 && var.health_check_grace_period_seconds <= 3600 && floor(var.health_check_grace_period_seconds) == var.health_check_grace_period_seconds
+    error_message = "health_check_grace_period_seconds must be a whole number of seconds between 0 and 3600."
+  }
+}
+
+variable "enable_execute_command" {
+  description = "Enable ECS Exec (aws ecs execute-command). The task role must allow ssmmessages:*Channel."
+  type        = bool
+  default     = false
 }
 
 variable "readonly_root_filesystem" {
-  description = "Mount the container root filesystem read-only (ECS.5). /tmp is always writable."
+  description = "Mount the container root filesystem read-only (ECS.5). /tmp is always writable (mode 1777)."
   type        = bool
   default     = true
 }
