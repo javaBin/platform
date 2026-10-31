@@ -2,11 +2,12 @@
 # S3 Bucket — standard secure config for service data
 ################################################################################
 
+# {team}-{service}-{name}: two apps in one team can both have a "data" bucket.
 resource "aws_s3_bucket" "this" {
-  bucket = "${var.team}-${var.name}-${var.aws_account_id}"
+  bucket = "${var.team}-${var.service}-${var.name}-${var.aws_account_id}"
 
   tags = {
-    Name    = "${var.team}-${var.name}"
+    Name    = "${var.team}-${var.service}-${var.name}"
     service = var.service
   }
 }

@@ -218,7 +218,7 @@ S3 buckets with versioning and encryption.
 ```yaml
 resources:
   buckets:
-    - name: data          # bucket: {team}-{name}-{account_id}
+    - name: data          # bucket: {team}-{app}-{name}-{account_id}
       env: DATA_BUCKET    # env var injected into container
 ```
 
@@ -242,16 +242,31 @@ resources:
       backup_retention_period: 7    # days, RDS only, default: 7
       multi_az: false               # RDS only, default: false
       deletion_protection: true     # RDS only, default: true
-      env: DATABASE_URL             # host:port
+      env: DATABASE_URL             # postgresql://host:5432/main (no credentials)
+      jdbc_env: SPRING_DATASOURCE_URL       # optional, postgres only: jdbc:postgresql://host:5432/main
+      user_env: SPRING_DATASOURCE_USERNAME  # optional, postgres only: master user name
+      password_env: SPRING_DATASOURCE_PASSWORD  # optional, postgres only: password, as an ECS secret
       host_env: DB_HOST             # optional, postgres only: hostname alone
       port_env: DB_PORT             # optional, postgres only: port alone
 ```
 
 DynamoDB and PostgreSQL entries can coexist in the same `databases` list. Entries without `engine` (or with `engine: dynamodb`) use the DynamoDB module. Entries with `engine: postgres` or `engine: postgresql` use the RDS module.
 
-RDS instances generate a master password at creation time, stored in SSM Parameter Store at `/{project}/apps/{name}/db-master-password`. The ECS task role automatically receives IAM policies for `rds-db:connect` and `ssm:GetParameter` on the password parameter.
+Every resource is named after the team, the app and the entry: the DynamoDB table above is `{team}-{app}-sessions` and the RDS instance `{team}-{app}-main`, so two apps in one team can both have a `main` database. A PostgreSQL `name` must start with a letter, and `{team}-{app}-{name}` must be at most 63 characters of letters, digits and single hyphens. The database inside the instance is `name` with `-` replaced by `_`.
 
-`env` gets the endpoint as `host:port`. Apps that read host and port separately use `host_env` and `port_env` (PostgreSQL only, created or adopted).
+RDS instances generate a master password at creation time, stored in SSM Parameter Store at `/javabin/apps/{team}/{app}/{name}/db-master-password`. The app connects with password authentication as the master user (`postgres`); IAM database authentication is not enabled. The task role can read the password parameter (`ssm:GetParameter`).
+
+What each key injects (PostgreSQL):
+
+| Key | Value | How |
+|-----|-------|-----|
+| `env` | `postgresql://{host}:{port}/{database}` (libpq URI: psql, psycopg, node-postgres, pgx) | environment |
+| `jdbc_env` | `jdbc:postgresql://{host}:{port}/{database}` (JDBC, e.g. Spring's `SPRING_DATASOURCE_URL`) | environment |
+| `user_env` | master user name | environment |
+| `password_env` | master password | ECS secret, resolved from SSM when the task starts |
+| `host_env` / `port_env` | hostname / port alone | environment |
+
+Neither URL contains credentials (the generated password has characters that would need URL-encoding), so pass the user and password separately: Spring Boot reads `SPRING_DATASOURCE_USERNAME`/`_PASSWORD`, libpq-based clients read `PGUSER`/`PGPASSWORD`. An adopted database supports only `host_env` and `port_env`.
 
 ##### Adopting an existing PostgreSQL instance
 
@@ -621,15 +636,17 @@ Generated files carry a `# GENERATED FROM app.yaml` marker and are overwritten o
 
 All app resources are prefixed with the team name for ABAC enforcement.
 
+`{name}` is the app name and `{resource}` the `name` of the `resources:` entry. Generation rejects a bucket name that is not lowercase letters, digits and hyphens or makes the bucket name longer than 63 characters, and a queue name that makes the DLQ name longer than 80.
+
 | Resource | Name Pattern |
 |----------|-------------|
 | ECS service | `{team}-{name}` |
 | ECR repo | `{team}-{name}` |
 | ALB target group | `{team}-{name}` (max 32 chars, truncated+hashed if over) |
-| S3 bucket | `{team}-{name}-{account_id}` |
-| DynamoDB table | `{team}-{name}` |
-| SQS queue | `{team}-{name}` |
-| RDS instance | `{team}-{name}` |
+| S3 bucket | `{team}-{name}-{resource}-{account_id}` |
+| DynamoDB table | `{team}-{name}-{resource}` |
+| SQS queue | `{team}-{name}-{resource}` (DLQ `-dlq`) |
+| RDS instance | `{team}-{name}-{resource}`, password `/javabin/apps/{team}/{name}/{resource}/db-master-password` |
 | SSM (secrets) | `/javabin/apps/{team}/{service}/{secret_name}` |
 | IAM task role | `{team}-{name}` |
 | CloudWatch logs | `/ecs/{team}/{name}` |

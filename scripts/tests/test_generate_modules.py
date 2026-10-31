@@ -401,6 +401,64 @@ class LoginTest(unittest.TestCase):
         self.assertRejected([{"paths": ["/a"]}, {"paths": ["/b"]}], "use at least 3", priority=2)
 
 
+POSTGRES = {
+    "name": "cake-redux",
+    "team": "pkom",
+    "resources": {"databases": [{"name": "main", "engine": "postgres", "env": "DATABASE_URL",
+                                 "jdbc_env": "SPRING_DATASOURCE_URL", "user_env": "SPRING_DATASOURCE_USERNAME",
+                                 "password_env": "SPRING_DATASOURCE_PASSWORD"}]},
+}
+
+
+class PerAppResourceTest(unittest.TestCase):
+    def assertRejected(self, app, fragment):
+        with self.assertRaises(gen.AppYamlError) as cm:
+            generate(app)
+        self.assertIn(fragment, str(cm.exception))
+
+    def test_every_resource_module_gets_the_app_name(self):
+        main = generate(FULL)["main.tf"]
+        for mod in ("bucket_uploads", "database_sessions", "rds_main", "queue_notifications"):
+            block = main.split(f'module "{mod}" {{', 1)[1].split("\n}", 1)[0]
+            self.assertRegex(block, r'service\s+= "cake-redux"', mod)
+
+    def test_postgres_urls_user_and_password_are_injected(self):
+        main = generate(POSTGRES)["main.tf"]
+        env = main.split("environment = {", 1)[1].split("}", 1)[0]
+        secrets = main.split("secrets = {", 1)[1].split("}", 1)[0]
+        self.assertRegex(env, r"DATABASE_URL\s+= module.rds_main.url")
+        self.assertRegex(env, r"SPRING_DATASOURCE_URL\s+= module.rds_main.jdbc_url")
+        self.assertRegex(env, r"SPRING_DATASOURCE_USERNAME\s+= module.rds_main.username")
+        self.assertRegex(secrets, r"SPRING_DATASOURCE_PASSWORD\s+= module.rds_main.password_parameter_arn")
+        self.assertNotIn("PASSWORD", env)
+
+    def test_one_variable_for_one_database_value(self):
+        self.assertRejected(with_db(POSTGRES, user_env="DATABASE_URL"), "DATABASE_URL is used for more than one")
+
+    def test_db_variable_cannot_shadow_another_resource(self):
+        app = {**POSTGRES, "resources": {**POSTGRES["resources"],
+                                         "buckets": [{"name": "data", "env": "SPRING_DATASOURCE_USERNAME"}]}}
+        self.assertRejected(app, "SPRING_DATASOURCE_USERNAME is already set by another resource")
+
+    def test_rds_identifier_must_be_valid(self):
+        self.assertRejected(with_db(POSTGRES, name="my_db"), "RDS identifier, here 'pkom-cake-redux-my_db'")
+        self.assertRejected(with_db(POSTGRES, name="db-"), "single hyphens")
+        self.assertRejected(with_db(POSTGRES, name="1db"), "must start with a letter")
+        self.assertRejected(with_db(POSTGRES, name="x" * 48), "at most 63 characters")
+        generate(with_db(POSTGRES, name="x" * 47))  # pkom-cake-redux-xxx... is exactly 63
+
+    def test_bucket_name_must_be_valid(self):
+        bucket = lambda n: {**POSTGRES, "resources": {"buckets": [{"name": n}]}}
+        self.assertRejected(bucket("my_data"), "must be lowercase letters, digits and hyphens")
+        self.assertRejected(bucket("x" * 35), "(it would be 64)")
+        generate(bucket("x" * 34))  # pkom-cake-redux-xxx...-553637109631 is exactly 63
+
+    def test_queue_name_length(self):
+        queue = lambda n: {**POSTGRES, "resources": {"queues": [{"name": n}]}}
+        self.assertRejected(queue("x" * 61), "at most 80 characters")
+        generate(queue("x" * 60))  # pkom-cake-redux-xxx...-dlq is exactly 80
+
+
 class AdoptTest(unittest.TestCase):
     def assertRejected(self, app, fragment):
         with self.assertRaises(gen.AppYamlError) as cm:
@@ -440,8 +498,12 @@ class AdoptTest(unittest.TestCase):
         main = generate(app)["main.tf"]
         self.assertIn("modules/service-rds?ref=main", main)
         self.assertRegex(main, r"PGHOST\s+= module.rds_main.address")
-        self.assertRegex(main, r"DATABASE_URL\s+= module.rds_main.endpoint")
+        self.assertRegex(main, r"DATABASE_URL\s+= module.rds_main.url")
         self.assertNotIn("import {", main)
+
+    def test_adopted_database_keeps_its_own_credentials(self):
+        for key in ("env", "jdbc_env", "user_env", "password_env"):
+            self.assertRejected(with_db(MORESLEEP, **{key: "X"}), f"{key} cannot be set with adopt")
 
     def test_adopt_rejects_fields_mirrored_from_the_live_instance(self):
         for field, value in (("instance_class", "db.t4g.small"), ("allocated_storage", 50),
@@ -453,6 +515,13 @@ class AdoptTest(unittest.TestCase):
         for key in ("host_env", "port_env"):
             app["resources"]["databases"][0].pop(key)
         self.assertRejected(app, "adopt: only supported for engine: postgres")
+
+    def test_db_env_names_are_postgres_only(self):
+        app = with_db(MORESLEEP, engine="dynamodb", hash_key="id")
+        for key in ("host_env", "port_env", "adopt"):
+            app["resources"]["databases"][0].pop(key)
+        for key in ("jdbc_env", "user_env", "password_env"):
+            self.assertRejected(with_db(app, **{key: "X"}), f"{key}: only supported for engine: postgres")
 
     def test_adopt_needs_a_valid_identifier(self):
         self.assertRejected(with_db(MORESLEEP, adopt="db_more sleep"), "not an RDS DB instance identifier")

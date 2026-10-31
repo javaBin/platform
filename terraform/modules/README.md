@@ -21,7 +21,7 @@ module "app" {
 | [ecs-service](ecs-service/) | ECS Fargate service + task def + logs | `service_name` |
 | [service-bucket](service-bucket/) | S3 bucket with standard security config | `bucket_name`, `access_policy_json` |
 | [service-database](service-database/) | DynamoDB table | `table_name`, `access_policy_json` |
-| [service-rds](service-rds/) | RDS PostgreSQL instance | `endpoint`, `address`, `port` |
+| [service-rds](service-rds/) | RDS PostgreSQL instance | `url`, `jdbc_url`, `username`, `password_parameter_arn` |
 | [service-rds-adopted](service-rds-adopted/) | Existing RDS instance imported as-is | `endpoint`, `address`, `port` |
 | [service-secret](service-secret/) | SSM Parameter Store SecureString | `parameter_arn`, `access_policy_json` |
 | [service-queue](service-queue/) | SQS queue + DLQ | `queue_url`, `access_policy_json` |
@@ -35,4 +35,4 @@ Most apps should use `app-stack` only. It reads `app.yaml` from the repo root an
 
 ## Policy Composition
 
-Resource modules (`service-bucket`, `service-database`, `service-secret`, `service-queue`) export `access_policy_json`. Pass these to `service-role` via `additional_policy_jsons` to compose least-privilege IAM. `scripts/generate-modules.py` does this automatically.
+Resource modules (`service-bucket`, `service-database`, `service-rds`, `service-secret`, `service-queue`) are named `{team}-{service}-{name}` (the secret: `/{project}/apps/{team}/{service}/{name}`), so two apps in one team can use the same resource name. They export `access_policy_json`. Pass these to `service-role` via `additional_policy_jsons` to compose least-privilege IAM. `scripts/generate-modules.py` does this automatically.

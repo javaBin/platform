@@ -1,23 +1,32 @@
 ################################################################################
 # RDS PostgreSQL — managed database for service data
+#
+# Named {team}-{service}-{name}, so two apps in one team can both have a
+# "main" database. Password authentication: the master user and its password
+# (SSM) are injected into the task by the generated root module. IAM database
+# authentication is not enabled, so the task role gets no rds-db:connect.
 ################################################################################
 
+locals {
+  prefix = "${var.team}-${var.service}-${var.name}"
+}
+
 resource "aws_db_subnet_group" "this" {
-  name       = "${var.team}-${var.name}-db-subnet"
+  name       = "${local.prefix}-db-subnet"
   subnet_ids = var.subnet_ids
 
   tags = merge(var.tags, {
-    Name = "${var.team}-${var.name}-db-subnet"
+    Name = "${local.prefix}-db-subnet"
   })
 }
 
 resource "aws_security_group" "this" {
-  name        = "${var.team}-${var.name}-rds-sg"
+  name        = "${local.prefix}-rds-sg"
   description = "Allow PostgreSQL access from ECS tasks"
   vpc_id      = var.vpc_id
 
   tags = merge(var.tags, {
-    Name = "${var.team}-${var.name}-rds-sg"
+    Name = "${local.prefix}-rds-sg"
   })
 }
 
@@ -42,13 +51,13 @@ resource "random_password" "master" {
 }
 
 resource "aws_ssm_parameter" "master_password" {
-  name        = "/${var.project}/apps/${var.team}/${var.name}/db-master-password"
-  description = "RDS master password for ${var.team}-${var.name}"
+  name        = "/${var.project}/apps/${var.team}/${var.service}/${var.name}/db-master-password"
+  description = "RDS master password for ${local.prefix}"
   type        = "SecureString"
   value       = random_password.master.result
 
   tags = merge(var.tags, {
-    Name = "${var.team}-${var.name}-db-master-password"
+    Name = "${local.prefix}-db-master-password"
   })
 
   lifecycle {
@@ -61,7 +70,7 @@ resource "aws_ssm_parameter" "master_password" {
 ################################################################################
 
 resource "aws_db_instance" "this" {
-  identifier     = "${var.team}-${var.name}"
+  identifier     = local.prefix
   engine         = "postgres"
   engine_version = var.engine_version
   instance_class = var.instance_class
@@ -70,7 +79,7 @@ resource "aws_db_instance" "this" {
   storage_encrypted = true
 
   db_name  = replace(var.name, "-", "_")
-  username = "postgres"
+  username = var.master_username
   password = random_password.master.result
 
   db_subnet_group_name   = aws_db_subnet_group.this.name
@@ -81,10 +90,10 @@ resource "aws_db_instance" "this" {
   deletion_protection     = var.deletion_protection
 
   skip_final_snapshot       = false
-  final_snapshot_identifier = "${var.team}-${var.name}-final"
+  final_snapshot_identifier = "${local.prefix}-final"
 
   tags = merge(var.tags, {
-    Name = "${var.team}-${var.name}"
+    Name = local.prefix
   })
 
   lifecycle {
@@ -94,21 +103,12 @@ resource "aws_db_instance" "this" {
 
 ################################################################################
 # IAM Policy Document — for attaching to task roles
+#
+# Lets the app re-read its password at runtime. ECS itself resolves the
+# password secret with the team's execution role.
 ################################################################################
 
 data "aws_iam_policy_document" "access" {
-  statement {
-    sid    = "RDSConnect"
-    effect = "Allow"
-    actions = [
-      "rds-db:connect",
-    ]
-    resources = [
-      # ARN format: arn:aws:rds-db:{region}:{account}:dbuser:{dbi-resource-id}/*
-      "arn:aws:rds-db:*:*:dbuser:${aws_db_instance.this.resource_id}/*",
-    ]
-  }
-
   statement {
     sid    = "SSMReadDBPassword"
     effect = "Allow"

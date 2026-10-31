@@ -1,5 +1,5 @@
 variable "name" {
-  description = "Bucket purpose (e.g. 'data', 'uploads'). Bucket name: {team}-{name}-{account_id}"
+  description = "Bucket purpose (e.g. 'data', 'uploads'). Bucket name: {team}-{service}-{name}-{account_id}"
   type        = string
 }
 
@@ -14,7 +14,7 @@ variable "aws_account_id" {
 }
 
 variable "service" {
-  description = "Service tag value (e.g. 'moresleep')"
+  description = "App name (e.g. 'moresleep'), part of the bucket name and the service tag"
   type        = string
 }
 

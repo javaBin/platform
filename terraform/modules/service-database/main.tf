@@ -2,8 +2,9 @@
 # DynamoDB Table — standard config for service data
 ################################################################################
 
+# {team}-{service}-{name}: two apps in one team can both have a "sessions" table.
 resource "aws_dynamodb_table" "this" {
-  name         = "${var.team}-${var.name}"
+  name         = "${var.team}-${var.service}-${var.name}"
   billing_mode = var.billing_mode
   hash_key     = var.hash_key
 
@@ -36,7 +37,7 @@ resource "aws_dynamodb_table" "this" {
   }
 
   tags = {
-    Name    = "${var.team}-${var.name}"
+    Name    = "${var.team}-${var.service}-${var.name}"
     service = var.service
   }
 }

@@ -90,7 +90,7 @@ RESOURCE_SCHEMA = {
     "databases": {"name", "env", "engine", "hash_key", "hash_key_type", "range_key",
                   "range_key_type", "ttl_attribute", "instance_class", "allocated_storage",
                   "engine_version", "backup_retention_period", "multi_az", "deletion_protection",
-                  "adopt", "host_env", "port_env"},
+                  "adopt", "host_env", "port_env", "jdbc_env", "user_env", "password_env"},
     "secrets": {"name", "env", "description"},
     "queues": {"name", "env", "visibility_timeout", "retention_seconds", "max_receive_count"},
 }
@@ -122,6 +122,22 @@ HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+
 LOCAL_HOSTS = ("localhost", "127.0.0.1")
 
 RDS_IDENTIFIER_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9-]{0,62}$")
+# A created instance's identifier ({team}-{app}-{name}): letters, digits and
+# single hyphens, max 63. Its database name is the name with - replaced by _.
+CREATED_RDS_ID_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
+# Bucket names allow no underscores; {team}-{app}-{name}-{account_id} max 63.
+BUCKET_PART_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+# Database keys that map to an environment variable (or ECS secret), the
+# module output each gets, and whether an adopted instance can have it.
+POSTGRES_ENV_KEYS = (
+    # key,          output,                   adopted
+    ("env",          "url",                    False),
+    ("jdbc_env",     "jdbc_url",               False),
+    ("host_env",     "address",                True),
+    ("port_env",     "port",                   True),
+    ("user_env",     "username",               False),
+    ("password_env", "password_parameter_arn", False),  # ECS secret
+)
 
 POSTGRES_ENGINES = ("postgres", "postgresql")
 # An adopted database keeps its live shape; these would suggest otherwise.
@@ -267,14 +283,26 @@ def _check_adoption(team, kind, identifier, where):
         )
 
 
-def _validate_database(where, db, team):
+def _validate_database(where, db, team, app_name):
     postgres = str(db.get("engine") or "dynamodb").lower() in POSTGRES_ENGINES
-    for key in ("host_env", "port_env"):
+    for key, _, _ in POSTGRES_ENV_KEYS[1:]:
         if key in db:
             if not postgres:
                 raise AppYamlError(f"{where}.{key}: only supported for engine: postgres")
             if not ENV_RE.match(str(db[key])):
                 raise AppYamlError(f"{where}.{key}: {db[key]!r} is not a valid variable name")
+    if postgres:
+        names = [db[k] for k, _, _ in POSTGRES_ENV_KEYS if db.get(k)]
+        dup = sorted({n for n in names if names.count(n) > 1})
+        if dup:
+            raise AppYamlError(f"{where}: {', '.join(dup)} is used for more than one of {', '.join(k for k, _, _ in POSTGRES_ENV_KEYS)}")
+    if postgres and "adopt" not in db:
+        identifier = f"{team}-{app_name}-{db['name']}"
+        if not db["name"][0].isalpha() or not CREATED_RDS_ID_RE.match(identifier) or len(identifier) > 63:
+            raise AppYamlError(
+                f"{where}.name: {db['name']!r} must start with a letter (it is the database name) and give "
+                f"an RDS identifier, here {identifier!r}, of letters, digits and single hyphens, at most 63 characters"
+            )
     if "adopt" not in db:
         return
     if not postgres:
@@ -282,6 +310,12 @@ def _validate_database(where, db, team):
     if not RDS_IDENTIFIER_RE.match(str(db["adopt"])):
         raise AppYamlError(f"{where}.adopt: {db['adopt']!r} is not an RDS DB instance identifier")
     _check_adoption(team, "rds", db["adopt"], f"{where}.adopt")
+    own_credentials = [k for k, _, adopted in POSTGRES_ENV_KEYS if k in db and not adopted]
+    if own_credentials:
+        raise AppYamlError(
+            f"{where}: {', '.join(own_credentials)} cannot be set with adopt — an adopted database keeps "
+            "its own database name and credentials; use host_env/port_env and put the rest in secrets:"
+        )
     rejected = [k for k in ADOPT_REJECTED if k in db]
     if rejected:
         raise AppYamlError(
@@ -336,7 +370,20 @@ def validate(app):
             if item.get("env") and not ENV_RE.match(item["env"]):
                 raise AppYamlError(f"resources.{rtype}[{i}].env: {item['env']!r} is not a valid variable name")
             if rtype == "databases":
-                _validate_database(f"resources.databases[{i}]", item, app["team"])
+                _validate_database(f"resources.databases[{i}]", item, app["team"], app["name"])
+            if rtype == "buckets":
+                bucket = f"{app['team']}-{app['name']}-{item['name']}-{'0' * 12}"
+                if not BUCKET_PART_RE.match(str(item["name"])) or len(bucket) > 63:
+                    raise AppYamlError(
+                        f"resources.buckets[{i}].name: {item['name']!r} must be lowercase letters, digits and "
+                        f"hyphens, and the bucket name {{team}}-{{app}}-{{name}}-{{account_id}} at most 63 "
+                        f"characters (it would be {len(bucket)})"
+                    )
+            if rtype == "queues" and len(f"{app['team']}-{app['name']}-{item['name']}-dlq") > 80:
+                raise AppYamlError(
+                    f"resources.queues[{i}].name: {item['name']!r} is too long; the dead-letter queue "
+                    "{team}-{app}-{name}-dlq must be at most 80 characters"
+                )
             if rtype == "secrets" and (item["name"] in RESERVED_SECRET_NAMES or RESERVED_SECRET_RE.match(item["name"])):
                 raise AppYamlError(
                     f"resources.secrets[{i}].name: {item['name']!r} is reserved for a parameter the platform "
@@ -572,10 +619,15 @@ def import_block(to, import_id):
     return f"import {{\n  to = {to}\n  id = {hcl_string(import_id)}\n}}"
 
 
-def _wire_postgres_env(env_map, mod_name, db):
-    for key, output in (("env", "endpoint"), ("host_env", "address"), ("port_env", "port")):
+def _wire_postgres_env(env_map, secret_map, mod_name, db):
+    """Map a PostgreSQL entry's *_env keys to module outputs. The password is
+    an ECS secret (resolved from SSM at task start), everything else plain env."""
+    for key, output, _ in POSTGRES_ENV_KEYS:
         if db.get(key):
-            env_map[db[key]] = Ref(f"module.{mod_name}.{output}")
+            target = secret_map if key == "password_env" else env_map
+            if db[key] in env_map or db[key] in secret_map:
+                raise AppYamlError(f"resources.databases {db['name']}.{key}: {db[key]} is already set by another resource")
+            target[db[key]] = Ref(f"module.{mod_name}.{output}")
 
 
 # ---------------------------------------------------------------------------
@@ -824,12 +876,13 @@ def generate(app, account_id, region, platform_ref):
                 attrs["backup_retention_period"] = db["backup_retention_period"]
             blocks.append(module_block(mod_name, src("service-rds-adopted"), attrs))
             imports.append((f"module.{mod_name}.aws_db_instance.this", db["adopt"]))
-            _wire_postgres_env(env_map, mod_name, db)
+            _wire_postgres_env(env_map, secret_map, mod_name, db)
         elif engine in POSTGRES_ENGINES:
             mod_name = f"rds_{dname}"
             blocks.append(module_block(mod_name, src("service-rds"), {
                 "name": dname,
                 "team": team,
+                "service": name,
                 "project": PROJECT,
                 "engine_version": str(db.get("engine_version", "16")),
                 "instance_class": db.get("instance_class", "db.t3.micro"),
@@ -842,7 +895,7 @@ def generate(app, account_id, region, platform_ref):
                 "deletion_protection": db.get("deletion_protection", True),
             }))
             policy_map[mod_name] = Ref(f"module.{mod_name}.access_policy_json")
-            _wire_postgres_env(env_map, mod_name, db)
+            _wire_postgres_env(env_map, secret_map, mod_name, db)
         elif engine == "dynamodb":
             mod_name = f"database_{dname}"
             attrs = {
