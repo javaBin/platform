@@ -115,7 +115,8 @@ resource "aws_ecs_task_definition" "this" {
 # The ecs-deploy workflow owns which image runs and how many tasks: each deploy
 # registers a copy of the family's latest revision pinned to the image digest
 # built from the commit, and sets the desired count from the
-# javabin:desired-count tag below. Terraform sets both only at creation, with
+# javabin:desired-count tag below (0 while the team is budget-suspended, see
+# budget.tf). Terraform sets both only at creation, with
 # 0 tasks, so a new service does not start (and fail) before its first image
 # is pushed. A task definition change here reaches the service on the next
 # deploy, which follows tf-apply in the same pipeline run.
@@ -168,8 +169,10 @@ resource "aws_ecs_service" "this" {
   enable_ecs_managed_tags = true
   propagate_tags          = "SERVICE"
 
+  # "0" while the team is budget-suspended (budget.tf), so neither this apply
+  # nor the deploy after it scales the service back up.
   tags = {
-    "javabin:desired-count" = tostring(var.desired_count)
+    "javabin:desired-count" = local.budget_suspended ? "0" : tostring(var.desired_count)
   }
 
   lifecycle {

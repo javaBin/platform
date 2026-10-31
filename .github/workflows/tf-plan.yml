@@ -137,6 +137,15 @@ jobs:
         if: steps.aws.outputs.available == 'true'
         run: .platform/scripts/run-plan.sh "${{ inputs.tf_root }}" -lock-timeout=5m
 
+      # ALB priorities are unique per listener and AWS only says so at
+      # apply (PriorityInUse): check the planned rules against the live ones.
+      # A conflict goes into the PR comment; the last step fails the job.
+      - name: Check ALB rule priorities
+        id: alb_priorities
+        if: steps.plan.outputs.has_changes == 'true'
+        continue-on-error: true
+        run: python3 .platform/scripts/check-alb-priorities.py "${{ inputs.tf_root }}"
+
       - name: Upload plan to S3
         id: upload
         if: steps.plan.outputs.has_changes == 'true'
@@ -169,3 +178,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: sh .platform/scripts/post-plan-comment.sh "${{ inputs.tf_root }}/plan-output.txt" "${{ steps.plan.outputs.has_changes }}"
+
+      - name: Fail on ALB rule priority conflict
+        if: steps.alb_priorities.outcome == 'failure'
+        run: |
+          echo "::error file=app.yaml::ALB rule priority conflict (see the Check ALB rule priorities step); apply would fail with PriorityInUse"
+          exit 1

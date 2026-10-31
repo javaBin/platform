@@ -12,7 +12,8 @@
 #   3. Point the service at it, with the desired count from the service's
 #      javabin:desired-count tag (Terraform writes it from app.yaml; a new
 #      service is created with 0 tasks and gets them here; budget-enforcer
-#      sets it to 0 and the count stays 0 until a tf-apply writes it back).
+#      sets it to 0 while the team is suspended, and Terraform keeps it at 0
+#      until the suspension is lifted).
 #   4. Wait until that deployment's rolloutState is COMPLETED. A circuit-
 #      breaker rollback, a FAILED rollout, a timeout or an AWS error while
 #      waiting fails the job after printing why the tasks stopped.
@@ -113,7 +114,7 @@ DESIRED=$(jq -r '.tags[]? | select(.key == "javabin:desired-count") | .value' "$
 case "$DESIRED" in
   "") echo "No javabin:desired-count tag on ${SERVICE}; keeping its desired count" ;;
   *[!0-9]*) fail "javabin:desired-count tag on ${SERVICE} is not a number: ${DESIRED}" ;;
-  0) echo "::warning::javabin:desired-count on ${SERVICE} is 0 (budget-enforcer scaled it down, or compute.desired_count is 0): deploying with 0 tasks. tf-apply writes compute.desired_count back to the tag." ;;
+  0) echo "::warning::javabin:desired-count on ${SERVICE} is 0 (budget-enforcer suspended the team, see docs/cost-management.md, or compute.desired_count is 0): deploying with 0 tasks." ;;
 esac
 
 echo "Updating ${SERVICE} on ${CLUSTER}${DESIRED:+ (desired count ${DESIRED})}..."

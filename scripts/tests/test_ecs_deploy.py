@@ -257,7 +257,7 @@ class UpdateServiceTest(unittest.TestCase):
         self.assertNotIn("--desired-count", calls(st, "update-service")[0])
 
     def test_budget_suspended_service_stays_at_zero(self):
-        # budget-enforcer sets the tag to 0; only a tf-apply writes it back
+        # budget-enforcer sets the tag to 0; lifting the suspension writes it back
         tags = {SERVICE_ARN: [{"key": "team", "value": "cupcake"}, {"key": "javabin:desired-count", "value": "0"}]}
         code, out, st = deploy([COMPLETED], tags=tags)
         self.assertEqual(code, 0, out)

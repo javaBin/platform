@@ -294,8 +294,9 @@ resource "aws_iam_policy" "developer_boundary" {
 # never set on users), so ${aws:PrincipalTag/team} is empty for humans and
 # DenyXTeam would deny everything team-scoped. Each per-team permission set
 # (javabin-team-{team}, created by team-provisioner) knows its team, so it
-# attaches this rendered copy instead. Multi-team heroes pick the team by
-# picking the permission set.
+# uses this rendered copy as its permissions boundary instead. Never attach
+# it as a policy: the baseline "Allow *" would then grant everything the
+# Denies miss. Multi-team heroes pick the team by picking the permission set.
 #
 # Self-protected by DenyBndMod in the developer boundary (team CI roles
 # cannot create new versions).

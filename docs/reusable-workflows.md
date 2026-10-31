@@ -116,6 +116,8 @@ Checks for: `app.yaml`, `terraform/`, `Dockerfile`, `pom.xml`, `build.gradle(.kt
 
 **Outputs:** `has_yaml`, `has_tf`, `has_docker`, `has_maven`, `has_gradle`, `has_pnpm`, `has_eb`, `app_name`, `app_team`
 
+Fails when `app.yaml` exists without `name` (the name is never taken from the repository name).
+
 ### build-jvm.yml
 
 Maven (`mvn verify`) or Gradle (`./gradlew build`) build + test. Uploads test reports.
@@ -172,7 +174,7 @@ Docker BuildKit build + push to ECR repo `{team}-{app_name}`. Uses GitHub Action
 
 ### tf-plan.yml
 
-Plans the committed `terraform/` at the branch head (after expand), uploads the plan to S3 with its SHA256, has the `javabin-plan-review` Lambda review it (Bedrock Claude Haiku 5.5, platform credentials; it writes `risk.json`) and posts plan + review to the PR. A review the service could not run is `FAILED`, which is a service failure, not a risk finding: `invoke-plan-review.sh` retries it (`REVIEW_INVOKE_ATTEMPTS`, default 3) and the log says which case it is (`Plan review service failed` or `Plan review found HIGH risk`). Both block the apply; see [Requesting an override](apply-gate.md#requesting-an-override).
+Plans the committed `terraform/` at the branch head (after expand), uploads the plan to S3 with its SHA256, has the `javabin-plan-review` Lambda review it (Bedrock Claude Haiku 5.5, platform credentials; it writes `risk.json`) and posts plan + review to the PR. A review the service could not run is `FAILED`, which is a service failure, not a risk finding: `invoke-plan-review.sh` retries it (`REVIEW_INVOKE_ATTEMPTS`, default 3) and the log says which case it is (`Plan review service failed` or `Plan review found HIGH risk`). Both block the apply; see [Requesting an override](apply-gate.md#requesting-an-override). `scripts/check-alb-priorities.py` checks whether a listener rule the plan creates or moves would take an ALB priority another rule already holds (read-only `describe-rules`); on a conflict the plan comment still gets posted, with the conflict at the top, and the last step fails the job.
 
 **AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-plan-{team}` (read-only: refresh, state read, state lock, plan upload; tf-plan runs on any branch, so it cannot change resources); the review step uses the broker OIDC role to invoke `javabin-plan-review`
 Repos that bring their own `terraform/` without `backend.tf`/`providers.tf` get them from `scripts/ensure-tf-boilerplate.sh`, with state key `apps/<team>/<repo>` and the team the broker verified (not a GitHub API lookup with the run's token). tf-apply generates the same files with the same team.
@@ -191,7 +193,7 @@ Deploys the `image` input (docker-build's digest-pinned `image` output) to ECS s
 
 1. Copies the family's latest ACTIVE task definition revision (Terraform's newest, or the last one ecs-deploy registered from it) and registers it with the app container's image set to the digest. Every task of the deploy runs exactly this commit's build, also when tf-apply changed the task definition in the same run.
    The revision gets the base revision's tags (or the service's, if the base has none) with `managed-by=ecs-deploy`.
-2. Updates the service to that revision, with the desired count from the service tag `javabin:desired-count` (Terraform writes it from `compute.desired_count`; `budget-enforcer` sets it to 0, which keeps the service at 0 tasks until a tf-apply writes it back).
+2. Updates the service to that revision, with the desired count from the service tag `javabin:desired-count` (Terraform writes it from `compute.desired_count`; `budget-enforcer` sets it to 0 and Terraform plans it as 0 while the team is budget-suspended, so the service stays at 0 tasks until the suspension is lifted; see [cost-management.md](cost-management.md#budget-suspension)).
 3. Waits until that deployment's `rolloutState` is `COMPLETED` on the new revision (default timeout 12 minutes from the start of the step, inside the broker's 15-minute deploy credentials). A circuit-breaker rollback, a `FAILED` rollout, a timeout or an AWS error while waiting fails the job and prints the service events, the stopped tasks' `stoppedReason`, each container's exit code and reason, and the log group. A deployment replaced by a newer revision of a later run passes with a warning; that run reports the result.
 
 The `ecs-service` module ignores the service's `task_definition` and `desired_count` after creation, so this job, not Terraform, decides what runs. A Terraform change to the task definition (env, secrets, cpu) reaches the service at the next ecs-deploy, which follows tf-apply in the same run; if docker-build fails, it waits for the next green run. A new service is created with 0 tasks, so its first deployment starts here, once the image exists, instead of failing in tf-apply.
