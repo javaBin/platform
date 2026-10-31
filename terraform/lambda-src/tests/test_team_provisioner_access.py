@@ -175,7 +175,7 @@ class NotInIdentityCenterTest(unittest.TestCase):
         summary = next(t for t in texts if "member(s) have no AWS access" in t)
         self.assertIn("*2 member(s)", summary)
         self.assertIn("hakon@java.no (styret, team-javazoneweb)", summary)
-        self.assertIn("User access", summary)
+        self.assertIn("direct members of", summary)
 
     def test_slack_summary_omitted_when_nobody_missing(self):
         h = load()

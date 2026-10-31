@@ -1,14 +1,17 @@
 """Team provisioner — syncs teams across Google, GitHub, AWS Budgets, Cognito, and Identity Center.
 
 Trigger: Direct Lambda invocation from javaBin/registry CI (via javabin-ci-registry OIDC role).
-Event payload contains team YAML definitions.
+Event payload contains team YAML definitions. Platform CI queues sync_team_access
+after apply; EventBridge invokes sync_access_members every 3 hours.
 
 Integrations:
 - Google Admin SDK: Create/sync Google Workspace groups (domain-wide delegation SA)
 - GitHub API: Create/sync GitHub teams (GitHub App installation token)
 - AWS Budgets: Create team-level budget scoped to `team` tag
 - Cognito: Create/sync groups in internal user pool, assign members by email
-- IAM Identity Center: Create/sync groups in identity store, assign members by email
+- IAM Identity Center: Create/sync groups in identity store, assign members by email.
+  Users come only from Google SCIM, which provisions direct members of
+  AWS_ACCESS_GROUP (javabin-developer@java.no): team and kodesmia members are added there
 - Atlassian: Sync Confluence groups from registry groups (atlassian.py, report-only unless enabled)
 """
 
@@ -1469,6 +1472,365 @@ def sync_group_to_identity_center(group):
     return result
 
 
+# ---------------------------------------------------------------------------
+# AWS access group — who Google provisions to Identity Center
+#
+# Google's AWS IAM Identity Center app provisions (SCIM) only the DIRECT
+# members of the groups in SCIM_GROUPS; nested groups are not expanded. So
+# team and kodesmia members are added to AWS_ACCESS_GROUP one by one. Google
+# creates their Identity Center user some time later, after this run has
+# already skipped them, so the scheduled sync_access_members action retries
+# their team-<name> / kodesmia Identity Center memberships.
+# ---------------------------------------------------------------------------
+
+AWS_ACCESS_GROUP = os.environ.get("AWS_ACCESS_GROUP", "javabin-developer@java.no").lower()
+
+# Mirrors the AWS app's "Group membership" provisioning setting in Google Admin.
+SCIM_GROUPS = tuple(g for g in dict.fromkeys(("drift@java.no", "styret@java.no", AWS_ACCESS_GROUP)) if g)
+
+# Registry groups whose members belong in AWS_ACCESS_GROUP besides team
+# members (via `flatten: true` in access.yaml). Used to tell which of the
+# group's members the provisioner accounts for.
+AWS_ACCESS_REGISTRY_GROUPS = ("kodesmia",)
+
+
+def _add_direct_members(group_email, wanted, access_token, accounted=()):
+    """Add each java.no address in `wanted` as a direct MEMBER of group_email.
+
+    Additive only, like _sync_one_group: nothing is removed. Members present
+    in the group but not in `wanted` or `accounted` are reported in
+    `preserved`. Non-java.no addresses can't be provisioned to Identity
+    Center and are reported in `skipped_external`.
+    """
+    current = set(_get_google_group_members(group_email))
+    group_key = urllib.parse.quote(group_email, safe="")
+    added, skipped, failed = [], [], []
+    for email in sorted(set(wanted) - current):
+        if not email.endswith("@java.no"):
+            skipped.append(email)
+            logger.warning("Not adding personal address %s to %s", email, group_email)
+            continue
+        try:
+            resp = _google_api(
+                "POST", f"/groups/{group_key}/members", access_token,
+                {"email": email, "role": "MEMBER"},
+            )
+        except Exception as e:  # noqa: BLE001 — one bad member must not stop the rest
+            failed.append({"email": email, "error": str(e)[:200]})
+            continue
+        if resp is None:
+            failed.append({"email": email, "error": "not in Google Workspace"})
+        elif not resp.get("already_exists"):
+            added.append(email)
+            logger.info("Added %s to %s", email, group_email)
+
+    preserved = sorted(current - set(wanted) - set(accounted))
+    if preserved:
+        logger.info(
+            "Group %s has %d members not from the registry (preserved): %s",
+            group_email, len(preserved), ", ".join(preserved[:5]),
+        )
+    result = {
+        "synced": True,
+        "group": group_email,
+        "member_count": len(current) + len(added),
+        "added": len(added),
+    }
+    if added:
+        result["added_members"] = added
+    if preserved:
+        result["extra_preserved"] = len(preserved)
+        result["preserved"] = preserved
+    if skipped:
+        result["skipped_external"] = skipped
+    if failed:
+        result["failed"] = failed
+    return result
+
+
+def _recorded_memberships():
+    """{group_name: {email}} of registry members in the memberships table.
+
+    sync_cognito_group records every team-<name>, sync_group_to_cognito every
+    cognito-enabled registry group (kodesmia, styret, drift, ...).
+    """
+    if not MEMBERSHIPS_TABLE:
+        return {}
+    rows, kwargs = {}, {"TableName": MEMBERSHIPS_TABLE}
+    while True:
+        page = dynamodb_client.scan(**kwargs)
+        for item in page.get("Items", []):
+            pk = item["pk"]["S"]
+            if pk.startswith("group#"):
+                rows[pk[len("group#"):]] = {
+                    m["S"].lower() for m in item.get("members", {}).get("L", []) if m.get("S")
+                }
+        if "LastEvaluatedKey" not in page:
+            break
+        kwargs["ExclusiveStartKey"] = page["LastEvaluatedKey"]
+    return rows
+
+
+def _accounted_access_members(recorded):
+    """Recorded members of every team and of AWS_ACCESS_REGISTRY_GROUPS."""
+    return {
+        email
+        for name, emails in recorded.items()
+        if name.startswith(TEAM_GROUP_PREFIX) or name in AWS_ACCESS_REGISTRY_GROUPS
+        for email in emails
+    }
+
+
+def sync_aws_access_group(teams=None, recorded=None):
+    """Make team members direct members of AWS_ACCESS_GROUP so Google SCIM
+    creates their Identity Center user.
+
+    `teams` are registry team payloads; None means every team recorded in the
+    memberships table. The address is the one _normalize_member derives from
+    the member's google field. Additive only (see _add_direct_members).
+    """
+    if not AWS_ACCESS_GROUP:
+        return {"skipped": True, "reason": "aws_access_group_not_configured"}
+    if recorded is None:
+        try:
+            recorded = _recorded_memberships()
+        except Exception as e:  # noqa: BLE001 — only the preserved report needs it
+            logger.warning("Could not read recorded memberships: %s", e)
+            recorded = {}
+
+    wanted = set()
+    if teams is None:
+        for name, emails in recorded.items():
+            if name.startswith(TEAM_GROUP_PREFIX):
+                wanted |= emails
+    else:
+        for team in teams:
+            for member in team.get("members", []):
+                email = _normalize_member(member).get("email", "").lower()
+                if email:
+                    wanted.add(email)
+
+    return _add_direct_members(
+        AWS_ACCESS_GROUP, wanted, _get_google_access_token(),
+        accounted=_accounted_access_members(recorded),
+    )
+
+
+def _sync_flattened_access_group(ag, group_members_map, access_token):
+    """`flatten: true` access group: add the role groups' individual members
+    as direct members instead of nesting the group emails, because Google's
+    SCIM provisioning does not expand nested groups. Additive only."""
+    wanted = set()
+    for rg in ag.get("groups", []):
+        if rg in group_members_map:
+            wanted |= {m.lower() for m in group_members_map[rg] if m}
+        else:
+            logger.warning("Access group %s references unknown group: %s", ag["name"], rg)
+
+    accounted = set()
+    if ag["google"].lower() == AWS_ACCESS_GROUP:
+        try:
+            accounted = _accounted_access_members(_recorded_memberships())
+        except Exception as e:  # noqa: BLE001 — only the preserved report needs it
+            logger.warning("Could not read recorded memberships: %s", e)
+    result = _add_direct_members(ag["google"], wanted, access_token, accounted=accounted)
+    result["flatten"] = True
+    logger.info(
+        "Synced flattened access group %s: %d wanted (+%d)",
+        ag["google"], len(wanted), result["added"],
+    )
+    return result
+
+
+def _identity_center_reasons(emails, just_added=()):
+    """{email: why} for members with no Identity Center user.
+
+    Tells "pending SCIM" (a direct member of a SCIM group, e.g. just added to
+    AWS_ACCESS_GROUP) apart from "can't be provisioned" (personal address,
+    suspended, not in Google) and "not in a SCIM group".
+    """
+    emails = sorted(set(emails))
+    if not emails:
+        return {}
+    access_token = _get_google_access_token()
+    scim_members = set()
+    for group in SCIM_GROUPS:
+        try:
+            scim_members |= set(_get_google_group_members(group))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not list %s: %s", group, e)
+    just_added = set(just_added)
+
+    reasons = {}
+    for email in emails:
+        if not email.endswith("@java.no"):
+            reasons[email] = "can't be provisioned: personal address, not a java.no account"
+            continue
+        try:
+            user = _google_api("GET", f"/users/{urllib.parse.quote(email, safe='')}", access_token)
+        except Exception as e:  # noqa: BLE001
+            reasons[email] = f"unknown: Google lookup failed ({str(e)[:80]})"
+            continue
+        if user is None:
+            reasons[email] = "can't be provisioned: not in Google Workspace"
+        elif user.get("suspended") or user.get("archived"):
+            reasons[email] = "can't be provisioned: suspended in Google"
+        elif email in just_added:
+            reasons[email] = f"pending SCIM: just added to {AWS_ACCESS_GROUP}"
+        elif email in scim_members:
+            reasons[email] = "pending SCIM: already a direct member of a provisioned group"
+        else:
+            reasons[email] = f"not a direct member of {AWS_ACCESS_GROUP}"
+    return reasons
+
+
+def _explain_not_in_identity_center(results, just_added=()):
+    """_identity_center_reasons for everyone the IC syncs in `results` skipped."""
+    missing = _not_in_identity_center(results)
+    if not missing:
+        return {}
+    try:
+        return _identity_center_reasons(missing, just_added)
+    except Exception as e:  # noqa: BLE001 — the report must not fail the sync
+        logger.error("Could not classify members missing from Identity Center: %s", e)
+        return {}
+
+
+def _identity_center_groups():
+    """{display_name: group_id} for every Identity Center group."""
+    groups = {}
+    next_token = None
+    while True:
+        kwargs = {"IdentityStoreId": IDENTITY_STORE_ID}
+        if next_token:
+            kwargs["NextToken"] = next_token
+        resp = identitystore_client.list_groups(**kwargs)
+        for g in resp.get("Groups", []):
+            groups[g.get("DisplayName", "")] = g["GroupId"]
+        next_token = resp.get("NextToken")
+        if not next_token:
+            break
+    return groups
+
+
+def _retry_identity_center_memberships(recorded):
+    """Add recorded registry members who now have an Identity Center user to
+    the Identity Center group of the same name (team-<name>, kodesmia, ...).
+
+    Additive only: removals stay with the registry syncs. Returns
+    {group: {"added": [...], "not_in_identity_center": [...]}} for groups
+    with an Identity Center counterpart.
+    """
+    ic_groups = _identity_center_groups()
+    out = {}
+    for name, emails in sorted(recorded.items()):
+        group_id = ic_groups.get(name)
+        if not group_id or not emails:
+            continue
+        member_ids = set()
+        next_token = None
+        while True:
+            kwargs = {"IdentityStoreId": IDENTITY_STORE_ID, "GroupId": group_id}
+            if next_token:
+                kwargs["NextToken"] = next_token
+            resp = identitystore_client.list_group_memberships(**kwargs)
+            for membership in resp.get("GroupMemberships", []):
+                member_id = membership.get("MemberId", {}).get("UserId")
+                if member_id:
+                    member_ids.add(member_id)
+            next_token = resp.get("NextToken")
+            if not next_token:
+                break
+
+        added, missing = [], []
+        for email in sorted(emails):
+            users = identitystore_client.list_users(
+                IdentityStoreId=IDENTITY_STORE_ID,
+                Filters=[{"AttributePath": "UserName", "AttributeValue": email}],
+            ).get("Users", [])
+            if not users:
+                missing.append(email)
+                continue
+            if users[0]["UserId"] in member_ids:
+                continue
+            try:
+                identitystore_client.create_group_membership(
+                    IdentityStoreId=IDENTITY_STORE_ID,
+                    GroupId=group_id,
+                    MemberId={"UserId": users[0]["UserId"]},
+                )
+                added.append(email)
+                logger.info("Added %s to Identity Center group %s (retry)", email, name)
+            except identitystore_client.exceptions.ConflictException:
+                pass
+        out[name] = {"added": added, "not_in_identity_center": missing}
+    return out
+
+
+def handle_sync_access_members(event):
+    """Handle the sync_access_members action — EventBridge, every few hours.
+
+    1. Every recorded team member becomes a direct member of AWS_ACCESS_GROUP
+       (catches teams synced before this existed, or a failed add).
+    2. Recorded members whose Identity Center user Google SCIM has created
+       since their registry sync are added to their Identity Center groups.
+    Posts to Slack only when someone was added or an add failed.
+    """
+    try:
+        recorded = _recorded_memberships()
+    except Exception as e:
+        logger.error("Could not read recorded memberships: %s", e)
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)[:200]})}
+
+    try:
+        access = sync_aws_access_group(None, recorded=recorded)
+    except Exception as e:
+        logger.error("AWS access group sync failed: %s", e)
+        access = {"error": str(e)[:200]}
+
+    retry = {}
+    if IDENTITY_STORE_ID:
+        try:
+            retry = _retry_identity_center_memberships(recorded)
+        except Exception as e:
+            logger.error("Identity Center retry failed: %s", e)
+            retry = {"_error": {"error": str(e)[:200]}}
+
+    # Slack only for news: someone added, or an add failed. A group's still
+    # missing members are listed when the group changed or they were just
+    # added to AWS_ACCESS_GROUP, so a pending person isn't re-posted every run.
+    just_added = set(access.get("added_members", ()))
+    changed = {}
+    if access.get("added") or access.get("failed") or access.get("error"):
+        changed[AWS_ACCESS_GROUP] = {"google": access}
+    for name, r in sorted(retry.items()):
+        if r.get("error"):
+            changed[name] = {"identity_center": r}
+        elif r.get("added") or just_added & set(r.get("not_in_identity_center", ())):
+            outcome = {
+                "synced": True,
+                "group": name,
+                "added": len(r["added"]),
+                "added_members": r["added"],
+            }
+            if r.get("not_in_identity_center"):
+                outcome["not_in_identity_center"] = r["not_in_identity_center"]
+            changed[name] = {"identity_center": outcome}
+
+    reasons = {}
+    if changed:
+        reasons = _explain_not_in_identity_center(changed, just_added)
+        try:
+            notify_slack(dict(changed), ci_context=event.get("ci_context"), ic_reasons=reasons)
+        except Exception as e:
+            logger.error("Slack notification failed: %s", e)
+
+    results = {"aws_access_group": access, "identity_center": retry}
+    if reasons:
+        results["not_in_identity_center"] = reasons
+    return {"statusCode": 200, "body": json.dumps(results, default=str)}
+
+
 DEVELOPER_BOUNDARY_NAME = f"{PROJECT}-developer-boundary"
 
 
@@ -1790,22 +2152,11 @@ TEAM_GROUP_PREFIX = "team-"
 
 def _team_groups():
     """{team_name: group_id} for every team-<name> Identity Center group."""
-    teams = {}
-    next_token = None
-    while True:
-        kwargs = {"IdentityStoreId": IDENTITY_STORE_ID}
-        if next_token:
-            kwargs["NextToken"] = next_token
-        resp = identitystore_client.list_groups(**kwargs)
-        for g in resp.get("Groups", []):
-            name = g.get("DisplayName", "")
-            team = name[len(TEAM_GROUP_PREFIX):]
-            if name.startswith(TEAM_GROUP_PREFIX) and _validate_team_name(team):
-                teams[team] = g["GroupId"]
-        next_token = resp.get("NextToken")
-        if not next_token:
-            break
-    return teams
+    return {
+        name[len(TEAM_GROUP_PREFIX):]: group_id
+        for name, group_id in _identity_center_groups().items()
+        if name.startswith(TEAM_GROUP_PREFIX) and _validate_team_name(name[len(TEAM_GROUP_PREFIX):])
+    }
 
 
 def _sync_one_team_access(team_name, group_id):
@@ -2068,8 +2419,12 @@ def _sync_one_group(group, access_token):
     return name, gr
 
 
-def _sync_one_access_group(ag, group_email_map, access_token):
-    """Sync a single access group (nested group membership). Returns (name, result_dict)."""
+def _sync_one_access_group(ag, group_email_map, access_token, group_members_map=None):
+    """Sync a single access group. Returns (name, result_dict).
+
+    Role groups are nested as members, or with `flatten: true` their
+    individual members are added directly (see _sync_flattened_access_group).
+    """
     ag_name = ag.get("name", "")
     ag_google = ag.get("google", "")
     role_groups = ag.get("groups", [])
@@ -2086,6 +2441,9 @@ def _sync_one_access_group(ag, group_email_map, access_token):
                 "description": ag.get("description", f"Access group: {ag_name}"),
             })
             logger.info("Created access group %s", ag_google)
+
+        if ag.get("flatten"):
+            return ag_name, _sync_flattened_access_group(ag, group_members_map or {}, access_token)
 
         current_members = set()
         page_token = None
@@ -2152,7 +2510,8 @@ def handle_sync_groups_and_heros(event):
     3. Sync Google Workspace groups with resolved member lists (parallel)
     4. Sync Cognito groups where flagged (per-group, inside Step 3)
     5. Sync Identity Center groups where flagged (per-group, inside Step 3)
-    6. Sync access groups (nested role-group membership, parallel)
+    6. Sync access groups (nested role-group membership, or the role groups'
+       individual members for `flatten: true`, parallel)
 
     Per-item work in each step is dispatched via ThreadPoolExecutor with
     GROUP_SYNC_WORKERS workers, sized to stay within Google Directory API's
@@ -2223,9 +2582,15 @@ def handle_sync_groups_and_heros(event):
             g.get("name"): g.get("google")
             for g in groups if g.get("name") and g.get("google")
         }
+        group_members_map = {
+            g.get("name"): g.get("members", [])
+            for g in groups if g.get("name")
+        }
         with ThreadPoolExecutor(max_workers=GROUP_SYNC_WORKERS) as executor:
             futures = [
-                executor.submit(_sync_one_access_group, ag, group_email_map, access_token)
+                executor.submit(
+                    _sync_one_access_group, ag, group_email_map, access_token, group_members_map,
+                )
                 for ag in access_groups
             ]
             for future in as_completed(futures):
@@ -2236,10 +2601,18 @@ def handle_sync_groups_and_heros(event):
     if access_results:
         results["_access_groups"] = access_results
 
+    just_added = {
+        email for r in access_results.values() if isinstance(r, dict)
+        for email in r.get("added_members", [])
+    }
+    ic_reasons = _explain_not_in_identity_center(results, just_added)
+
     try:
-        notify_slack(results, ci_context=event.get("ci_context"))
+        notify_slack(results, ci_context=event.get("ci_context"), ic_reasons=ic_reasons)
     except Exception as e:
         logger.error("Slack notification failed: %s", e)
+    if ic_reasons:
+        results["not_in_identity_center"] = ic_reasons
 
 
     # Full group list: drop memberships of removed / no-longer-cognito groups
@@ -2476,6 +2849,16 @@ def _result_line(provider, outcome):
             parts.append(f":warning: group settings skipped: {settings.get('reason')}")
         elif settings.get("error"):
             parts.append(f":warning: group settings: {settings['error'][:150]}")
+    if outcome.get("added_members"):
+        parts.append(f"added: {', '.join(outcome['added_members'][:20])}")
+    if outcome.get("preserved"):
+        parts.append(
+            f":information_source: kept, not in the registry groups or a team: "
+            f"{', '.join(outcome['preserved'][:20])}"
+        )
+    if outcome.get("failed"):
+        failed = ", ".join(f"{f['email']} ({f['error'][:60]})" for f in outcome["failed"][:10])
+        parts.append(f":warning: could not add: {failed}")
     if outcome.get("skipped_external"):
         parts.append(f":warning: not added (not @java.no): {', '.join(outcome['skipped_external'])}")
     if outcome.get("not_in_identity_center"):
@@ -2492,10 +2875,10 @@ def _result_line(provider, outcome):
 
 
 NOT_IN_IDENTITY_CENTER_HELP = (
-    "Google only provisions users the AWS IAM Identity Center app is turned on for. "
-    "In Google Admin, open Apps > Web and mobile apps > the AWS app > User access and turn "
-    "it on for them (or their OU/group); auto-provisioning then creates them in Identity "
-    "Center and the next registry sync adds them to their groups."
+    f"Google provisions only direct members of {', '.join(SCIM_GROUPS)} to Identity Center. "
+    f"The provisioner adds team and kodesmia members to {AWS_ACCESS_GROUP}; once Google has "
+    "created their user, the scheduled sync (every 3 hours) adds them to their groups. "
+    "Members marked can't be provisioned need a java.no account that is active in Google."
 )
 
 
@@ -2514,12 +2897,19 @@ def _not_in_identity_center(results):
     return missing
 
 
-def _not_in_identity_center_block(results):
-    """Slack section listing everyone without AWS access, or None."""
+def _not_in_identity_center_block(results, reasons=None):
+    """Slack section listing everyone without AWS access, or None.
+
+    `reasons` ({email: why}, see _identity_center_reasons) is appended per line.
+    """
     missing = _not_in_identity_center(results)
     if not missing:
         return None
-    lines = [f"• {email} ({', '.join(sorted(groups))})" for email, groups in sorted(missing.items())]
+    reasons = reasons or {}
+    lines = [
+        f"• {email} ({', '.join(sorted(groups))})" + (f": {reasons[email]}" if email in reasons else "")
+        for email, groups in sorted(missing.items())
+    ]
     text = (
         f":warning: *{len(missing)} member(s) have no AWS access: not in Identity Center*\n"
         + "\n".join(lines[:40])
@@ -2641,7 +3031,7 @@ def _format_ci_source(ci_context):
     return line
 
 
-def notify_slack(results, ci_context=None):
+def notify_slack(results, ci_context=None, ic_reasons=None):
     """Post provisioning summary to Slack.
 
     Handles two result structures:
@@ -2695,7 +3085,7 @@ def notify_slack(results, ci_context=None):
             }
         )
 
-    missing_block = _not_in_identity_center_block(results)
+    missing_block = _not_in_identity_center_block(results, ic_reasons)
     if missing_block:
         blocks.append(missing_block)
 
@@ -2747,6 +3137,8 @@ def handler(event, context):
         return handle_sync_atlassian(payload)
     if payload.get("action") == "sync_team_access":
         return handle_sync_team_access(payload)
+    if payload.get("action") == "sync_access_members":
+        return handle_sync_access_members(payload)
 
     teams = parse_team_payload(event)
     if not teams:
@@ -2754,6 +3146,7 @@ def handler(event, context):
         return {"statusCode": 200, "body": "No teams to provision"}
 
     results = {}
+    provisioned = []
 
     for team in teams:
         team_name = team.get("name")
@@ -2780,6 +3173,7 @@ def handler(event, context):
             continue
 
         logger.info("Provisioning team: %s", team_name)
+        provisioned.append(team)
         tr = {}
 
         for label, fn in [
@@ -2797,16 +3191,32 @@ def handler(event, context):
 
         results[team_name] = tr
 
+    # Team members reach Identity Center only as direct members of
+    # AWS_ACCESS_GROUP (Google SCIM doesn't expand the team group).
+    access = None
+    if provisioned:
+        try:
+            access = sync_aws_access_group(provisioned)
+        except Exception as e:
+            logger.error("AWS access group sync failed: %s", e)
+            access = {"error": str(e)[:200]}
+    ic_reasons = _explain_not_in_identity_center(results, (access or {}).get("added_members", ()))
+    body = {"provisioned": list(results.keys()), "results": results}
+    if access is not None:
+        body["aws_access_group"] = access
+    if ic_reasons:
+        body["not_in_identity_center"] = ic_reasons
+
     try:
         ci_ctx = _extract_payload(event).get("ci_context") if isinstance(event, dict) else None
-        notify_slack(results, ci_context=ci_ctx)
+        slack_results = dict(results)
+        if access is not None:
+            slack_results[AWS_ACCESS_GROUP] = {"google": access}
+        notify_slack(slack_results, ci_context=ci_ctx, ic_reasons=ic_reasons)
     except Exception as e:
         logger.error("Slack notification failed: %s", e)
 
     return {
         "statusCode": 200,
-        "body": json.dumps(
-            {"provisioned": list(results.keys()), "results": results},
-            default=str,
-        ),
+        "body": json.dumps(body, default=str),
     }
