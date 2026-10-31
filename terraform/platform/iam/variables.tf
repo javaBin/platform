@@ -31,6 +31,18 @@ variable "github_org_id" {
   default     = "95047"
 }
 
+variable "github_platform_repo_id" {
+  description = "GitHub repository ID of <org>/platform, pinned in the immutable OIDC subject of the ci-infra and ci-infra-plan roles"
+  type        = string
+  default     = "1175354559"
+}
+
+variable "github_registry_repo_id" {
+  description = "GitHub repository ID of <org>/registry, pinned in the immutable OIDC subject of the ci-registry role"
+  type        = string
+  default     = "1175355770"
+}
+
 variable "apply_gate_role_arn" {
   description = "ARN of the apply-gate Lambda role (for team role trust policy)"
   type        = string
