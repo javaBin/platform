@@ -35,6 +35,9 @@ on:
       planned_sha:
         description: "Commit the plan was made from (includes generated Terraform)"
         value: ${{ jobs.plan.outputs.planned_sha }}
+      team:
+        description: "Team the CI broker verified for the repo (tf-apply uses the same state key)"
+        value: ${{ jobs.plan.outputs.team }}
 
 permissions:
   id-token: write
@@ -51,6 +54,7 @@ jobs:
       plan_sha256: ${{ steps.upload.outputs.plan_sha256 }}
       risk_level: ${{ steps.review.outputs.risk_level }}
       planned_sha: ${{ steps.sha.outputs.sha }}
+      team: ${{ steps.broker.outputs.team }}
     env:
       PLAN_BUCKET: javabin-ci-plan-artifacts-${{ inputs.aws_account_id }}
     steps:
@@ -59,10 +63,11 @@ jobs:
         run: echo "SESSION_NAME=$(echo "${GITHUB_ACTOR}-${GITHUB_SHA:0:8}-${GITHUB_RUN_ID}" | tr -c 'A-Za-z0-9+=,.@_\n-' '-' | head -c 64)" >> "$GITHUB_ENV"
 
       # Branch head, not github.sha: expand may have just committed generated
-      # Terraform on top of the triggering commit.
+      # Terraform on top of the triggering commit. Fork PRs use the PR merge
+      # ref: their github.head_ref exists only in the fork.
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.head_ref || github.ref }}
+          ref: ${{ (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref) || github.ref }}
 
       - name: Record planned commit
         id: sha
@@ -84,7 +89,14 @@ jobs:
           sparse-checkout: scripts
           persist-credentials: false
 
+      # Fork and Dependabot PRs get no OIDC token: skip the AWS steps with a
+      # notice and only validate.
+      - name: Check AWS access
+        id: aws
+        run: sh .platform/scripts/check-aws-access.sh
+
       - name: Assume broker role via OIDC
+        if: steps.aws.outputs.available == 'true'
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::${{ inputs.aws_account_id }}:role/javabin-ci-app-broker
@@ -93,21 +105,23 @@ jobs:
 
       - name: Get team credentials from broker
         id: broker
+        if: steps.aws.outputs.available == 'true'
         env:
           PROJECT: javabin
           APP_TEAM: ${{ inputs.team }}
         run: sh .platform/scripts/invoke-ci-broker.sh plan
 
       - name: Ensure Terraform boilerplate
+        if: steps.aws.outputs.available == 'true'
         env:
           AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
           AWS_REGION: ${{ inputs.aws_region || 'eu-central-1' }}
-          GH_TOKEN: ${{ github.token }}
+          TEAM: ${{ steps.broker.outputs.team }}
         run: sh .platform/scripts/ensure-tf-boilerplate.sh "${{ inputs.tf_root }}"
 
       - name: Terraform Init
         working-directory: ${{ inputs.tf_root }}
-        run: terraform init -input=false
+        run: terraform init -input=false ${{ steps.aws.outputs.available != 'true' && '-backend=false' || '' }}
 
       - name: Terraform Validate
         working-directory: ${{ inputs.tf_root }}
@@ -117,9 +131,11 @@ jobs:
         working-directory: ${{ inputs.tf_root }}
         run: terraform fmt -check -recursive
 
+      # Waits for a lock held by a running apply instead of failing at once.
       - name: Terraform Plan
         id: plan
-        run: .platform/scripts/run-plan.sh "${{ inputs.tf_root }}"
+        if: steps.aws.outputs.available == 'true'
+        run: .platform/scripts/run-plan.sh "${{ inputs.tf_root }}" -lock-timeout=5m
 
       - name: Upload plan to S3
         id: upload
@@ -148,7 +164,7 @@ jobs:
         run: sh .platform/scripts/invoke-plan-review.sh "${{ steps.upload.outputs.plan_key }}"
 
       - name: Post plan + review to PR
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.aws.outputs.available == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}

@@ -200,6 +200,9 @@ terraform/state/
 | `scripts/invoke-apply-gate.sh` | CI: invoke gate Lambda for apply credentials |
 | `scripts/run-plan.sh` | CI: terraform plan with exit code handling |
 | `scripts/upload-plan.sh` | CI: upload plan artifact to S3 |
+| `scripts/commit-generated-tf.sh` | CI (expand): commit + push generated Terraform; a rejected push fails with the reason and fix (tests: `scripts/tests/`) |
+| `scripts/ensure-tf-boilerplate.sh` | CI (app tf-plan + tf-apply): backend.tf/providers.tf for repos that bring their own Terraform, from the broker-verified `TEAM` (tests: `scripts/tests/`) |
+| `scripts/check-aws-access.sh` | CI (app tf-plan): skips AWS steps with a notice when the run has no OIDC token (fork/Dependabot PRs) (tests: `scripts/tests/`) |
 | `scripts/auth-doctor.py` | CI (after app apply) / local: checks an app's Cognito sign-in end to end from auth-status + HTTP probes (tests: `scripts/tests/`) |
 | `scripts/reconcile-app-auth.sh` | CI (after platform apply): queue an app-auth-sync reconcile |
 

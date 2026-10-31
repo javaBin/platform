@@ -30,6 +30,7 @@ Monday 08:00   ──► securityhub-summary Lambda ──► #javabin-infra-ale
 - Only on `push` to `main` with changes
 - Checks risk level: blocks on HIGH/FAILED/UNKNOWN
 - Downloads plan from S3, verifies SHA256 integrity
+- Restores `.terraform.lock.hcl` from the plan file (Terraform stores it there; it is gitignored in the repo), so `terraform init` installs the provider versions the plan was made with
 - `terraform apply -auto-approve tfplan`
 - Uses `environment: production` (GitHub environment protection)
 - OIDC → `javabin-ci-infra`. The role's trust also pins `job_workflow_ref` to `platform-ci.yml@refs/heads/main`, because the environment-based `sub` claim carries no branch. A workflow on another branch that declares `environment: production` cannot assume it.

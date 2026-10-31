@@ -70,6 +70,16 @@ permissions:
   contents: write
   pull-requests: write
 
+# One pipeline per repo and ref. On the default branch runs queue instead of
+# racing: two quick merges would otherwise push generated Terraform over each
+# other, fight over the state lock or apply a stale saved plan. A newer run
+# replaces a queued one (it contains the same commits). PR runs cancel the
+# superseded run. The group name must stay distinct from any group in the
+# caller's deploy.yml, or the two deadlock.
+concurrency:
+  group: javabin-pipeline-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # --------------------------------------------------------------------------
   # 1. Detect repo contents
@@ -104,6 +114,8 @@ jobs:
 
   # --------------------------------------------------------------------------
   # 3. Docker build + ECR push (default branch only, after builds pass)
+  #    Repos with app.yaml or terraform/ need a successful plan: a broken
+  #    app.yaml fails expand, and then nothing is built or deployed.
   # --------------------------------------------------------------------------
   docker-build:
     needs: [detect, build-jvm, build-ts, tf-plan, tf-apply]
@@ -114,7 +126,7 @@ jobs:
       needs.detect.outputs.has_docker == 'true' &&
       (needs.build-jvm.result == 'success' || needs.build-jvm.result == 'skipped') &&
       (needs.build-ts.result == 'success' || needs.build-ts.result == 'skipped') &&
-      needs.tf-plan.result != 'failure' &&
+      (needs.tf-plan.result == 'success' || (needs.detect.outputs.has_tf != 'true' && needs.detect.outputs.has_yaml != 'true')) &&
       (needs.tf-apply.result == 'success' || needs.tf-apply.result == 'skipped')
     uses: javaBin/platform/.github/workflows/docker-build.yml@main
     with:
@@ -156,7 +168,7 @@ jobs:
       plan_key: ${{ needs.tf-plan.outputs.plan_key }}
       plan_sha256: ${{ needs.tf-plan.outputs.plan_sha256 }}
       planned_sha: ${{ needs.tf-plan.outputs.planned_sha }}
-      team: ${{ needs.detect.outputs.app_team }}
+      team: ${{ needs.tf-plan.outputs.team || needs.detect.outputs.app_team }}
 
   # --------------------------------------------------------------------------
   # 7. ECS deploy (default branch only, after docker build + TF apply)
