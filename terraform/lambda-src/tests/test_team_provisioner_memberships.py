@@ -96,6 +96,11 @@ class TeamPermissionSetTest(unittest.TestCase):
         self.assertEqual(result["provisioned"], {"status": "SUCCEEDED"})
         policy = json.loads(sso.put_inline_policy_to_permission_set.call_args.kwargs["InlinePolicy"])
         self.assertEqual(policy, h._team_inline_policy("cupcake"))
+        # The old policies only go once the boundary is in place
+        calls = [c[0] for c in sso.mock_calls]
+        first_detach = calls.index("detach_customer_managed_policy_reference_from_permission_set")
+        self.assertLess(calls.index("put_permissions_boundary_to_permission_set"), first_detach)
+        self.assertLess(first_detach, calls.index("provision_permission_set"))
 
     def test_boundary_failure_leaves_policies_alone(self):
         h, sso = self._provisioner()
@@ -173,17 +178,30 @@ class TeamPermissionSetTest(unittest.TestCase):
         self.assertTrue(self._guardrails_with(missing=True)._guardrails_state("p").startswith("pending"))
         self.assertTrue(self._guardrails_with({"managed-by": "me"})._guardrails_state("p").startswith("refused"))
 
-    def test_missing_guardrails_leave_the_permission_set_untouched(self):
-        h = load(FakeDynamo([]))
-        h.sso_client = mock.MagicMock()
-        h._resolve_permission_set_arn = lambda name: "arn:ps"
-        h._guardrails_state = lambda name: "pending: policy not created yet"
-        result = h._ensure_team_permission_set("newteam", "group-1")
-        self.assertTrue(result["guardrails"].startswith("pending"))
-        h.sso_client.detach_customer_managed_policy_reference_from_permission_set.assert_not_called()
-        h.sso_client.put_permissions_boundary_to_permission_set.assert_not_called()
-        h.sso_client.put_inline_policy_to_permission_set.assert_not_called()
+    def test_missing_guardrails_give_read_only_access(self):
+        # e.g. javabin-team-platform: no guardrails, and the developer
+        # boundary attached as a policy by older versions (its "Allow *"
+        # granted everything). Without a boundary, no write access at all.
+        for state in ("pending: policy not created yet", "refused: not created by platform Terraform"):
+            h, sso = self._provisioner()
+            h._guardrails_state = lambda name, state=state: state
 
+            result = h._ensure_team_permission_set("platform", "group-1")
+
+            self.assertEqual(result["guardrails"], state)
+            sso.put_permissions_boundary_to_permission_set.assert_not_called()
+            detached = {c.kwargs["CustomerManagedPolicyReference"]["Name"]
+                        for c in sso.detach_customer_managed_policy_reference_from_permission_set.call_args_list}
+            self.assertEqual(detached, {"javabin-team-platform-guardrails", "javabin-developer-boundary"})
+            self.assertEqual(sso.attach_managed_policy_to_permission_set.call_args.kwargs["ManagedPolicyArn"],
+                             "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess")
+            policy = json.loads(sso.put_inline_policy_to_permission_set.call_args.kwargs["InlinePolicy"])
+            self.assertEqual(policy, h._read_only_inline_policy())
+            for st in policy["Statement"]:
+                self.assertEqual(st["Effect"], "Allow")
+                self.assertTrue(all(a.split(":")[1].startswith(("List", "Describe", "Get"))
+                                    for a in st["Action"]), st["Sid"])
+            self.assertEqual(result["provisioned"], {"status": "SUCCEEDED"})
 
 if __name__ == "__main__":
     unittest.main()

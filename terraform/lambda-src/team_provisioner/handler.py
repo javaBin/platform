@@ -1543,21 +1543,25 @@ def _ensure_team_permission_set(team_name, group_id):
     # detach those only once the boundary is in place.
     # Only a policy platform Terraform created: platform CI may not have made
     # it yet for a brand-new team (or never, for non-app teams like
-    # platform). Then leave the permission set as it is and report pending.
+    # platform). Without a boundary the team policy's tag allow would cover
+    # platform-tagged resources too, so such a team gets read-only access
+    # (ViewOnlyAccess and _read_only_inline_policy) until the guardrails exist.
     guardrails = f"{PROJECT}-team-{team_name}-guardrails"
     state = _guardrails_state(guardrails)
-    if state != "ok":
-        logger.warning("Not switching %s to %s: %s", ps_name, guardrails, state)
-        return {"permission_set": ps_name, "guardrails": state}
-    try:
-        sso_client.put_permissions_boundary_to_permission_set(
-            InstanceArn=SSO_INSTANCE_ARN,
-            PermissionSetArn=ps_arn,
-            PermissionsBoundary={"CustomerManagedPolicyReference": {"Name": guardrails}},
-        )
-    except Exception as e:
-        logger.error("Failed to set %s as boundary of %s: %s", guardrails, ps_name, e)
-        return {"permission_set": ps_name, "error": str(e)[:200]}
+    if state == "ok":
+        try:
+            sso_client.put_permissions_boundary_to_permission_set(
+                InstanceArn=SSO_INSTANCE_ARN,
+                PermissionSetArn=ps_arn,
+                PermissionsBoundary={"CustomerManagedPolicyReference": {"Name": guardrails}},
+            )
+        except Exception as e:
+            logger.error("Failed to set %s as boundary of %s: %s", guardrails, ps_name, e)
+            return {"permission_set": ps_name, "error": str(e)[:200]}
+        policy = _team_inline_policy(team_name)
+    else:
+        logger.warning("No %s for %s (%s): read-only access", guardrails, ps_name, state)
+        policy = _read_only_inline_policy()
     for name in (guardrails, DEVELOPER_BOUNDARY_NAME):
         try:
             sso_client.detach_customer_managed_policy_reference_from_permission_set(
@@ -1572,7 +1576,6 @@ def _ensure_team_permission_set(team_name, group_id):
             logger.error("Failed to detach %s from %s: %s", name, ps_name, e)
 
     view_only = _attach_view_only(ps_arn, ps_name)
-    policy = _team_inline_policy(team_name)
 
     try:
         sso_client.put_inline_policy_to_permission_set(
@@ -1588,6 +1591,8 @@ def _ensure_team_permission_set(team_name, group_id):
     result = _create_account_assignment(ps_arn, group_id, ps_name)
     result["permission_set"] = ps_name
     result["view_only"] = view_only
+    if state != "ok":
+        result["guardrails"] = state
     # Push policy changes to the role in the account (needed for existing
     # assignments; a new assignment provisions on creation)
     result["provisioned"] = _provision_permission_set(ps_arn, ps_name)
@@ -1610,6 +1615,38 @@ def _attach_view_only(ps_arn, ps_name):
         logger.error("Failed to attach ViewOnlyAccess to %s: %s", ps_name, e)
         return f"error: {str(e)[:200]}"
     return "ok"
+
+
+# Kept although ViewOnlyAccess covers most of it: javabin-cli (status,
+# secret) must not depend on the managed attachment
+_UNTAGGED_READS = {
+    "Sid": "AllowUntaggedReads",
+    "Effect": "Allow",
+    "Action": [
+        "ecs:ListClusters",
+        "ecs:ListServices",
+        "ecs:ListTasks",
+        "ecs:DescribeServices",
+        "ecs:DescribeTasks",
+        "ecr:GetAuthorizationToken",
+        "elasticloadbalancing:Describe*",
+        "route53:ListHostedZones",
+        "logs:DescribeLogGroups",
+        "ssm:DescribeParameters",
+        "cloudwatch:ListMetrics",
+        "cloudwatch:GetMetricData",
+        "cloudwatch:GetMetricStatistics",
+        "ce:GetCostAndUsage",
+        "ce:GetCostForecast",
+    ],
+    "Resource": "*",
+}
+
+
+def _read_only_inline_policy():
+    """Inline policy of a team permission set whose guardrails don't exist:
+    with no boundary to limit it, only reads (with ViewOnlyAccess)."""
+    return {"Version": "2012-10-17", "Statement": [_UNTAGGED_READS]}
 
 
 def _team_inline_policy(team_name):
@@ -1667,30 +1704,7 @@ def _team_inline_policy(team_name):
                 "Action": "ecs:ExecuteCommand",
                 "Resource": f"arn:aws:ecs:*:{ACCOUNT_ID}:cluster/{PROJECT}-platform",
             },
-            {
-                # Kept although ViewOnlyAccess covers most of it: javabin-cli
-                # (status, secret) must not depend on the managed attachment
-                "Sid": "AllowUntaggedReads",
-                "Effect": "Allow",
-                "Action": [
-                    "ecs:ListClusters",
-                    "ecs:ListServices",
-                    "ecs:ListTasks",
-                    "ecs:DescribeServices",
-                    "ecs:DescribeTasks",
-                    "ecr:GetAuthorizationToken",
-                    "elasticloadbalancing:Describe*",
-                    "route53:ListHostedZones",
-                    "logs:DescribeLogGroups",
-                    "ssm:DescribeParameters",
-                    "cloudwatch:ListMetrics",
-                    "cloudwatch:GetMetricData",
-                    "cloudwatch:GetMetricStatistics",
-                    "ce:GetCostAndUsage",
-                    "ce:GetCostForecast",
-                ],
-                "Resource": "*",
-            },
+            _UNTAGGED_READS,
             {
                 # Platform-managed parameters in the team path: Cognito
                 # credentials and auth-status (app-auth-sync), the auth
