@@ -1101,9 +1101,10 @@ resource "aws_iam_role_policy" "budget_enforcer" {
         Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:cluster/${var.project}-platform"
       },
       {
-        Sid      = "ECSUpdateService"
-        Effect   = "Allow"
-        Action   = "ecs:UpdateService"
+        Sid    = "ECSUpdateService"
+        Effect = "Allow"
+        # TagResource: javabin:desired-count=0, so ecs-deploy keeps the service at 0
+        Action   = ["ecs:UpdateService", "ecs:TagResource"]
         Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:service/${var.project}-platform/*"
       },
     ]

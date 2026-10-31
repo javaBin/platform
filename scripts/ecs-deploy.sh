@@ -11,23 +11,30 @@
 #      so every task of the deployment runs exactly this commit's build.
 #   3. Point the service at it, with the desired count from the service's
 #      javabin:desired-count tag (Terraform writes it from app.yaml; a new
-#      service is created with 0 tasks and gets them here).
+#      service is created with 0 tasks and gets them here; budget-enforcer
+#      sets it to 0 and the count stays 0 until a tf-apply writes it back).
 #   4. Wait until that deployment's rolloutState is COMPLETED. A circuit-
-#      breaker rollback, a FAILED rollout or a timeout fails the job after
-#      printing why the tasks stopped.
+#      breaker rollback, a FAILED rollout, a timeout or an AWS error while
+#      waiting fails the job after printing why the tasks stopped.
 #
 # Usage: ecs-deploy.sh
 #
 # Env: CLUSTER, SERVICE, IMAGE (repo@sha256:... or repo:tag)
-#      DEPLOY_TIMEOUT (seconds, default 1200), POLL_INTERVAL (seconds, default 15)
+#      DEPLOY_TIMEOUT (seconds from script start, default 720),
+#      POLL_INTERVAL (seconds, default 15)
+#
+# The broker's deploy credentials last 900 s (ci_broker DEPLOY_DURATION), so
+# DEPLOY_TIMEOUT must stay well below that: the timeout branch and its
+# diagnostics need working credentials.
 
 set -eu
 
 : "${CLUSTER:?CLUSTER is required}"
 : "${SERVICE:?SERVICE is required}"
 : "${IMAGE:?IMAGE is required (repo@sha256:... from docker-build)}"
-DEPLOY_TIMEOUT="${DEPLOY_TIMEOUT:-1200}"
+DEPLOY_TIMEOUT="${DEPLOY_TIMEOUT:-720}"
 POLL_INTERVAL="${POLL_INTERVAL:-15}"
+DEADLINE=$(($(date +%s) + DEPLOY_TIMEOUT))
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -41,8 +48,10 @@ fail() {
   exit 1
 }
 
+# Keeps the last good answer in service.json when a call fails
 describe_service() {
-  aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --output json > "$TMP/service.json"
+  aws ecs describe-services --cluster "$CLUSTER" --services "$SERVICE" --output json > "$TMP/service.new" &&
+    mv "$TMP/service.new" "$TMP/service.json"
 }
 
 # -- 1. Base revision --------------------------------------------------------
@@ -72,11 +81,22 @@ jq --arg image "$IMAGE" "$REPO_OF"'
   | .containerDefinitions |= map(if (.image | repo) == ($image | repo) then .image = $image else . end)
 ' "$TMP/base.json" > "$TMP/register.json"
 
-# Copy the base revision's tags (team, service, ...). Tag reads and tag-on-
-# create need permissions older deploy roles lack: register untagged then.
-if aws ecs list-tags-for-resource --resource-arn "$BASE_ARN" --output json > "$TMP/base-tags.json" 2>/dev/null &&
-  [ "$(jq '.tags | length' "$TMP/base-tags.json")" -gt 0 ]; then
-  jq --slurpfile t "$TMP/base-tags.json" '.tags = $t[0].tags' "$TMP/register.json" > "$TMP/register-tagged.json"
+# Tags for the revision (team, service, repo, ...): the base revision's, or
+# the service's when the base has none (an untagged revision registered
+# before the deploy role could tag, which the role then cannot read). Never
+# the javabin:/aws: control tags, and managed-by says who registered it.
+aws ecs list-tags-for-resource --resource-arn "$SERVICE_ARN" --output json > "$TMP/service-tags.json" 2>/dev/null ||
+  echo '{"tags": []}' > "$TMP/service-tags.json"
+aws ecs list-tags-for-resource --resource-arn "$BASE_ARN" --output json > "$TMP/base-tags.json" 2>/dev/null ||
+  echo '{"tags": []}' > "$TMP/base-tags.json"
+jq -s '
+  (if (.[0].tags | length) > 0 then .[0].tags else .[1].tags end)
+  | map(select((.key | startswith("javabin:") or startswith("aws:") or . == "managed-by") | not))
+  | if length > 0 then . + [{key: "managed-by", value: "ecs-deploy"}] else . end
+' "$TMP/base-tags.json" "$TMP/service-tags.json" > "$TMP/tags.json"
+
+if [ "$(jq 'length' "$TMP/tags.json")" -gt 0 ]; then
+  jq --slurpfile t "$TMP/tags.json" '.tags = $t[0]' "$TMP/register.json" > "$TMP/register-tagged.json"
   if ! aws ecs register-task-definition --cli-input-json "file://$TMP/register-tagged.json" --output json > "$TMP/registered.json"; then
     echo "::warning::Could not register a tagged revision; registering it without tags"
     aws ecs register-task-definition --cli-input-json "file://$TMP/register.json" --output json > "$TMP/registered.json"
@@ -89,13 +109,11 @@ echo "Registered ${NEW_TD} with ${IMAGE}"
 
 # -- 3. Update the service ---------------------------------------------------
 
-DESIRED=""
-if aws ecs list-tags-for-resource --resource-arn "$SERVICE_ARN" --output json > "$TMP/service-tags.json" 2>/dev/null; then
-  DESIRED=$(jq -r '.tags[]? | select(.key == "javabin:desired-count") | .value' "$TMP/service-tags.json")
-fi
+DESIRED=$(jq -r '.tags[]? | select(.key == "javabin:desired-count") | .value' "$TMP/service-tags.json")
 case "$DESIRED" in
   "") echo "No javabin:desired-count tag on ${SERVICE}; keeping its desired count" ;;
   *[!0-9]*) fail "javabin:desired-count tag on ${SERVICE} is not a number: ${DESIRED}" ;;
+  0) echo "::warning::javabin:desired-count on ${SERVICE} is 0 (budget-enforcer scaled it down, or compute.desired_count is 0): deploying with 0 tasks. tf-apply writes compute.desired_count back to the tag." ;;
 esac
 
 echo "Updating ${SERVICE} on ${CLUSTER}${DESIRED:+ (desired count ${DESIRED})}..."
@@ -142,10 +160,12 @@ print_diagnostics() {
     "$TMP/registered.json"
 }
 
-DEADLINE=$(($(date +%s) + DEPLOY_TIMEOUT))
-echo "Waiting for the rollout to complete (timeout ${DEPLOY_TIMEOUT}s)..."
+echo "Waiting for the rollout to complete (timeout ${DEPLOY_TIMEOUT}s from start)..."
 while :; do
-  describe_service
+  if ! describe_service 2>"$TMP/err"; then
+    RESULT="could not be checked: describe-services failed: $(cat "$TMP/err")"
+    break
+  fi
   PRIMARY_ID=$(jq -r '.services[0].deployments[] | select(.status == "PRIMARY") | .id' "$TMP/service.json")
   STATE=$(jq -r --arg id "$DEPLOYMENT_ID" '.services[0].deployments[] | select(.id == $id) | .rolloutState' "$TMP/service.json")
   REASON=$(jq -r --arg id "$DEPLOYMENT_ID" '.services[0].deployments[] | select(.id == $id) | .rolloutStateReason // ""' "$TMP/service.json")

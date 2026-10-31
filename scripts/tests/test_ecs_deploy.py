@@ -36,6 +36,10 @@ def opt(name):
 def out(obj):
     print(json.dumps(obj))
 cmd = args[1]
+if st["described"] >= st.get("expire_after", 1 << 30):
+    json.dump(st, open(state_path, "w"))
+    sys.stderr.write("An error occurred (ExpiredTokenException): The security token included in the request is expired\n")
+    sys.exit(254)
 fail = st.get("fail", {}).get(cmd)
 if fail and (fail != "tagged" or "tags" in json.load(open(opt("--cli-input-json")[7:]))):
     st["calls"][-1] = args + ["<failed>"]
@@ -127,7 +131,7 @@ STOPPED_TASK = {
 }
 
 
-def deploy(polls, *, base=None, svc=None, tags=None, fail=None, stopped=None, timeout="60"):
+def deploy(polls, *, base=None, svc=None, tags=None, fail=None, stopped=None, timeout="60", expire_after=None):
     """Run ecs-deploy.sh; return (exit code, output, final fake state)."""
     tmp = tempfile.mkdtemp()
     try:
@@ -146,6 +150,8 @@ def deploy(polls, *, base=None, svc=None, tags=None, fail=None, stopped=None, ti
             },
             "fail": fail or {}, "stopped": stopped or [],
         }
+        if expire_after is not None:
+            state["expire_after"] = expire_after
         with open(state_path, "w") as f:
             json.dump(state, f)
         env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", FAKE_AWS_STATE=state_path,
@@ -172,7 +178,8 @@ class RegisterPinnedRevisionTest(unittest.TestCase):
                       "compatibilities", "registeredAt", "registeredBy"):
             self.assertNotIn(field, reg)
         self.assertEqual(reg["cpu"], "256")
-        self.assertEqual(reg["tags"], [{"key": "team", "value": "cupcake"}])
+        self.assertEqual(reg["tags"], [{"key": "team", "value": "cupcake"},
+                                       {"key": "managed-by", "value": "ecs-deploy"}])
         # base is the family's latest revision, not the one the service runs
         self.assertEqual(calls(st, "describe-task-definition")[0][-3], "cupcake-cupcake")
 
@@ -201,6 +208,34 @@ class RegisterPinnedRevisionTest(unittest.TestCase):
         self.assertNotIn("tags", st["registered"])
         self.assertIn("without tags", out)
 
+    def test_overrides_managed_by_and_drops_control_tags(self):
+        tags = {
+            SERVICE_ARN: [{"key": "javabin:desired-count", "value": "1"}],
+            f"{TD_ARN}:4": [{"key": "team", "value": "cupcake"}, {"key": "managed-by", "value": "terraform"},
+                            {"key": "javabin:desired-count", "value": "1"}],
+        }
+        code, out, st = deploy([COMPLETED], tags=tags)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(st["registered"]["tags"], [{"key": "team", "value": "cupcake"},
+                                                    {"key": "managed-by", "value": "ecs-deploy"}])
+
+    def test_untagged_base_takes_the_service_tags(self):
+        # An untagged base would keep every later revision untagged
+        tags = {SERVICE_ARN: [{"key": "team", "value": "cupcake"}, {"key": "repo", "value": "javaBin/frosting"},
+                              {"key": "managed-by", "value": "terraform"},
+                              {"key": "javabin:desired-count", "value": "2"}]}
+        code, out, st = deploy([COMPLETED], tags=tags)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(st["registered"]["tags"], [{"key": "team", "value": "cupcake"},
+                                                    {"key": "repo", "value": "javaBin/frosting"},
+                                                    {"key": "managed-by", "value": "ecs-deploy"}])
+
+    def test_registers_untagged_when_no_tags_are_readable(self):
+        code, out, st = deploy([COMPLETED], fail={"list-tags-for-resource": True})
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("tags", st["registered"])
+        self.assertNotIn("--desired-count", calls(st, "update-service")[0])
+
     def test_missing_service_fails_with_hint(self):
         code, out, _ = deploy([COMPLETED], svc={})
         self.assertNotEqual(code, 0)
@@ -220,6 +255,15 @@ class UpdateServiceTest(unittest.TestCase):
         code, out, st = deploy([COMPLETED], tags={})
         self.assertEqual(code, 0, out)
         self.assertNotIn("--desired-count", calls(st, "update-service")[0])
+
+    def test_budget_suspended_service_stays_at_zero(self):
+        # budget-enforcer sets the tag to 0; only a tf-apply writes it back
+        tags = {SERVICE_ARN: [{"key": "team", "value": "cupcake"}, {"key": "javabin:desired-count", "value": "0"}]}
+        code, out, st = deploy([COMPLETED], tags=tags)
+        self.assertEqual(code, 0, out)
+        update = calls(st, "update-service")[0]
+        self.assertEqual(update[update.index("--desired-count") + 1], "0")
+        self.assertIn("budget-enforcer", out)
 
     def test_deploys_even_when_a_deployment_is_in_progress(self):
         busy = service(deployments=[deployment("ecs-svc/tf", "PRIMARY", "IN_PROGRESS", f"{TD_ARN}:4"),
@@ -271,6 +315,25 @@ class RolloutResultTest(unittest.TestCase):
         code, out, _ = deploy([IN_PROGRESS], timeout="0")
         self.assertNotEqual(code, 0)
         self.assertIn("did not complete within 0s", out)
+
+    def test_expired_credentials_while_waiting_fail_with_diagnostics(self):
+        # Deploy credentials last 900 s; a poll after that must not exit bare
+        code, out, _ = deploy([IN_PROGRESS], expire_after=2)
+        self.assertNotEqual(code, 0)
+        self.assertIn("::error::Deployment ecs-svc/new", out)
+        self.assertIn("could not be checked: describe-services failed", out)
+        self.assertIn("ExpiredTokenException", out)
+        self.assertIn("deployment failed: tasks failed to start", out)  # last known events
+        self.assertIn("log group /ecs/cupcake/cupcake", out)
+
+    def test_default_timeout_fits_in_the_deploy_credentials(self):
+        with open(SCRIPT) as f:
+            script = f.read()
+        default = int(script.split('DEPLOY_TIMEOUT="${DEPLOY_TIMEOUT:-')[1].split("}")[0])
+        with open(os.path.join(HERE, "..", "..", "terraform", "lambda-src", "ci_broker", "handler.py")) as f:
+            broker = f.read()
+        duration = int(broker.split("DEPLOY_DURATION = ")[1].split()[0])
+        self.assertLessEqual(default, duration - 120)
 
     def test_diagnostics_survive_missing_permissions(self):
         code, out, _ = deploy([ROLLED_BACK], fail={"list-tasks": True})

@@ -170,7 +170,7 @@ terraform/state/
 | `team-provisioner` | Syncs Google Groups, GitHub teams, AWS Budgets from registry team YAML; Atlassian groups from `groups/atlassian.yaml` |
 | `securityhub-summary` | Weekly Security Hub findings summary (Monday 08:00 UTC) |
 | `password-set` | Self-service password-set for new hero accounts (ALB only: password.javazone.no) |
-| `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget |
+| `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget and sets `javabin:desired-count=0` so ecs-deploy keeps them at 0 until a tf-apply |
 | `resource-tagger` | EventBridge-triggered, auto-tags created-by + commit on new resources |
 | `ci-broker` | Verifies the job's GitHub OIDC token (repo from signed claims), checks repo ∈ app.yaml team, vends short-lived team role credentials |
 | `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` and `routing.login` (SSM request → client + credentials + allowed groups) |
