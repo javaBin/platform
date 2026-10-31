@@ -201,6 +201,9 @@ terraform/state/
 | `scripts/ecs-deploy.sh` | CI: register a task definition revision pinned to the image digest, roll the service, fail on anything but rolloutState COMPLETED (tests: `scripts/tests/`) |
 | `scripts/run-plan.sh` | CI: terraform plan with exit code handling |
 | `scripts/upload-plan.sh` | CI: upload plan artifact to S3 |
+| `scripts/commit-generated-tf.sh` | CI (expand): commit + push generated Terraform; a rejected push fails with the reason and fix (tests: `scripts/tests/`) |
+| `scripts/ensure-tf-boilerplate.sh` | CI (app tf-plan + tf-apply): backend.tf/providers.tf for repos that bring their own Terraform, from the broker-verified `TEAM` (tests: `scripts/tests/`) |
+| `scripts/check-aws-access.sh` | CI (app tf-plan): skips AWS steps with a notice when the run has no OIDC token (fork/Dependabot PRs) (tests: `scripts/tests/`) |
 | `scripts/auth-doctor.py` | CI (after app apply) / local: checks an app's Cognito sign-in end to end from auth-status + HTTP probes (tests: `scripts/tests/`) |
 | `scripts/reconcile-app-auth.sh` | CI (after platform apply): queue an app-auth-sync reconcile |
 | `scripts/sync-team-access.sh` | CI (after platform apply): queue team-provisioner `sync_team_access` (new teams' permission set + account assignment once their guardrails policy exists) |

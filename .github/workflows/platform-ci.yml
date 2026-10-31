@@ -231,6 +231,12 @@ jobs:
         working-directory: ${{ env.TF_ROOT }}
         run: sh "${{ github.workspace }}/scripts/verify-plan.sh" tfplan "${{ needs.plan.outputs.plan_sha256 }}"
 
+      # Install the provider versions the plan was made with (the lock file
+      # is inside the verified plan; it is gitignored in the repo).
+      - name: Restore provider lock file from plan
+        working-directory: ${{ env.TF_ROOT }}
+        run: unzip -o -q tfplan .terraform.lock.hcl
+
       - name: Terraform Init
         working-directory: ${{ env.TF_ROOT }}
         run: terraform init -input=false

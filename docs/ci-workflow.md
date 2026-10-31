@@ -30,6 +30,7 @@ Monday 08:00   ──► securityhub-summary Lambda ──► #javabin-infra-ale
 - Only on `main` (`push`, `workflow_dispatch`, or the registry's `teams-changed` `repository_dispatch`) with changes
 - Checks risk level: blocks on HIGH/FAILED/UNKNOWN
 - Downloads plan from S3, verifies SHA256 integrity
+- Restores `.terraform.lock.hcl` from the plan file (Terraform stores it there; it is gitignored in the repo), so `terraform init` installs the provider versions the plan was made with
 - `terraform apply -auto-approve tfplan`
 - Then queues (async, non-blocking) an app-auth-sync reconcile (`scripts/reconcile-app-auth.sh`) and a team-provisioner `sync_team_access` run (`scripts/sync-team-access.sh`), which grants a newly registered team its permission set and account assignment once this apply has created its `javabin-team-{team}-guardrails` policy
 - Uses `environment: production` (GitHub environment protection)
