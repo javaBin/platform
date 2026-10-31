@@ -673,6 +673,7 @@ resource "aws_iam_role_policy" "team_provisioner" {
         Action = [
           "sso:CreateAccountAssignment",
           "sso:DescribeAccountAssignmentCreationStatus",
+          "sso:ListAccountAssignments",
           "sso:ListPermissionSets",
           "sso:DescribePermissionSet",
           "sso:CreatePermissionSet",
@@ -932,6 +933,7 @@ resource "aws_lambda_function" "team_provisioner" {
       ATLASSIAN_ORG_ID_PARAM       = "/javabin/platform/atlassian-org-id"
       ATLASSIAN_API_KEY_PARAM      = "/javabin/platform/atlassian-api-key"
       ATLASSIAN_SYNC_APPLY         = tostring(var.atlassian_sync_apply)
+      AWS_ACCESS_GROUP             = var.aws_access_group
     }
   }
 }
@@ -1101,9 +1103,10 @@ resource "aws_iam_role_policy" "budget_enforcer" {
         Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:cluster/${var.project}-platform"
       },
       {
-        Sid      = "ECSUpdateService"
-        Effect   = "Allow"
-        Action   = "ecs:UpdateService"
+        Sid    = "ECSUpdateService"
+        Effect = "Allow"
+        # TagResource: javabin:desired-count=0, so ecs-deploy keeps the service at 0
+        Action   = ["ecs:UpdateService", "ecs:TagResource"]
         Resource = "arn:aws:ecs:${var.region}:${var.aws_account_id}:service/${var.project}-platform/*"
       },
       {
@@ -1379,7 +1382,31 @@ resource "aws_lambda_permission" "override_cleanup_schedule" {
   source_arn    = aws_cloudwatch_event_rule.override_cleanup_schedule.arn
 }
 
-# --- team-provisioner: no schedule — triggered via direct Lambda invocation from registry CI ---
+# --- team-provisioner: every 3 hours (sync_access_members) ---
+# Registry CI and platform CI (sync_team_access, scripts/sync-team-access.sh)
+# invoke it directly. A member just added to the AWS access group only gets
+# an Identity Center user when Google SCIM runs, after that sync has skipped
+# them; this schedule adds them to their team-<name> / kodesmia groups then.
+resource "aws_cloudwatch_event_rule" "team_provisioner_access_schedule" {
+  name                = "${var.project}-team-provisioner-access-schedule"
+  description         = "Retry Identity Center group memberships for members Google SCIM has since provisioned"
+  schedule_expression = "rate(3 hours)"
+}
+
+resource "aws_cloudwatch_event_target" "team_provisioner_access" {
+  rule      = aws_cloudwatch_event_rule.team_provisioner_access_schedule.name
+  target_id = "invoke-team-provisioner-access"
+  arn       = aws_lambda_function.team_provisioner.arn
+  input     = jsonencode({ action = "sync_access_members" })
+}
+
+resource "aws_lambda_permission" "team_provisioner_access_schedule" {
+  statement_id  = "AllowEventBridgeAccessSchedule"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.team_provisioner.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.team_provisioner_access_schedule.arn
+}
 
 # --- securityhub-summary: Monday 08:00 UTC (same as cost report) ---
 resource "aws_cloudwatch_event_rule" "securityhub_summary_schedule" {

@@ -8,14 +8,16 @@ Triggers:
   - Manual invoke, {"action": "lift", "team": "<team>"}: lift early.
 
 A suspension is an SSM marker at {SUSPENSION_PATH}/{team}. While it exists:
-  - the team's ECS services stay at desired_count=0. The ecs-service module
-    reads the marker and plans desired_count=0 too, so a terraform apply does
-    not scale them back up;
+  - the team's ECS services stay at desired_count=0, and their
+    javabin:desired-count tag stays at "0". ecs-deploy sets the desired count
+    from that tag, so app pushes keep deploying with 0 tasks. The ecs-service
+    module reads the marker and plans the tag as "0" too, so a terraform apply
+    does not write compute.desired_count back while the team is suspended;
   - the team's RDS instances are stopped. RDS starts a stopped instance again
     after 7 days, so reconcile stops it again.
 
-Lifting deletes the marker, sets the services back to the desired count they
-had before, and starts the RDS instances the enforcer stopped. Nothing is
+Lifting deletes the marker, sets the services (and their javabin:desired-count
+tag) back to the values they had before, and starts the RDS instances the enforcer stopped. Nothing is
 ever deleted.
 """
 
@@ -42,6 +44,7 @@ COST_WEBHOOK_PARAM = os.environ["COST_WEBHOOK_PARAM"]
 BUDGET_NAME_PREFIX = os.environ.get("BUDGET_NAME_PREFIX", "javabin-team-")
 SUSPENSION_PATH = os.environ.get("SUSPENSION_PATH", "/javabin/budget-suspensions").rstrip("/")
 ACCOUNT_ID = os.environ.get("AWS_ACCOUNT_ID", "")
+DESIRED_COUNT_TAG = "javabin:desired-count"
 
 # Suspension holds while actual spend is above this share of the budget limit.
 ENFORCE_RATIO = 2.0
@@ -144,12 +147,32 @@ def set_desired_count(cluster, service_name, count):
     logger.info("Set %s to desired_count=%d in cluster %s", service_name, count, cluster)
 
 
-def scale_team_to_zero(team, previous):
-    """Scale the team's running services to 0. Records each service's previous
-    desired count in `previous` (first value wins). Returns the names scaled."""
+def set_desired_count_tag(service_arn, value):
+    """Set javabin:desired-count, the count ecs-deploy scales the service to."""
+    ecs.tag_resource(resourceArn=service_arn, tags=[{"key": DESIRED_COUNT_TAG, "value": value}])
+    logger.info("Set %s=%s on %s", DESIRED_COUNT_TAG, value, service_arn)
+
+
+def _tags(svc):
+    return {t["key"]: t["value"] for t in svc.get("tags", [])}
+
+
+def scale_team_to_zero(team, previous, previous_tags):
+    """Scale the team's running services to 0 and pin their javabin:desired-count
+    tag to "0". Records each service's previous desired count in `previous` and
+    previous tag value in `previous_tags` (first value wins). Returns the names
+    scaled."""
     scaled = []
     for svc in list_services_for_team(CLUSTER, team):
         name, count = svc["serviceName"], svc.get("desiredCount", 0)
+        tag = _tags(svc).get(DESIRED_COUNT_TAG)
+        if tag not in (None, "0"):
+            # Also before the first deploy, while the service has 0 tasks
+            try:
+                set_desired_count_tag(svc["serviceArn"], "0")
+                previous_tags.setdefault(name, tag)
+            except Exception as e:
+                logger.error("Failed to tag service %s: %s", name, e)
         if count == 0:
             continue
         try:
@@ -162,11 +185,18 @@ def scale_team_to_zero(team, previous):
     return scaled
 
 
-def restore_team_services(team, previous):
-    """Set services the enforcer scaled back to their previous count, if still at 0."""
+def restore_team_services(team, previous, previous_tags):
+    """Set services the enforcer scaled back to their previous count, and their
+    javabin:desired-count tag back to its previous value, if still at 0."""
     restored = []
     for svc in list_services_for_team(CLUSTER, team):
         name = svc["serviceName"]
+        tag = previous_tags.get(name)
+        if tag and _tags(svc).get(DESIRED_COUNT_TAG) == "0":
+            try:
+                set_desired_count_tag(svc["serviceArn"], tag)
+            except Exception as e:
+                logger.error("Failed to restore tag on service %s: %s", name, e)
         count = previous.get(name)
         if not count or svc.get("desiredCount", 0) != 0:
             continue
@@ -261,11 +291,12 @@ def suspend(team, budget_name, budget_limit):
     state.setdefault("suspended_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
     state["budget"] = budget_name
     services = state.setdefault("services", {})
+    tags = state.setdefault("desired_count_tags", {})
     stopped = state.setdefault("rds", [])
-    # Marker first: from here on a terraform apply plans desired_count=0.
+    # Marker first: from here on a terraform apply plans javabin:desired-count=0.
     write_marker(team, state)
 
-    scaled = scale_team_to_zero(team, services)
+    scaled = scale_team_to_zero(team, services, tags)
     dbs = stop_team_databases(team, stopped)
     write_marker(team, state)
 
@@ -281,7 +312,8 @@ def lift(team, reason):
         return {"team": team, "action": "not_suspended"}
     # Marker first: the restored count matches what terraform now plans.
     delete_marker(team)
-    restored = restore_team_services(team, state.get("services") or {})
+    restored = restore_team_services(team, state.get("services") or {},
+                                     state.get("desired_count_tags") or {})
     started = start_team_databases(state.get("rds") or [])
     notify(build_lift_blocks(team, reason, restored, started),
            f"Budget suspension lifted for team {team} ({reason})")
@@ -292,10 +324,12 @@ def reapply(team):
     """Keep a suspension in force: re-zero services and re-stop databases."""
     state = read_marker(team) or {}
     services = state.setdefault("services", {})
+    tags = state.setdefault("desired_count_tags", {})
     stopped = state.setdefault("rds", [])
-    scaled = scale_team_to_zero(team, services)
+    before = dict(tags)
+    scaled = scale_team_to_zero(team, services, tags)
     dbs = stop_team_databases(team, stopped)
-    if scaled or dbs:
+    if scaled or dbs or tags != before:
         write_marker(team, state)
         logger.info("Re-applied suspension for %s: services=%s rds=%s", team, scaled, dbs)
     return {"team": team, "action": "enforced", "services": scaled, "rds": dbs}
@@ -372,8 +406,9 @@ def build_suspend_blocks(team_name, budget_name, services_scaled, dbs_stopped, b
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f":lock: The suspension holds until it is lifted: deploys keep "
-                    f"`desired_count=0` while `{marker_name(team_name)}` exists.\n"
+                    f":lock: The suspension holds until it is lifted: the services' "
+                    "`javabin:desired-count` tag is `0`, so deploys and terraform applies keep "
+                    f"them at 0 tasks while `{marker_name(team_name)}` exists.\n"
                     ":arrow_right: *To lift it*, raise `budget_nok` in the registry (lifted within "
                     "6 hours), wait for the next month, or ask a platform admin to invoke "
                     "`javabin-budget-enforcer` with `{\"action\": \"lift\", \"team\": \""

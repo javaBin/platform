@@ -2,18 +2,19 @@
 # SQS Queue with Dead-Letter Queue
 ################################################################################
 
+# {team}-{service}-{name}: two apps in one team can both have a "jobs" queue.
 resource "aws_sqs_queue" "dlq" {
-  name                      = "${var.team}-${var.name}-dlq"
+  name                      = "${var.team}-${var.service}-${var.name}-dlq"
   message_retention_seconds = var.dlq_retention_seconds
 
   tags = {
-    Name    = "${var.team}-${var.name}-dlq"
+    Name    = "${var.team}-${var.service}-${var.name}-dlq"
     service = var.service
   }
 }
 
 resource "aws_sqs_queue" "this" {
-  name                       = "${var.team}-${var.name}"
+  name                       = "${var.team}-${var.service}-${var.name}"
   visibility_timeout_seconds = var.visibility_timeout_seconds
   message_retention_seconds  = var.retention_seconds
 
@@ -23,7 +24,7 @@ resource "aws_sqs_queue" "this" {
   })
 
   tags = {
-    Name    = "${var.team}-${var.name}"
+    Name    = "${var.team}-${var.service}-${var.name}"
     service = var.service
   }
 }

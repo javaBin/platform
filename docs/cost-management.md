@@ -18,7 +18,7 @@ Lambda posts to **#javabin-cost-alerts**.
 | Account budget `javabin-account-monthly` | `terraform/platform/cost-analytics/main.tf` | Forecast for the month > 100%; actual > 100%; actual > 150% |
 | Cost Anomaly Detection `javabin-anomaly-monitor` | `terraform/platform/monitoring/main.tf` | Per-service anomaly with total impact >= $10 (IMMEDIATE) |
 | Team budgets `javabin-team-<team>` | `team-provisioner` Lambda (from registry `budget_nok`, default 500 NOK) | Actual > 80% (Slack); actual > 200% triggers `budget-enforcer` |
-| `budget-enforcer` | `terraform/lambda-src/budget_enforcer` | Suspends the team: ECS services to `desired_count=0`, RDS instances stopped (nothing is deleted). See [Budget suspension](#budget-suspension) |
+| `budget-enforcer` | `terraform/lambda-src/budget_enforcer` | Suspends the team: ECS services to `desired_count=0` and their `javabin:desired-count` tag to 0 (so app pushes keep deploying with 0 tasks), RDS instances stopped (nothing is deleted). See [Budget suspension](#budget-suspension) |
 | `daily-cost-check` / `cost-report` | `terraform/lambda-src/` | Daily spike check; weekly breakdown every Monday |
 
 The account budget limit is `account_budget_usd` in `terraform/platform/main.tf`
@@ -41,18 +41,20 @@ When a team's actual spend passes 200% of its monthly budget, AWS Budgets
 notifies `javabin-budget-enforcement` and `budget-enforcer`:
 
 1. Writes the marker `/javabin/budget-suspensions/{team}` (JSON: when, which
-   budget, each service's previous desired count, the RDS instances it stopped).
+   budget, each service's previous desired count and `javabin:desired-count`
+   tag, the RDS instances it stopped).
 2. Sets every ECS service tagged `team={team}` in `javabin-platform` to
-   `desired_count=0`.
+   `desired_count=0` and its `javabin:desired-count` tag to `0`.
 3. Stops every RDS instance tagged `team={team}` that is `available` (Aurora
    members and read replicas are skipped; they cannot be stopped this way).
 4. Posts to #javabin-cost-alerts.
 
-**The suspension sticks.** The `ecs-service` module reads the marker and plans
-`desired_count = 0` while it exists, so the team's next `terraform apply` or
-deploy does not scale the services back up (`ecs-deploy` only forces a new
-deployment; it never changes the count). Every 6 hours a reconcile run re-zeros
-services scaled up by hand and stops the databases again: RDS starts a stopped
+**The suspension sticks.** `ecs-deploy` scales each service to its
+`javabin:desired-count` tag, so app pushes keep deploying with 0 tasks. The
+`ecs-service` module reads the marker and plans that tag as `"0"` while it
+exists, so the team's next `terraform apply` does not write
+`compute.desired_count` back either. Every 6 hours a reconcile run re-zeros
+services (and tags) changed by hand and stops the databases again: RDS starts a stopped
 instance by itself after 7 days, and reconcile catches that within 6 hours.
 Terraform changes to a stopped RDS instance fail until it is started.
 
@@ -69,7 +71,7 @@ Terraform changes to a stopped RDS instance fail until it is started.
   until next month even if spend stays above 200%.
 
 Lifting deletes the marker, sets each service the enforcer scaled back to its
-previous desired count (if it is still at 0), starts the RDS instances it
+previous desired count and `javabin:desired-count` tag (if still at 0), starts the RDS instances it
 stopped, and posts to #javabin-cost-alerts. Services created during the
 suspension come up on their next deploy. If the team's budget cannot be read,
 reconcile keeps the suspension rather than lifting it.

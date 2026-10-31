@@ -10,6 +10,8 @@ import unittest
 LAMBDA_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
 PATH = "/javabin/budget-suspensions"
+ARN = "arn:aws:ecs:eu-central-1:111111111111:service/javabin-platform/"
+TAG = "javabin:desired-count"
 
 BUDGET_TEXT = """AWS Budget Notification November 12, 2026
 AWS Account 111111111111
@@ -70,20 +72,32 @@ class FakeSSM:
 
 
 class FakeECS:
-    def __init__(self, services):
-        # name -> (team, desired)
+    def __init__(self, services, desired_tags=None):
+        # name -> (team, desired); name -> javabin:desired-count tag value
         self.services = dict(services)
+        self.desired_tags = dict(desired_tags or {})
         self.updates = []
+        self.tagged = []
 
     def get_paginator(self, name):
-        return Paginator(lambda cluster: {"serviceArns": list(self.services)})
+        return Paginator(lambda cluster: {"serviceArns": [ARN + n for n in self.services]})
 
     def describe_services(self, cluster, services, include):
-        return {"services": [
-            {"serviceName": n, "desiredCount": self.services[n][1],
-             "tags": [{"key": "team", "value": self.services[n][0]}]}
-            for n in services
-        ]}
+        out = []
+        for arn in services:
+            n = arn[len(ARN):]
+            tags = [{"key": "team", "value": self.services[n][0]}]
+            if n in self.desired_tags:
+                tags.append({"key": TAG, "value": self.desired_tags[n]})
+            out.append({"serviceArn": arn, "serviceName": n,
+                        "desiredCount": self.services[n][1], "tags": tags})
+        return {"services": out}
+
+    def tag_resource(self, resourceArn, tags):
+        for t in tags:
+            assert t["key"] == TAG
+            self.desired_tags[resourceArn[len(ARN):]] = t["value"]
+        self.tagged.append((resourceArn[len(ARN):], tags[0]["value"]))
 
     def update_service(self, cluster, service, desiredCount):
         team, _ = self.services[service]
@@ -159,7 +173,8 @@ def sns(message):
 class BudgetEnforcerTest(unittest.TestCase):
     def setUp(self):
         self.ecs = FakeECS({"cupcake-web": ("cupcake", 2), "cupcake-idle": ("cupcake", 0),
-                            "other-web": ("other", 1)})
+                            "other-web": ("other", 1)},
+                           {"cupcake-web": "2", "other-web": "1"})
         self.rds = FakeRDS([db("cupcake-db", "cupcake"), db("other-db", "other"),
                             db("cupcake-aurora", "cupcake", DBClusterIdentifier="c")])
         self.ssm = FakeSSM()
@@ -186,6 +201,25 @@ class BudgetEnforcerTest(unittest.TestCase):
         self.assertEqual(state["services"], {"cupcake-web": 2})
         self.assertEqual(state["rds"], ["cupcake-db"])
         self.assertEqual(len(self.mod._posted), 1)
+
+    def test_suspend_pins_desired_count_tag_so_ecs_deploy_keeps_zero(self):
+        self.mod.handler(sns(BUDGET_TEXT), None)
+        self.assertEqual(self.ecs.desired_tags, {"cupcake-web": "0", "other-web": "1"})
+        self.assertEqual(self.marker()["desired_count_tags"], {"cupcake-web": "2"})
+
+    def test_suspend_pins_tag_of_a_service_not_deployed_yet(self):
+        # Created with 0 tasks; ecs-deploy would otherwise scale it to the tag
+        self.ecs.desired_tags["cupcake-idle"] = "1"
+        self.mod.handler(sns(BUDGET_TEXT), None)
+        self.assertNotIn(("cupcake-idle", 0), self.ecs.updates)
+        self.assertEqual(self.ecs.desired_tags["cupcake-idle"], "0")
+
+    def test_suspend_leaves_already_pinned_or_untagged_services_untagged(self):
+        self.ecs.services["cupcake-web"] = ("cupcake", 1)
+        self.ecs.desired_tags["cupcake-web"] = "0"
+        self.mod.handler(sns(BUDGET_TEXT), None)
+        self.assertEqual(self.ecs.tagged, [])
+        self.assertEqual(self.ecs.services["cupcake-web"], ("cupcake", 0))
 
     def test_ignores_non_team_budget(self):
         self.mod.handler(sns(BUDGET_TEXT.replace("javabin-team-cupcake", "javabin-account-monthly")), None)
@@ -216,7 +250,16 @@ class BudgetEnforcerTest(unittest.TestCase):
         self.assertNotIn(f"{PATH}/cupcake", self.ssm.params)
         self.assertEqual(self.ecs.services["cupcake-web"], ("cupcake", 2))
         self.assertEqual(self.ecs.services["cupcake-idle"], ("cupcake", 0))
+        self.assertEqual(self.ecs.desired_tags, {"cupcake-web": "2", "other-web": "1"})
         self.assertEqual(self.rds.started, ["cupcake-db"])
+
+    def test_reconcile_repins_tag_reset_by_hand(self):
+        self.mod.handler(sns(BUDGET_TEXT), None)
+        self.ecs.desired_tags["cupcake-web"] = "3"
+        self.mod.handler({"action": "reconcile"}, None)
+        self.assertEqual(self.ecs.desired_tags["cupcake-web"], "0")
+        # Lift restores the value from before the suspension.
+        self.assertEqual(self.marker()["desired_count_tags"], {"cupcake-web": "2"})
 
     def test_reconcile_keeps_suspension_if_budget_unreadable(self):
         self.mod.handler(sns(BUDGET_TEXT), None)

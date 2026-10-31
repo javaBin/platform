@@ -44,7 +44,31 @@ detect ──┬─ expand ──── tf-plan ── tf-apply ──┐
 ```
 
 - **PRs:** detect → build → expand (commits generated TF to the PR branch) → tf-plan (plan + LLM review) → PR comment
-- **Default branch** (push or manual run): detect → build → expand → tf-plan → tf-apply → docker-build → ecs-deploy
+- **Default branch** (push or manual run): detect → build → expand → tf-plan → tf-apply → docker-build → ecs-deploy (runs the image pinned to the digest docker-build pushed; see [ecs-deploy.yml](#ecs-deployyml))
+
+`docker-build` (and so `ecs-deploy`) in a repo with `app.yaml` or `terraform/` runs only after a
+successful `tf-plan`, and after `tf-apply` when the plan had changes. A broken `app.yaml` fails
+`expand` and nothing is built or deployed, instead of pushing an image to an ECR repository that the
+skipped apply never created.
+
+### Concurrency
+
+`javabin.yml` runs one pipeline per repo and ref (group `javabin-pipeline-<repo>-<ref>`). On the
+default branch a second run waits for the first one, so two quick merges cannot push generated
+Terraform over each other, fight over the state lock or apply a stale saved plan. GitHub keeps at most
+one waiting run per group: a third push replaces the waiting run, and the newest run contains all its
+commits. A newer push to a pull request cancels the PR's running pipeline. Don't use a group named
+`javabin-pipeline-...` in your own `deploy.yml`: caller and called workflow would deadlock.
+`tf-apply.yml` also holds a per-repo group of its own for callers outside `javabin.yml`, and plan and
+apply wait up to 5 minutes for the state lock.
+
+### Pull requests from forks and Dependabot
+
+These runs get a read-only `GITHUB_TOKEN` and usually no OIDC token. `expand` checks out the PR
+merge ref, validates `app.yaml` and skips the push; `tf-plan` skips every AWS step with a notice
+("Terraform plan skipped") and only runs `terraform init -backend=false`, `validate` and `fmt -check`.
+The plan runs after merge. A Dependabot PR that does get `id-token: write` from `deploy.yml` plans
+like any other PR.
 
 Deploy jobs (`tf-apply`, `docker-build`, `ecs-deploy`, `eb-deploy`) run only when
 `github.ref` is `refs/heads/<default branch>` (`github.event.repository.default_branch`) and the
@@ -117,6 +141,21 @@ pnpm install + `build` + `test`. `build` and `test` are skipped when `package.js
 
 Runs `scripts/generate-modules.py`: validates `app.yaml` (unknown or unsupported fields fail with a message), writes `terraform/` and commits it back to the branch with `scripts/commit-generated-tf.sh`. The push uses the caller's `GITHUB_TOKEN`, so it never triggers another run. The commit message (`chore(terraform): update generated Terraform from app.yaml`) deliberately has no skip-CI marker: squash merges copy commit messages, and the marker would skip the merged PR's deploy. On PRs from forks the push is skipped.
 
+The push needs `contents: write` and a branch that accepts pushes from GitHub Actions. If it is
+rejected, `expand` fails and says why:
+
+- **Protected default branch** (branch protection or a ruleset): change `app.yaml` through pull
+  requests. `expand` commits the generated files to the PR branch, so the default branch is up to
+  date after merge and needs no push. If it is already out of date (a platform generator change since
+  the last run), open a PR with any change from the default branch and merge it.
+- **Branch moved** while the run generated: the run for the newer commit regenerates and pushes.
+- **Read-only token**: grant `contents: write` in `deploy.yml`.
+
+GitHub starts no workflow for commits pushed with `GITHUB_TOKEN`, so the generated commit on a PR has
+no checks of its own (the run that pushed it goes on to plan it). If the repo requires status checks,
+pull the branch and push another commit (`git commit --allow-empty`); that run finds nothing to
+regenerate and reports its checks on the new head.
+
 ### docker-build.yml
 
 Docker BuildKit build + push to ECR repo `{team}-{app_name}`. Uses GitHub Actions cache.
@@ -124,29 +163,38 @@ Docker BuildKit build + push to ECR repo `{team}-{app_name}`. Uses GitHub Action
 | Tag | When |
 |-----|------|
 | `sha-{8chars}` | Always |
-| `main-{yyyyMMdd-HHmm}` | Main/master branch |
+| `main-{yyyyMMdd-HHmm}` | Default branch (`github.event.repository.default_branch`, whatever it is called; the prefix stays `main-` for the ECR lifecycle rule) |
 | `v1.2.3` | Git tags matching `v*` |
-| `latest` | Main/master branch |
+| `latest` | Default branch. Nothing deploys `latest`: it only names the newest default-branch build |
 
 **AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-deploy-{team}`
-**Outputs:** `image_uri`, `image_tag`
+**Outputs:** `image_uri` (`{repo}:sha-…`), `image_tag`, `image` (`{repo}@sha256:…`, the pushed digest; what ecs-deploy runs)
 
 ### tf-plan.yml
 
 Plans the committed `terraform/` at the branch head (after expand), uploads the plan to S3 with its SHA256, has the `javabin-plan-review` Lambda review it (Bedrock Claude Haiku 5.5, platform credentials; it writes `risk.json`) and posts plan + review to the PR. A review that cannot run after retries is `FAILED`: re-run the workflow, or request an override if it persists.
 
 **AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-plan-{team}` (read-only: refresh, state read, state lock, plan upload; tf-plan runs on any branch, so it cannot change resources); the review step uses the broker OIDC role to invoke `javabin-plan-review`
-**Outputs:** `has_changes`, `plan_key`, `plan_sha256`, `risk_level`, `planned_sha`
+Repos that bring their own `terraform/` without `backend.tf`/`providers.tf` get them from `scripts/ensure-tf-boilerplate.sh`, with state key `apps/<team>/<repo>` and the team the broker verified (not a GitHub API lookup with the run's token). tf-apply generates the same files with the same team.
+
+**Outputs:** `has_changes`, `plan_key`, `plan_sha256`, `risk_level`, `planned_sha`, `team`
 
 ### tf-apply.yml
 
-Checks out the commit tf-plan planned, verifies the plan SHA256 and asks the apply-gate Lambda for credentials (HIGH/FAILED risk needs a board-member override), then applies.
+Checks out the commit tf-plan planned, verifies the plan SHA256 and asks the apply-gate Lambda for credentials (HIGH/FAILED risk needs a board-member override), then applies. Before `terraform init` it restores `.terraform.lock.hcl` from the saved plan (Terraform stores the lock file in the plan, and the SHA256 check covers it), so apply installs exactly the provider versions the plan used even though app repos gitignore the lock file and pin the AWS provider only to `~> 5.0`.
 
 **AWS role:** `javabin-ci-apply-gate` (OIDC) → apply-gate Lambda → `javabin-ci-team-{team}`
 
 ### ecs-deploy.yml
 
-Forces a new deployment of ECS service `{team}-{app_name}` and waits for it to stabilize. The service has a deployment circuit breaker, so tasks that never become healthy roll back instead of hanging.
+Deploys the `image` input (docker-build's digest-pinned `image` output) to ECS service `{team}-{app_name}` with `scripts/ecs-deploy.sh`:
+
+1. Copies the family's latest ACTIVE task definition revision (Terraform's newest, or the last one ecs-deploy registered from it) and registers it with the app container's image set to the digest. Every task of the deploy runs exactly this commit's build, also when tf-apply changed the task definition in the same run.
+   The revision gets the base revision's tags (or the service's, if the base has none) with `managed-by=ecs-deploy`.
+2. Updates the service to that revision, with the desired count from the service tag `javabin:desired-count` (Terraform writes it from `compute.desired_count`; `budget-enforcer` sets it to 0 and Terraform plans it as 0 while the team is budget-suspended, so the service stays at 0 tasks until the suspension is lifted; see [cost-management.md](cost-management.md#budget-suspension)).
+3. Waits until that deployment's `rolloutState` is `COMPLETED` on the new revision (default timeout 12 minutes from the start of the step, inside the broker's 15-minute deploy credentials). A circuit-breaker rollback, a `FAILED` rollout, a timeout or an AWS error while waiting fails the job and prints the service events, the stopped tasks' `stoppedReason`, each container's exit code and reason, and the log group. A deployment replaced by a newer revision of a later run passes with a warning; that run reports the result.
+
+The `ecs-service` module ignores the service's `task_definition` and `desired_count` after creation, so this job, not Terraform, decides what runs. A Terraform change to the task definition (env, secrets, cpu) reaches the service at the next ecs-deploy, which follows tf-apply in the same run; if docker-build fails, it waits for the next green run. A new service is created with 0 tasks, so its first deployment starts here, once the image exists, instead of failing in tf-apply.
 
 **AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-deploy-{team}`
 
