@@ -678,19 +678,24 @@ resource "aws_iam_role_policy" "team_provisioner" {
           "sso:DescribePermissionSet",
           "sso:CreatePermissionSet",
           "sso:PutInlinePolicyToPermissionSet",
-          "sso:AttachCustomerManagedPolicyReferenceToPermissionSet",
           "sso:DetachCustomerManagedPolicyReferenceFromPermissionSet",
+          "sso:AttachManagedPolicyToPermissionSet",
+          "sso:PutPermissionsBoundaryToPermissionSet",
           "sso:ProvisionPermissionSet",
           "sso:DescribePermissionSetProvisioningStatus",
         ]
         Resource = "*"
       },
       {
-        # Provisioning a permission set reads its customer-managed policies
-        Sid      = "ReadTeamGuardrails"
-        Effect   = "Allow"
-        Action   = ["iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyTags"]
-        Resource = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-team-*-guardrails"
+        # Provisioning a permission set reads its policies (team guardrails,
+        # and the ViewOnlyAccess attached to javabin-team-{team})
+        Sid    = "ReadTeamGuardrails"
+        Effect = "Allow"
+        Action = ["iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyTags"]
+        Resource = [
+          "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-team-*-guardrails",
+          "arn:aws:iam::aws:policy/job-function/ViewOnlyAccess",
+        ]
       },
       {
         Sid    = "IAMForSSOAssignment"
@@ -714,6 +719,17 @@ resource "aws_iam_role_policy" "team_provisioner" {
           "arn:aws:iam::${var.aws_account_id}:role/aws-reserved/sso.amazonaws.com/*",
           "arn:aws:iam::${var.aws_account_id}:saml-provider/AWSSSO_*",
         ]
+      },
+      {
+        # Provisioning javabin-team-{team} in this (management) account sets
+        # the team guardrails as boundary of the SSO role with our credentials
+        Sid      = "SetTeamGuardrailsBoundary"
+        Effect   = "Allow"
+        Action   = "iam:PutRolePermissionsBoundary"
+        Resource = "arn:aws:iam::${var.aws_account_id}:role/aws-reserved/sso.amazonaws.com/*"
+        Condition = {
+          ArnLike = { "iam:PermissionsBoundary" = "arn:aws:iam::${var.aws_account_id}:policy/${var.project}-team-*-guardrails" }
+        }
       },
     ]
   })

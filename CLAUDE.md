@@ -207,7 +207,7 @@ terraform/state/
 | `scripts/check-aws-access.sh` | CI (app tf-plan): skips AWS steps with a notice when the run has no OIDC token (fork/Dependabot PRs) (tests: `scripts/tests/`) |
 | `scripts/auth-doctor.py` | CI (after app apply) / local: checks an app's Cognito sign-in end to end from auth-status + HTTP probes (tests: `scripts/tests/`) |
 | `scripts/reconcile-app-auth.sh` | CI (after platform apply): queue an app-auth-sync reconcile |
-| `scripts/sync-team-access.sh` | CI (after platform apply): queue team-provisioner `sync_team_access` (new teams' permission set + account assignment once their guardrails policy exists) |
+| `scripts/sync-team-access.sh` | CI (after platform apply): queue team-provisioner `sync_team_access` (switches teams from read-only to full access once their guardrails policy exists; rolls inline policy changes out) |
 
 ## Naming
 
@@ -224,7 +224,7 @@ terraform/state/
 | SSM params (app) | `/javabin/apps/{team}/{service}/{name}` |
 | ECS cluster | `javabin-platform` |
 | ECS execution roles | `javabin-ecs-exec-{team}` (platform-owned, reads only `/javabin/apps/{team}/*`) |
-| SSO team guardrails | `javabin-team-{team}-guardrails` (developer boundary with the team written in, for `javabin-team-{team}` permission sets) |
+| SSO team guardrails | `javabin-team-{team}-guardrails` (developer boundary with the team written in; the permissions boundary of `javabin-team-{team}` permission sets) |
 | ECR repos | `{team}-{service}` |
 | SNS topics | `javabin-{alerts,security,budget-enforcement}` |
 | Log groups | `/ecs/{team}/{service}` |
@@ -336,7 +336,7 @@ Team group OWNERs are admin-managed and never removed by the sync; non-@java.no 
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
 - **Cognito**: pools deployed; internal pool's `GoogleSAML` IdP was created outside Terraform. It is replaced by the Terraform-managed Google OIDC IdP at cutover (docs/cognito-google-setup.md), then deleted
 - **Google SCIM provisions only direct members** of `drift@`, `styret@` and `javabin-developer@java.no` to Identity Center; it does not expand nested groups. Nobody gets an Identity Center user (and so no AWS access, team role included) unless they are a direct member of one of those. The team provisioner adds team members and (via `flatten: true` in the registry's `groups/access.yaml`) kodesmia members to `javabin-developer@` one by one; SCIM creates the user later, and the 3-hourly `sync_access_members` run adds them to their Identity Center groups. Don't create Identity Center users through the API: they'd have no link to Google (see `docs/lambda-functions.md`).
-- **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) instead. The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
+- **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) as their permissions boundary instead. It must stay a boundary: its baseline `Allow *` attached as a policy grants everything its Denies miss (every untagged resource). A team with no guardrails policy (`platform`, or a new team before platform CI) gets read-only access only. The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
 - **App databases share one network path** (fixed by `app-network`): service-rds now allows ingress only from the app's own `{team}-{app}-tasks` SG; each app moves off the shared ECS tasks SG on its next pipeline run
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
 - **`registered_app_repos` manually managed**: Being replaced with team-scoped IAM roles (repo→team resolved via GitHub API at runtime)

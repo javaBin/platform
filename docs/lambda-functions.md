@@ -139,21 +139,37 @@ makes someone a plain member. Registering a team (`javabin register-team`) write
 member's existing role is changed in place, and logins not in the registry are removed. The Google
 group keeps **MEMBER** as its default (only `role: maintainer` makes a Google MANAGER).
 
+### Team permission set (`javabin-team-{team}`)
+
+`_ensure_team_permission_set` creates the Identity Center permission set for each registry team and assigns it to the team's group. It is the only AWS access team members get:
+
+| Part | What it is | Effect |
+|------|-----------|--------|
+| Permissions boundary | `javabin-team-{team}-guardrails` (platform Terraform, `iam/boundary.tf`) | The developer boundary's Denies with the team written in. A boundary only limits; its baseline `Allow *` grants nothing |
+| AWS managed policy | `ViewOnlyAccess` | Console browsing (List/Describe, no object, parameter or secret reads), as `javabin-readonly` |
+| Inline policy | `_team_inline_policy` | Everything on resources tagged `team={team}` (`StringEquals`, so untagged resources, S3 objects, Route53 records and creates are not included); by name: `/javabin/apps/{team}/*` parameters (read, overwrite), `/ecs/{team}/*` log groups, `{team}-*-{account}` buckets, the cluster half of ECS Exec; a few untagged reads for `javabin status`. Platform-managed parameters and new parameters stay denied |
+
+So a team member can read and overwrite their secrets (`javabin secret`), read their logs, push and pull their ECR repos, redeploy, stop or exec into their services, and browse the console. They cannot change shared or untagged resources (state bucket, legacy buckets and instances, Route53 zones, untagged roles and Lambdas) or create resources by hand: infrastructure goes through `app.yaml` and CI.
+
+Order on each run: set the boundary, then detach any `javabin-team-{team}-guardrails` or `javabin-developer-boundary` attached as a policy by older versions, attach `ViewOnlyAccess`, put the inline policy, provision. If the boundary cannot be set the permission set is left as it is and the result has an `error`; a `ViewOnlyAccess` failure is reported as `view_only` and the rest still applies. A team without a Terraform-managed guardrails policy (`pending`, e.g. a brand-new team before platform CI or `platform` itself, or `refused`) gets read-only access instead: no boundary, the legacy policies detached, `ViewOnlyAccess`, and `_read_only_inline_policy` (only the untagged reads). Without a boundary, the team inline policy's tag allow would also cover platform-tagged resources. The result reports the state as `guardrails`, and the next run after platform CI creates the policy switches the team to full access.
+
 ### Team AWS access (`sync_identity_center_group`, `sync_team_access`)
 
-The team sync puts members in the Identity Center group `team-{name}` and gives that group the
-permission set `javabin-team-{name}` on the account, with the customer-managed policy
-`javabin-team-{name}-guardrails`. That policy is made by platform Terraform, which only learns of a
-new team when platform CI runs on the registry's `teams-changed` dispatch, after the team sync.
-Until it exists the team sync stops before the inline policy and the account assignment and reports
-`guardrails: pending` (`:hourglass_flowing_sand:` in Slack): without the guardrails the inline
-policy's `Action: *` would be unbounded.
+The team sync puts members in the Identity Center group `team-{name}` and runs
+`_ensure_team_permission_set` (above) for the permission set `javabin-team-{name}`. Its boundary,
+`javabin-team-{name}-guardrails`, is made by platform Terraform, which only learns of a new team when
+platform CI runs on the registry's `teams-changed` dispatch, after the team sync. Until it exists
+the team sync gives the team read-only access (no boundary, `ViewOnlyAccess`,
+`_read_only_inline_policy`, account assignment) and reports `guardrails: pending`
+(`:hourglass_flowing_sand:` in Slack): without the boundary the team inline policy's tag allow would
+also cover platform-tagged resources.
 
 Platform CI finishes the job: after every apply it queues `{"action": "sync_team_access"}`
 (`scripts/sync-team-access.sh`, async). For every `team-*` Identity Center group whose guardrails
-policy exists and is tagged `managed-by=terraform`, `repo=javaBin/platform`, it attaches the
-guardrails, writes the inline policy, makes the account assignment and re-provisions the permission
-set; teams without one (e.g. `platform`) are left alone. `{"teams": [...]}` limits the run. It posts
+policy exists and is tagged `managed-by=terraform`, `repo=javaBin/platform`, it sets the guardrails
+as the boundary, writes the team inline policy, makes the account assignment and re-provisions the
+permission set; teams without one (e.g. `platform`) are left alone (they keep the read-only access
+the team sync gave them). `{"teams": [...]}` limits the run. It posts
 to #javabin-infra-alerts only when a team got access for the first time or something failed
 (`CreateAccountAssignment` accepts an assignment that already exists without a conflict, so the
 handler checks `ListAccountAssignments` first; if that lookup fails it stays quiet). Since it
