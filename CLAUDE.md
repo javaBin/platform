@@ -184,6 +184,7 @@ terraform/state/
 |--------|------|
 | `scripts/bootstrap.sh` | One-time: create state bucket + lock tables |
 | `scripts/generate-modules.py` | CI: validates app.yaml, generates fmt-clean module blocks into terraform/ (tests: `scripts/tests/`) |
+| `scripts/check-alb-priorities.py` | CI (tf-plan): fails the plan when a listener rule would take an ALB priority already in use (tests: `scripts/tests/`) |
 | `scripts/registry.py` | Module sources + boilerplate templates for generate-modules.py |
 | `scripts/resolve-tool-version.sh` | CI: resolve node/java version from the app repo's version files |
 | `scripts/sync-registered-teams.py` | CI: registry `teams/*.yaml` → `registered-teams.auto.tfvars` (needs App token) |

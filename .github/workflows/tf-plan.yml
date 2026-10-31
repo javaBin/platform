@@ -121,6 +121,12 @@ jobs:
         id: plan
         run: .platform/scripts/run-plan.sh "${{ inputs.tf_root }}"
 
+      # ALB priorities are unique per listener and AWS only says so at
+      # apply (PriorityInUse): check the planned rules against the live ones.
+      - name: Check ALB rule priorities
+        if: steps.plan.outputs.has_changes == 'true'
+        run: python3 .platform/scripts/check-alb-priorities.py "${{ inputs.tf_root }}"
+
       - name: Upload plan to S3
         id: upload
         if: steps.plan.outputs.has_changes == 'true'

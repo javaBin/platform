@@ -13,10 +13,11 @@ The output is `terraform fmt`-clean, because tf-plan runs `terraform fmt -check`
 Usage:
   python3 generate-modules.py
 
-Required env vars: APP_SERVICE, AWS_ACCOUNT_ID, AWS_REGION, TF_ROOT
+Required env vars: AWS_ACCOUNT_ID, AWS_REGION, TF_ROOT
 Optional env vars: PLATFORM_REF (git ref for module source, default: main)
 """
 
+import hashlib
 import json
 import os
 import re
@@ -112,6 +113,29 @@ LOGIN_MAX_PATHS = 4  # an ALB rule takes 5 condition values; the host is one
 # ALB path-pattern characters (case-sensitive, * and ? wildcards, max 128 chars)
 LOGIN_PATH_RE = re.compile(r"^/[A-Za-z0-9_\-.$/~\"'@:+*?&]{0,127}$")
 GROUP_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+# ALB listener rule priorities. Explicit routing.priority values are picked by
+# hand from 1-999. Without one, the app gets a stable slot derived from
+# team/name in 1000-50000: each slot holds the host rule at its top and room
+# for LOGIN_MAX_RULES login rules directly below it. A hash can still collide;
+# scripts/check-alb-priorities.py catches that (and any other taken priority)
+# at plan time against the live listener rules.
+EXPLICIT_PRIORITY_MAX = 999
+AUTO_PRIORITY_MIN, AUTO_PRIORITY_MAX = 1000, 50000
+AUTO_PRIORITY_STRIDE = LOGIN_MAX_RULES + 1
+AUTO_PRIORITY_SLOTS = (AUTO_PRIORITY_MAX - AUTO_PRIORITY_MIN + 1) // AUTO_PRIORITY_STRIDE
+
+# Fargate task sizes: cpu units -> allowed memory (MiB)
+FARGATE_MEMORY = {
+    256: (512, 1024, 2048),
+    512: tuple(range(1024, 4097, 1024)),
+    1024: tuple(range(2048, 8193, 1024)),
+    2048: tuple(range(4096, 16385, 1024)),
+    4096: tuple(range(8192, 30721, 1024)),
+    8192: tuple(range(16384, 61441, 4096)),
+    16384: tuple(range(32768, 122881, 8192)),
+}
+DEFAULT_CPU, DEFAULT_MEMORY, DEFAULT_PORT, DEFAULT_DESIRED_COUNT = 512, 1024, 8000, 1
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
 TEAM_RE = re.compile(r"^[a-z]{1,12}$")
@@ -258,6 +282,43 @@ def login_warnings(rules):
     return []
 
 
+def derived_priority(team, name):
+    """A stable ALB priority for team/name in the auto range, with room for
+    LOGIN_MAX_RULES login rules directly below it inside the same slot."""
+    digest = hashlib.sha256(f"{team}/{name}".encode()).digest()
+    slot = int.from_bytes(digest[:8], "big") % AUTO_PRIORITY_SLOTS
+    return AUTO_PRIORITY_MIN + slot * AUTO_PRIORITY_STRIDE + LOGIN_MAX_RULES
+
+
+def _is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _validate_compute(compute):
+    for key in ("cpu", "memory", "port", "desired_count"):
+        if key in compute and not _is_int(compute[key]):
+            raise AppYamlError(f"compute.{key}: {compute[key]!r} must be a whole number")
+    cpu = compute.get("cpu", DEFAULT_CPU)
+    memory = compute.get("memory", DEFAULT_MEMORY)
+    if cpu not in FARGATE_MEMORY:
+        raise AppYamlError(
+            f"compute.cpu: {cpu} is not a Fargate size; use one of {', '.join(map(str, FARGATE_MEMORY))}"
+        )
+    allowed = FARGATE_MEMORY[cpu]
+    if memory not in allowed:
+        step = allowed[1] - allowed[0]
+        raise AppYamlError(
+            f"compute.memory: {memory} MiB is not valid with cpu {cpu}; Fargate allows "
+            + (", ".join(map(str, allowed)) if len(allowed) <= 4 else f"{allowed[0]}-{allowed[-1]} in steps of {step}")
+            + " (docs: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/fargate-tasks-services.html#fargate-tasks-size)"
+        )
+    port = compute.get("port", DEFAULT_PORT)
+    if not 1 <= port <= 65535:
+        raise AppYamlError(f"compute.port: {port} must be 1-65535")
+    if compute.get("desired_count", DEFAULT_DESIRED_COUNT) < 0:
+        raise AppYamlError(f"compute.desired_count: {compute['desired_count']} must be 0 or more")
+
+
 def _check_adoption(team, kind, identifier, where):
     if identifier not in ADOPTIONS.get(team, {}).get(kind, set()):
         raise AppYamlError(
@@ -303,10 +364,21 @@ def validate(app):
         if allowed is not None and section in app and not (section == "auth" and isinstance(app[section], str)):
             _check_keys(section, app[section], allowed)
 
-    if not NAME_RE.match(str(app.get("name", ""))):
-        raise AppYamlError(f"name: {app.get('name')!r} must be lowercase letters, digits and hyphens, max 20 chars")
+    if not app.get("name"):
+        raise AppYamlError(
+            "name is required: it names the ECS service, ECR repo and IAM role (e.g. name: my-app); "
+            "it starts with a letter and has lowercase letters, digits and hyphens, max 20 chars"
+        )
+    if not NAME_RE.match(str(app["name"])):
+        raise AppYamlError(
+            f"name: {app['name']!r} must start with a letter and have only lowercase letters, digits and "
+            "hyphens, max 20 chars (dots are not allowed: for repo 2027.javazone.no use e.g. javazone-2027)"
+        )
     if not TEAM_RE.match(str(app.get("team", ""))):
         raise AppYamlError(f"team: {app.get('team')!r} must be lowercase letters only, max 12 chars")
+
+    if "compute" in app:
+        _validate_compute(app["compute"] or {})
 
     routing = app.get("routing") or {}
     if routing:
@@ -318,8 +390,13 @@ def validate(app):
                 f"routing.host: {host!r} must be one label under "
                 f"{', '.join(APP_DOMAINS)} (e.g. my-app.{APP_DOMAINS[0]})"
             )
-        if not isinstance(routing.get("priority"), int) or not 1 <= routing["priority"] <= 50000:
-            raise AppYamlError("routing.priority is required: a unique integer 1-50000")
+        if "priority" in routing:
+            priority = routing["priority"]
+            if not _is_int(priority) or not 1 <= priority <= EXPLICIT_PRIORITY_MAX:
+                raise AppYamlError(
+                    f"routing.priority: {priority!r} must be a whole number 1-{EXPLICIT_PRIORITY_MAX}, or left out "
+                    f"to get a stable one derived from team and name ({AUTO_PRIORITY_MIN}-{AUTO_PRIORITY_MAX})"
+                )
         normalize_login(routing)
         if "adopt_dns" in routing and not isinstance(routing["adopt_dns"], bool):
             raise AppYamlError("routing.adopt_dns must be true or false")
@@ -689,9 +766,12 @@ def generate(app, account_id, region, platform_ref):
 
     # `domain:` is shorthand for routing.host; routing.host wins.
     if app.get("domain") and not routing.get("host"):
-        if not routing.get("priority"):
-            raise AppYamlError("domain: requires routing.priority (unique 1-50000) to create the ALB rule")
         routing["host"] = app["domain"]
+    # No routing.priority: a stable one derived from team/name (see
+    # derived_priority). Explicit priorities are kept as they are.
+    if routing.get("host") and "priority" not in routing:
+        routing["priority"] = derived_priority(team, name)
+        print(f"::notice file=app.yaml::routing.priority not set; using {routing['priority']} (derived from {team}/{name})")
 
     imports = []  # (resource address, import id) for existing resources to adopt
 
@@ -1058,7 +1138,6 @@ def generate(app, account_id, region, platform_ref):
 
 
 def main():
-    service = os.environ["APP_SERVICE"]
     account_id = os.environ["AWS_ACCOUNT_ID"]
     region = os.environ.get("AWS_REGION", "eu-central-1")
     tf_root = os.environ.get("TF_ROOT", "terraform")
@@ -1070,8 +1149,6 @@ def main():
         sys.exit(1)
 
     app = load_yaml(app_yaml_path) or {}
-    if isinstance(app, dict) and not app.get("name"):
-        app["name"] = service
 
     try:
         files = generate(app, account_id, region, platform_ref)
