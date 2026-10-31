@@ -9,7 +9,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "..", "post-plan-comment.sh")
 
 
-def post(plan_text, limit):
+def post(plan_text, limit, alb_errors=None):
     """Run the script with a fake `gh` that copies the comment body; return it."""
     with tempfile.TemporaryDirectory() as tmp:
         bin_dir = os.path.join(tmp, "bin")
@@ -23,6 +23,9 @@ def post(plan_text, limit):
         for name in ("plan-output.txt", "plan-clean.txt"):
             with open(os.path.join(plan_dir, name), "w") as f:
                 f.write(plan_text)
+        if alb_errors:
+            with open(os.path.join(tmp, "alb-priority-errors.txt"), "w") as f:
+                f.write(alb_errors)
         env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", PR_NUMBER="1",
                    GITHUB_REPOSITORY="javaBin/platform", PLAN_COMMENT_CHARS=str(limit))
         subprocess.run(["sh", SCRIPT, os.path.join(plan_dir, "plan-output.txt"), "true"],
@@ -43,6 +46,15 @@ class PostPlanCommentTest(unittest.TestCase):
         body = post(self.PLAN, 60000)
         self.assertIn("aws_x.r99", body)
         self.assertNotIn("cut at", body)
+
+    def test_alb_priority_conflict_is_shown_above_the_plan(self):
+        body = post(self.PLAN, 60000, alb_errors="- priority 100 is already used by the rule for cupcake.javazone.no\n")
+        self.assertIn("ALB rule priority conflict", body)
+        self.assertIn("- priority 100 is already used by the rule for cupcake.javazone.no", body)
+        self.assertLess(body.index("ALB rule priority conflict"), body.index("Plan output"))
+
+    def test_no_conflict_section_without_errors_file(self):
+        self.assertNotIn("ALB rule priority conflict", post(self.PLAN, 60000))
 
 
 if __name__ == "__main__":

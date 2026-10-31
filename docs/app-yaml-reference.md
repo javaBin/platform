@@ -12,7 +12,6 @@ name: moresleep
 team: core
 routing:
   host: moresleep.javazone.no
-  priority: 120
 ```
 
 Without `routing:` the service runs with no load balancer (a worker).
@@ -58,7 +57,7 @@ alarms:
 
 ### name (required)
 
-Service name. Starts with a letter; lowercase letters, digits, and hyphens. Max 20 characters. Defaults to the repo name.
+Service name. Starts with a letter; lowercase letters, digits, and hyphens. Max 20 characters. Required: there is no default from the repository name (repository names such as `2027.javazone.no` are not valid names), and the pipeline's detect step, the generator and the `javabin` CLI all fail on an `app.yaml` without one.
 
 ```yaml
 name: moresleep
@@ -84,10 +83,10 @@ Container compute configuration. All fields have defaults.
 
 ```yaml
 compute:
-  cpu: 512            # default: 512 (0.5 vCPU)
-  memory: 1024        # default: 1024 (1 GB)
-  port: 8080          # default: 8000
-  desired_count: 1    # default: 1 — applied by ecs-deploy, not tf-apply
+  cpu: 512            # default: 512 (0.5 vCPU); 256, 512, 1024, 2048, 4096, 8192 or 16384
+  memory: 1024        # default: 1024 (1 GB); MiB, must fit cpu (table below)
+  port: 8080          # default: 8000; 1-65535
+  desired_count: 1    # default: 1; 0 or more — applied by ecs-deploy, not tf-apply
   health_check: /health  # default: /health — ALB target group health check path
   health_check_matcher: "200"      # default: "200"
   health_check_grace_period: 120   # default: 120 — seconds a new task may fail ALB health checks
@@ -102,6 +101,18 @@ compute:
 
 Images that write outside `/tmp` (caches, uploads to local disk) need `readonly_root_filesystem: false`, or their tasks crash on start; the deployment circuit breaker then rolls the deploy back.
 
+`cpu`, `memory`, `port` and `desired_count` must be whole numbers, and `cpu`/`memory` a [Fargate task size](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/fargate-tasks-services.html#fargate-tasks-size); anything else fails the `expand` step instead of the apply:
+
+| cpu | memory (MiB) |
+|-----|--------------|
+| 256 | 512, 1024, 2048 |
+| 512 | 1024-4096, steps of 1024 |
+| 1024 | 2048-8192, steps of 1024 |
+| 2048 | 4096-16384, steps of 1024 |
+| 4096 | 8192-30720, steps of 1024 |
+| 8192 | 16384-61440, steps of 4096 |
+| 16384 | 32768-122880, steps of 8192 |
+
 **`health_check_grace_period`** (0-3600, apps with `routing` only): for this long after a task starts, ECS ignores failing load balancer health checks. The target group checks every 10 s and marks a target unhealthy after 2 failures, so without it a task that takes more than about 20 s to start (JVM apps, migrations) is stopped and replaced before it is ready. Raise it for slow starters; the deploy still fails when the task never becomes healthy.
 
 **`exec: true`** turns on [ECS Exec](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-exec.html) for the service and gives the task role the `ssmmessages` permissions it needs. It requires `readonly_root_filesystem: false`, because the agent ECS Exec runs inside the container writes to its filesystem (AWS does not support ECS Exec with a read-only root filesystem). Team members can then open a shell in their own team's tasks with the `javabin-team-{team}` SSO permission set, with the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) installed:
@@ -113,8 +124,6 @@ aws ecs execute-command --cluster javabin-platform --task <task-id> \
 
 The setting applies to tasks started after the deploy that turns it on. Tasks of other teams are denied.
 
-Valid CPU/memory combinations follow [Fargate task size constraints](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html).
-
 ### routing
 
 ALB routing configuration.
@@ -122,14 +131,15 @@ ALB routing configuration.
 ```yaml
 routing:
   host: moresleep.javazone.no  # required if routing is specified; also java.no / javabin.no
-  priority: 100                # required, unique 1-50000
+  priority: 120                # optional; default: derived from team and name
   deregistration_delay: 30     # default: 30 (seconds)
   adopt_dns: false             # default: false — take over an existing record for host
 ```
 
 - `host` must be exactly one label under `javazone.no`, `java.no` or `javabin.no` (e.g. `moresleep.javazone.no`, `medlem.java.no`, `styret.javabin.no`). Those are the domains with a wildcard cert on the platform ALB; deeper names like `a.b.java.no` are rejected because the wildcard cert does not cover them.
 - `host` creates a Route53 A record (in the zone matching the host's domain) pointing to the platform ALB and an ALB listener rule matching the Host header.
-- `priority` determines listener rule evaluation order. Must be unique across all apps. Coordinate via the registry.
+- `priority` is the ALB listener rule priority, which must be unique on the shared listener. Leave it out: the generator derives a stable one from `team/name` in 1000-50000 (printed as a notice in the `expand` step), in a slot of 11 that keeps the 10 numbers below it free for `routing.login` rules. Set it only to keep an existing app's rule where it is (existing apps keep theirs, no rule is moved) or to move off a collision; explicit values must be 1-999, so they never land in the derived range.
+- tf-plan checks every listener rule the plan creates or moves against the live rules on the listener (`scripts/check-alb-priorities.py`) and fails with the host that holds a taken priority and a free number to use, instead of apply failing with `PriorityInUse`. The conflict is shown at the top of the plan comment on the PR. Two derived priorities can collide (rarely); the same check catches that, and setting `priority` to the suggested number fixes it.
 - `adopt_dns: true` takes over an A record for `host` that already exists (for example a hand-made record of an app moving onto the platform). It must be approved first: the host has to be listed for your team in `ADOPTIONS` in `scripts/registry.py` (a javaBin/platform PR), otherwise generation fails. Route53 records are not protected by team permissions, so this is what stops one team from taking over a hostname another app serves. Without `adopt_dns`, the apply fails because the record exists. With it, Route53 overwrites the record (UPSERT) to point at the platform ALB, and from then on Terraform manages it. The plan shows the record as a *create*. Changing `host` later replaces the record, and removing routing deletes it, as for any managed record. See [Adopting existing resources](#adopting-existing-resources).
 
 #### routing.login — sign-in at the load balancer
@@ -179,7 +189,7 @@ What happens:
 
 Rules and priorities:
 
-- Each rule becomes its own ALB listener rule at the priorities **directly below** `routing.priority`: the first rule gets `priority - 1`, the next `priority - 2`, and so on. Leave that room free: if another app already uses one of those priorities, apply fails with `PriorityInUse`. `priority` must be larger than the number of rules. Nothing checks this across apps yet, so pick a `priority` with at least 10 free numbers below it (e.g. a multiple of 20 when registering a new app); apps whose priority is right next to another app's (e.g. 100 and 101) cannot add rules without moving.
+- Each rule becomes its own ALB listener rule at the priorities **directly below** `routing.priority`: the first rule gets `priority - 1`, the next `priority - 2`, and so on. A derived priority always has that room. With an explicit `priority`, it must be larger than the number of rules, and if another app already uses one of the numbers below it, tf-plan fails naming that app's host and suggesting a free number; apps whose priority is right next to another app's (e.g. 100 and 101) cannot add rules without moving (or dropping `priority` to take a derived one, which moves the rule once).
 - At most 10 rules. A path may appear only once, and a rule after a `/*` rule is an error (it could never match).
 - Protect `/*` and open the exceptions with `public: true`, rather than protecting a few subpaths. The load balancer matches the raw request path: case-sensitively, without decoding `%xx` and without resolving `..`. An app or framework that does any of these can be reached past a subpath rule, e.g. `/Admin`, `/%61dmin/` or `/x/../admin/` past `/admin/*`. The generator warns when no rule covers `/*`.
 
@@ -479,12 +489,10 @@ Apps that need users from both pools should run two services for now.
 
 ### domain
 
-Convenience alias for `routing.host`. If both are set, `routing.host` takes precedence. `routing.priority` is still required.
+Convenience alias for `routing.host`. If both are set, `routing.host` takes precedence. `routing.priority` is optional, as with `routing.host`.
 
 ```yaml
 domain: cake-redux.javazone.no
-routing:
-  priority: 110
 ```
 
 ### environment

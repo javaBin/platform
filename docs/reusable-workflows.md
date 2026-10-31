@@ -116,6 +116,8 @@ Checks for: `app.yaml`, `terraform/`, `Dockerfile`, `pom.xml`, `build.gradle(.kt
 
 **Outputs:** `has_yaml`, `has_tf`, `has_docker`, `has_maven`, `has_gradle`, `has_pnpm`, `has_eb`, `app_name`, `app_team`
 
+Fails when `app.yaml` exists without `name` (the name is never taken from the repository name).
+
 ### build-jvm.yml
 
 Maven (`mvn verify`) or Gradle (`./gradlew build`) build + test. Uploads test reports.
@@ -172,7 +174,7 @@ Docker BuildKit build + push to ECR repo `{team}-{app_name}`. Uses GitHub Action
 
 ### tf-plan.yml
 
-Plans the committed `terraform/` at the branch head (after expand), uploads the plan to S3 with its SHA256, has the `javabin-plan-review` Lambda review it (Bedrock Claude Haiku 5.5, platform credentials; it writes `risk.json`) and posts plan + review to the PR. A review that cannot run after retries is `FAILED`: re-run the workflow, or request an override if it persists.
+Plans the committed `terraform/` at the branch head (after expand), uploads the plan to S3 with its SHA256, has the `javabin-plan-review` Lambda review it (Bedrock Claude Haiku 5.5, platform credentials; it writes `risk.json`) and posts plan + review to the PR. A review that cannot run after retries is `FAILED`: re-run the workflow, or request an override if it persists. `scripts/check-alb-priorities.py` checks whether a listener rule the plan creates or moves would take an ALB priority another rule already holds (read-only `describe-rules`); on a conflict the plan comment still gets posted, with the conflict at the top, and the last step fails the job.
 
 **AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-plan-{team}` (read-only: refresh, state read, state lock, plan upload; tf-plan runs on any branch, so it cannot change resources); the review step uses the broker OIDC role to invoke `javabin-plan-review`
 Repos that bring their own `terraform/` without `backend.tf`/`providers.tf` get them from `scripts/ensure-tf-boilerplate.sh`, with state key `apps/<team>/<repo>` and the team the broker verified (not a GitHub API lookup with the run's token). tf-apply generates the same files with the same team.

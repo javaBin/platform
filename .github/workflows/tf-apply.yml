@@ -121,6 +121,4 @@ jobs:
       - name: Auth doctor
         if: hashFiles('app.yaml') != ''
         continue-on-error: true
-        env:
-          APP_SERVICE: ${{ github.event.repository.name }}
         run: python3 .platform/scripts/auth-doctor.py --app-yaml app.yaml --wait 180
