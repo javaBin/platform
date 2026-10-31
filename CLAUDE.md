@@ -131,7 +131,7 @@ terraform/state/
 | `terraform/modules/ecs-service/` | ECS Fargate service (created with 0 tasks; ecs-deploy owns image + desired count) |
 | `terraform/modules/service-bucket/` | S3 bucket with IAM policy output |
 | `terraform/modules/service-database/` | DynamoDB table with IAM policy output |
-| `terraform/modules/service-rds/` | RDS PostgreSQL instance with generated master password |
+| `terraform/modules/service-rds/` | RDS PostgreSQL instance `{team}-{app}-{name}` with generated master password (password auth; URL/user/password injected via `env`/`jdbc_env`/`user_env`/`password_env`) |
 | `terraform/modules/service-rds-adopted/` | Existing RDS instance imported as-is (`databases[].adopt`); manages tags and deletion protection only |
 | `terraform/modules/service-secret/` | SSM Parameter Store SecureString with IAM policy output |
 | `terraform/modules/service-queue/` | SQS queue + DLQ with IAM policy output |

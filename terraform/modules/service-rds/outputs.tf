@@ -1,5 +1,5 @@
 output "endpoint" {
-  description = "RDS instance endpoint"
+  description = "RDS instance endpoint (host:port)"
   value       = aws_db_instance.this.endpoint
 }
 
@@ -31,4 +31,19 @@ output "security_group_id" {
 output "address" {
   description = "RDS instance hostname"
   value       = aws_db_instance.this.address
+}
+
+output "username" {
+  description = "Master user name"
+  value       = aws_db_instance.this.username
+}
+
+output "url" {
+  description = "Connection URL without credentials: postgresql://host:port/db_name (libpq, psycopg, node-postgres, pgx)"
+  value       = "postgresql://${aws_db_instance.this.address}:${aws_db_instance.this.port}/${aws_db_instance.this.db_name}"
+}
+
+output "jdbc_url" {
+  description = "JDBC URL without credentials: jdbc:postgresql://host:port/db_name"
+  value       = "jdbc:postgresql://${aws_db_instance.this.address}:${aws_db_instance.this.port}/${aws_db_instance.this.db_name}"
 }
