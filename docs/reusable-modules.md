@@ -66,6 +66,8 @@ ECS Fargate task definition + service + CloudWatch log group.
 
 Supports `environment` (map) and `secrets` (map of name => ARN) for container configuration.
 
+**Deploys:** Terraform registers the task definition (its image is the ECR repo URL, i.e. `latest`, and only serves as the template) and creates the service with 0 tasks. It then ignores the service's `task_definition` and `desired_count`: the `ecs-deploy` workflow registers a copy of the newest revision pinned to the commit's image digest and sets the desired count from the service tag `javabin:desired-count` (= `desired_count`). Apply alone therefore never restarts the app; the next ecs-deploy does.
+
 **Tag propagation:** `enable_ecs_managed_tags = true` and `propagate_tags = "SERVICE"` ensure Fargate task-level compute costs are attributed to the team via Cost Explorer.
 
 `service_registry_arns` (list, default `[]`) registers the tasks in Cloud Map (from `app-network`).

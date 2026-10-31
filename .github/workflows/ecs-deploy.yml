@@ -3,6 +3,10 @@ name: ECS Deploy
 on:
   workflow_call:
     inputs:
+      image:
+        description: "Image to run, pinned to its digest ({repo}@sha256:..., docker-build's image output)"
+        type: string
+        required: true
       image_tag:
         description: "Container image tag (unused — kept for workflow_call compat)"
         type: string
@@ -74,4 +78,5 @@ jobs:
         env:
           SERVICE: ${{ inputs.service_name || format('{0}-{1}', steps.broker.outputs.team, inputs.app_name || github.event.repository.name) }}
           CLUSTER: ${{ inputs.cluster_name }}
+          IMAGE: ${{ inputs.image }}
         run: sh .platform/scripts/ecs-deploy.sh

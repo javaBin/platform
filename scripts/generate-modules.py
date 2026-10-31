@@ -1051,6 +1051,8 @@ def generate(app, account_id, region, platform_ref):
         "name": name,
         "team": team,
         "cluster_id": Ref("module.platform.ecs_cluster_id"),
+        # Template only: ecs-deploy registers each deploy's revision with the
+        # image pinned to the digest docker-build pushed (see ecs-service)
         "image": Ref("module.ecr.repository_url"),
         "cpu": compute.get("cpu", 512),
         "memory": compute.get("memory", 1024),

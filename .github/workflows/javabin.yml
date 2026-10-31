@@ -160,6 +160,11 @@ jobs:
 
   # --------------------------------------------------------------------------
   # 7. ECS deploy (default branch only, after docker build + TF apply)
+  #
+  # Registers a task definition revision pinned to the digest docker-build
+  # pushed and rolls the service onto it, so every deploy runs this commit's
+  # image. Terraform creates a new service with 0 tasks (nothing to start
+  # before the first image exists); this job scales it to app.yaml's count.
   # --------------------------------------------------------------------------
   ecs-deploy:
     needs: [detect, docker-build, tf-apply]
@@ -171,7 +176,7 @@ jobs:
       (needs.tf-apply.result == 'success' || needs.tf-apply.result == 'skipped')
     uses: javaBin/platform/.github/workflows/ecs-deploy.yml@main
     with:
-      image_tag: ${{ needs.docker-build.outputs.image_tag }}
+      image: ${{ needs.docker-build.outputs.image }}
       app_name: ${{ needs.detect.outputs.app_name }}
       team: ${{ needs.detect.outputs.app_team }}
 

@@ -44,7 +44,7 @@ detect ──┬─ expand ──── tf-plan ── tf-apply ──┐
 ```
 
 - **PRs:** detect → build → expand (commits generated TF to the PR branch) → tf-plan (plan + LLM review) → PR comment
-- **Default branch** (push or manual run): detect → build → expand → tf-plan → tf-apply → docker-build → ecs-deploy
+- **Default branch** (push or manual run): detect → build → expand → tf-plan → tf-apply → docker-build → ecs-deploy (runs the image pinned to the digest docker-build pushed; see [ecs-deploy.yml](#ecs-deployyml))
 
 Deploy jobs (`tf-apply`, `docker-build`, `ecs-deploy`, `eb-deploy`) run only when
 `github.ref` is `refs/heads/<default branch>` (`github.event.repository.default_branch`) and the
@@ -124,12 +124,12 @@ Docker BuildKit build + push to ECR repo `{team}-{app_name}`. Uses GitHub Action
 | Tag | When |
 |-----|------|
 | `sha-{8chars}` | Always |
-| `main-{yyyyMMdd-HHmm}` | Main/master branch |
+| `main-{yyyyMMdd-HHmm}` | Default branch (`github.event.repository.default_branch`, whatever it is called; the prefix stays `main-` for the ECR lifecycle rule) |
 | `v1.2.3` | Git tags matching `v*` |
-| `latest` | Main/master branch |
+| `latest` | Default branch. Nothing deploys `latest`: it only names the newest default-branch build |
 
 **AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-deploy-{team}`
-**Outputs:** `image_uri`, `image_tag`
+**Outputs:** `image_uri` (`{repo}:sha-…`), `image_tag`, `image` (`{repo}@sha256:…`, the pushed digest; what ecs-deploy runs)
 
 ### tf-plan.yml
 
@@ -146,7 +146,14 @@ Checks out the commit tf-plan planned, verifies the plan SHA256 and asks the app
 
 ### ecs-deploy.yml
 
-Forces a new deployment of ECS service `{team}-{app_name}` and waits for it to stabilize. The service has a deployment circuit breaker, so tasks that never become healthy roll back instead of hanging.
+Deploys the `image` input (docker-build's digest-pinned `image` output) to ECS service `{team}-{app_name}` with `scripts/ecs-deploy.sh`:
+
+1. Copies the family's latest ACTIVE task definition revision (Terraform's newest, or the last one ecs-deploy registered from it) and registers it with the app container's image set to the digest. Every task of the deploy runs exactly this commit's build, also when tf-apply changed the task definition in the same run.
+   The revision gets the base revision's tags (or the service's, if the base has none) with `managed-by=ecs-deploy`.
+2. Updates the service to that revision, with the desired count from the service tag `javabin:desired-count` (Terraform writes it from `compute.desired_count`; `budget-enforcer` sets it to 0, which keeps the service at 0 tasks until a tf-apply writes it back).
+3. Waits until that deployment's `rolloutState` is `COMPLETED` on the new revision (default timeout 12 minutes from the start of the step, inside the broker's 15-minute deploy credentials). A circuit-breaker rollback, a `FAILED` rollout, a timeout or an AWS error while waiting fails the job and prints the service events, the stopped tasks' `stoppedReason`, each container's exit code and reason, and the log group. A deployment replaced by a newer revision of a later run passes with a warning; that run reports the result.
+
+The `ecs-service` module ignores the service's `task_definition` and `desired_count` after creation, so this job, not Terraform, decides what runs. A Terraform change to the task definition (env, secrets, cpu) reaches the service at the next ecs-deploy, which follows tf-apply in the same run; if docker-build fails, it waits for the next green run. A new service is created with 0 tasks, so its first deployment starts here, once the image exists, instead of failing in tf-apply.
 
 **AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-deploy-{team}`
 

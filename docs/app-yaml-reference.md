@@ -87,7 +87,7 @@ compute:
   cpu: 512            # default: 512 (0.5 vCPU)
   memory: 1024        # default: 1024 (1 GB)
   port: 8080          # default: 8000
-  desired_count: 1    # default: 1
+  desired_count: 1    # default: 1 — applied by ecs-deploy, not tf-apply
   health_check: /health  # default: /health — ALB target group health check path
   health_check_matcher: "200"      # default: "200"
   health_check_grace_period: 120   # default: 120 — seconds a new task may fail ALB health checks
@@ -630,7 +630,7 @@ These fields were documented earlier but are not implemented. Using them fails `
 1. Developer creates/updates `app.yaml`
 2. The `expand` job runs `scripts/generate-modules.py`, which validates `app.yaml` and writes `terraform/backend.tf`, `providers.tf`, `main.tf`, `outputs.tf` (module blocks sourced from `javaBin/platform//terraform/modules/*`), then commits them to the branch
 3. `tf-plan` plans the committed files → LLM review → `tf-apply` on the default branch (main or master)
-4. `docker-build` pushes `{team}-{name}` to ECR, `ecs-deploy` rolls the service
+4. `docker-build` pushes `{team}-{name}` to ECR, `ecs-deploy` registers a task definition revision pinned to the pushed digest and rolls the service onto it (a new service is created with 0 tasks and gets `desired_count` here)
 
 Generated files carry a `# GENERATED FROM app.yaml` marker and are overwritten on every run. Developers can add their own `.tf` files alongside them.
 

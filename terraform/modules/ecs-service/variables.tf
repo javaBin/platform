@@ -14,7 +14,7 @@ variable "cluster_id" {
 }
 
 variable "image" {
-  description = "Container image URI with tag"
+  description = "Container image of the Terraform-managed revision (the ECR repo URL). ecs-deploy replaces it with the digest built from the commit"
   type        = string
 }
 
@@ -92,7 +92,7 @@ variable "service_registry_arns" {
 }
 
 variable "desired_count" {
-  description = "Number of tasks to run"
+  description = "Number of tasks to run. Applied by the ecs-deploy workflow (from the service tag javabin:desired-count), not by Terraform"
   type        = number
   default     = 1
 }
