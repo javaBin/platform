@@ -186,3 +186,9 @@ variable "service_discovery_zone_id" {
   description = "Route53 private zone of the app-to-app namespace (app-peers-sync audits its records)"
   type        = string
 }
+
+variable "aws_access_group" {
+  description = "Google group whose direct members Google SCIM provisions to Identity Center; the team provisioner adds team members to it"
+  type        = string
+  default     = "javabin-developer@java.no"
+}

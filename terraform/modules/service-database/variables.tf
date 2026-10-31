@@ -1,5 +1,5 @@
 variable "name" {
-  description = "Table purpose (e.g. 'sessions', 'cache'). Table name: {team}-{name}"
+  description = "Table purpose (e.g. 'sessions', 'cache'). Table name: {team}-{service}-{name}"
   type        = string
 }
 
@@ -9,7 +9,7 @@ variable "team" {
 }
 
 variable "service" {
-  description = "Service tag value (e.g. 'moresleep')"
+  description = "App name (e.g. 'moresleep'), part of the resource name and the service tag"
   type        = string
 }
 

@@ -34,6 +34,9 @@ on:
       image_tag:
         description: "Primary image tag (sha-*)"
         value: ${{ jobs.build.outputs.image_tag }}
+      image:
+        description: "Image pinned to the pushed digest ({repo}@sha256:...), what ecs-deploy runs"
+        value: ${{ jobs.build.outputs.image }}
 
 permissions:
   id-token: write
@@ -46,6 +49,7 @@ jobs:
     outputs:
       image_uri: ${{ steps.push.outputs.image_uri }}
       image_tag: ${{ steps.tags.outputs.primary_tag }}
+      image: ${{ steps.push.outputs.image }}
     steps:
       - name: Set session name
         # Bot actors (renovate[bot]) contain characters STS rejects in session names
@@ -89,6 +93,7 @@ jobs:
           APP_NAME: ${{ inputs.app_name || github.event.repository.name }}
           REF_NAME: ${{ github.ref_name }}
           REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
           REPO="${REGISTRY}/${TEAM}-${APP_NAME}"
@@ -98,7 +103,10 @@ jobs:
 
           TAGS="${REPO}:${SHA_TAG}"
 
-          if [ "${REF_NAME}" = "main" ] || [ "${REF_NAME}" = "master" ]; then
+          # Default branch, whatever it is called (the same check as the deploy
+          # jobs in javabin.yml). The date tag keeps the main- prefix whatever
+          # the branch name: the ECR lifecycle policy keeps the newest main-*.
+          if [ -n "${DEFAULT_BRANCH}" ] && [ "${REF}" = "refs/heads/${DEFAULT_BRANCH}" ]; then
             DATE_TAG="main-$(date -u +%Y%m%d-%H%M)"
             TAGS="${TAGS},${REPO}:${DATE_TAG},${REPO}:latest"
           fi
@@ -112,6 +120,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: ${{ inputs.build_context }}
@@ -123,4 +132,11 @@ jobs:
 
       - name: Set output
         id: push
-        run: echo "image_uri=${{ steps.tags.outputs.repo }}:${{ steps.tags.outputs.primary_tag }}" >> "$GITHUB_OUTPUT"
+        env:
+          REPO: ${{ steps.tags.outputs.repo }}
+          PRIMARY_TAG: ${{ steps.tags.outputs.primary_tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          [ -n "${DIGEST}" ] || { echo "::error::build-push-action returned no image digest"; exit 1; }
+          echo "image_uri=${REPO}:${PRIMARY_TAG}" >> "$GITHUB_OUTPUT"
+          echo "image=${REPO}@${DIGEST}" >> "$GITHUB_OUTPUT"
