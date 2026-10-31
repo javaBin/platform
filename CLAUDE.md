@@ -202,6 +202,7 @@ terraform/state/
 | `scripts/upload-plan.sh` | CI: upload plan artifact to S3 |
 | `scripts/auth-doctor.py` | CI (after app apply) / local: checks an app's Cognito sign-in end to end from auth-status + HTTP probes (tests: `scripts/tests/`) |
 | `scripts/reconcile-app-auth.sh` | CI (after platform apply): queue an app-auth-sync reconcile |
+| `scripts/sync-team-access.sh` | CI (after platform apply): queue team-provisioner `sync_team_access` (new teams' permission set + account assignment once their guardrails policy exists) |
 
 ## Naming
 
@@ -242,7 +243,9 @@ Scheduled:
 
 EventBridge (Create/Run) ──► compliance-reporter (report to Slack, no auto-fix)
   Hourly             ──► override-cleanup (delete stale SSM override tokens)
-Registry merge ──► team-provisioner (Google/GitHub/Budget/Cognito/Identity Center sync + member provisioning + access group sync)
+  Every 3 hours      ──► team-provisioner sync_access_members (team members into javabin-developer@; Identity Center group memberships for members Google SCIM has provisioned since)
+Registry merge ──► team-provisioner (Google/GitHub/Budget/Cognito/Identity Center sync + member provisioning + access group sync; team and kodesmia members become direct members of javabin-developer@ so Google SCIM provisions them)
+Platform apply ──► team-provisioner sync_team_access (team permission sets once guardrails exist; #javabin-infra-alerts on new access or failure)
 AWS Budgets (200%) ──► budget-enforcer Lambda ──► ECS scale-to-zero + #javabin-cost-alerts
 EventBridge (Create/Run) ──► resource-tagger Lambda ──► Tag created-by + commit
 ```
@@ -325,6 +328,7 @@ Team group OWNERs are admin-managed and never removed by the sync; non-@java.no 
 ### Known Issues
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
 - **Cognito**: pools deployed; internal pool's `GoogleSAML` IdP was created outside Terraform. It is replaced by the Terraform-managed Google OIDC IdP at cutover (docs/cognito-google-setup.md), then deleted
+- **Google SCIM provisions only direct members** of `drift@`, `styret@` and `javabin-developer@java.no` to Identity Center; it does not expand nested groups. Nobody gets an Identity Center user (and so no AWS access, team role included) unless they are a direct member of one of those. The team provisioner adds team members and (via `flatten: true` in the registry's `groups/access.yaml`) kodesmia members to `javabin-developer@` one by one; SCIM creates the user later, and the 3-hourly `sync_access_members` run adds them to their Identity Center groups. Don't create Identity Center users through the API: they'd have no link to Google (see `docs/lambda-functions.md`).
 - **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) instead. The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
 - **App databases share one network path** (fixed by `app-network`): service-rds now allows ingress only from the app's own `{team}-{app}-tasks` SG; each app moves off the shared ECS tasks SG on its next pipeline run
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
