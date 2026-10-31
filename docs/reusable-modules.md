@@ -70,6 +70,10 @@ Supports `environment` (map) and `secrets` (map of name => ARN) for container co
 
 `service_registry_arns` (list, default `[]`) registers the tasks in Cloud Map (from `app-network`).
 
+**Containers:** the app container (`name`) runs as `container_user` (default `"1000"`; `0`/`root` are rejected) with `readonly_root_filesystem` (default `true`). The task volume `tmp` is mounted at `/tmp`; a non-essential init container `platform_tmp_init` (`tmp_init_image`, busybox pinned by digest from `public.ecr.aws`) runs as root, sets the volume to mode 1777 and exits, and the app container `dependsOn` it with condition `SUCCESS`. Without it the root-owned Fargate volume is not writable by a non-root user.
+
+`health_check_grace_period_seconds` (default `120`) is set on the service only when `target_group_arn` is set (AWS rejects it without a load balancer). `enable_execute_command` (default `false`) turns on ECS Exec; the task role then needs `ssmmessages:CreateControlChannel`, `CreateDataChannel`, `OpenControlChannel` and `OpenDataChannel` (the generator adds them for `compute.exec`).
+
 **Outputs:** `service_name`, `task_definition_arn`, `log_group_name`
 
 ## service-bucket

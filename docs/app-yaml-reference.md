@@ -90,11 +90,28 @@ compute:
   desired_count: 1    # default: 1
   health_check: /health  # default: /health — ALB target group health check path
   health_check_matcher: "200"      # default: "200"
+  health_check_grace_period: 120   # default: 120 — seconds a new task may fail ALB health checks
   user: "1000"                     # default: "1000" — container user (non-root)
   readonly_root_filesystem: true   # default: true — only /tmp is writable
+  exec: false                      # default: false — allow `aws ecs execute-command` into the tasks
 ```
 
+**`user`** is the user the app container runs as: a name, uid, `user:group` or `uid:gid` (the ECS `user` field). It defaults to uid `1000` and always replaces the image's `USER`, so set it to the image's own non-root user when its files belong to that user (for example `"101"` for `nginxinc/nginx-unprivileged`, whose files belong to uid 101). `0` and `root` are rejected.
+
+**`/tmp`** is an empty volume, writable by any user (mode 1777, like a normal `/tmp`) and wiped when the task stops. Fargate creates the volume owned by root, so the platform adds a short init container (`platform_tmp_init`, busybox from `public.ecr.aws`, pulled through the NAT gateway) that runs as root, runs `chmod 1777 /tmp` and exits; the app container starts once it has succeeded. You see it next to your container in `aws ecs describe-tasks`, and its output in the app's log group. Security Hub ECS.20 (no root containers) is suppressed for app task definitions because of it.
+
 Images that write outside `/tmp` (caches, uploads to local disk) need `readonly_root_filesystem: false`, or their tasks crash on start; the deployment circuit breaker then rolls the deploy back.
+
+**`health_check_grace_period`** (0-3600, apps with `routing` only): for this long after a task starts, ECS ignores failing load balancer health checks. The target group checks every 10 s and marks a target unhealthy after 2 failures, so without it a task that takes more than about 20 s to start (JVM apps, migrations) is stopped and replaced before it is ready. Raise it for slow starters; the deploy still fails when the task never becomes healthy.
+
+**`exec: true`** turns on [ECS Exec](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-exec.html) for the service and gives the task role the `ssmmessages` permissions it needs. It requires `readonly_root_filesystem: false`, because the agent ECS Exec runs inside the container writes to its filesystem (AWS does not support ECS Exec with a read-only root filesystem). Team members can then open a shell in their own team's tasks with the `javabin-team-{team}` SSO permission set, with the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) installed:
+
+```sh
+aws ecs execute-command --cluster javabin-platform --task <task-id> \
+  --container <app name> --interactive --command /bin/sh
+```
+
+The setting applies to tasks started after the deploy that turns it on. Tasks of other teams are denied.
 
 Valid CPU/memory combinations follow [Fargate task size constraints](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html).
 

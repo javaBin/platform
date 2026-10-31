@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -154,6 +155,69 @@ class GenerationTest(unittest.TestCase):
         main = generate(app)["main.tf"]
         self.assertNotIn("target_group_arn", main)
         self.assertNotIn('module "alarms"', main)
+
+
+class ComputeTest(unittest.TestCase):
+    def service_block(self, app):
+        main = generate(app)["main.tf"]
+        start = main.index('module "service"')
+        return main[start:main.index("\n}", start)]
+
+    def assertRejected(self, app, fragment):
+        with self.assertRaises(gen.AppYamlError) as cm:
+            generate(app)
+        self.assertIn(fragment, str(cm.exception))
+
+    def assertAttr(self, block, name, value):
+        self.assertRegex(block, rf"\n  {name} += {re.escape(value)}\n")
+
+    def with_compute(self, **fields):
+        return {**CUPCAKE, "compute": {**CUPCAKE["compute"], **fields}}
+
+    def test_default_user_is_non_root_and_compute_user_overrides_it(self):
+        self.assertAttr(self.service_block(CUPCAKE), "container_user", '"1000"')
+        for user, rendered in (("101", '"101"'), (101, '"101"'), ("nginx", '"nginx"'), ("1000:1000", '"1000:1000"')):
+            self.assertAttr(self.service_block(self.with_compute(user=user)), "container_user", rendered)
+
+    def test_root_user_is_rejected(self):
+        for user in ("0", 0, "root", "0:0", "root:root"):
+            self.assertRejected(self.with_compute(user=user), "may not run as root")
+
+    def test_malformed_user_is_rejected(self):
+        for user in ("", "a b", True, "1000:", ["1000"]):
+            self.assertRejected(self.with_compute(user=user), "compute.user")
+
+    def test_grace_period_defaults_to_120_and_is_configurable(self):
+        self.assertAttr(self.service_block(CUPCAKE), "health_check_grace_period_seconds", "120")
+        block = self.service_block(self.with_compute(health_check_grace_period=300))
+        self.assertAttr(block, "health_check_grace_period_seconds", "300")
+
+    def test_grace_period_is_only_set_with_routing(self):
+        worker = {k: v for k, v in CUPCAKE.items() if k not in ("routing", "auth")}
+        self.assertNotIn("health_check_grace_period_seconds", self.service_block(worker))
+
+    def test_grace_period_must_be_whole_seconds_in_range(self):
+        for value in (-1, 3601, 1.5, "120", True):
+            self.assertRejected(self.with_compute(health_check_grace_period=value),
+                                "compute.health_check_grace_period")
+
+    def test_exec_is_off_by_default(self):
+        main = generate(CUPCAKE)["main.tf"]
+        self.assertNotIn("enable_execute_command", main)
+        self.assertNotIn("ssmmessages", main)
+
+    def test_exec_enables_execute_command_and_grants_ssm_channels(self):
+        app = self.with_compute(exec=True, readonly_root_filesystem=False)
+        main = generate(app)["main.tf"]
+        self.assertAttr(self.service_block(app), "enable_execute_command", "true")
+        task_role = main[main.index('module "task_role"'):main.index('module "service"')]
+        self.assertIn("ecs-exec", task_role)
+        for action in ("CreateControlChannel", "CreateDataChannel", "OpenControlChannel", "OpenDataChannel"):
+            self.assertIn(f"ssmmessages:{action}", task_role)
+
+    def test_exec_needs_a_writable_root_filesystem(self):
+        self.assertRejected(self.with_compute(exec=True), "readonly_root_filesystem: false")
+        self.assertRejected(self.with_compute(exec="yes", readonly_root_filesystem=False), "compute.exec")
 
 
 class AuthFeaturesTest(unittest.TestCase):
@@ -578,7 +642,7 @@ class PeersGenerationTest(unittest.TestCase):
         for app in (CUPCAKE, FROSTING, FULL, {"name": "worker", "team": "core"}):
             main = generate(app)["main.tf"]
             self.assertIn('module "network"', main)
-            self.assertIn("security_group_ids       = [module.network.security_group_id]", main)
+            self.assertRegex(main, r"security_group_ids += \[module\.network\.security_group_id\]")
             self.assertIn("[module.network.registry_arn]", main)
             self.assertNotIn("ecs_tasks_security_group_id", main)
 

@@ -195,3 +195,54 @@ resource "aws_securityhub_automation_rule" "alb_http_redirect" {
 
   depends_on = [aws_securityhub_account.main]
 }
+
+# App task definitions (terraform/modules/ecs-service) carry a platform init
+# container that runs as root for one command, `chmod 1777 /tmp`, because
+# Fargate creates the shared /tmp volume root-owned and the app runs as a
+# non-root user. ECS.20 fails any task definition with a root container, so
+# it would flag every app. The app container itself cannot be root: the
+# generator and the module both reject compute.user 0/root. Scoped to
+# team-prefixed families; the legacy CDK task definitions keep their findings.
+# Security Hub allows 20 values per criterion, hence one rule per 20 teams.
+resource "aws_securityhub_automation_rule" "ecs_tmp_init_root" {
+  count = length(local.ecs_tmp_init_team_chunks)
+
+  rule_name   = "${var.project}-accepted-ecs-tmp-init-root-${count.index}"
+  description = "Platform /tmp init container in app task definitions runs as root (accepted)."
+  rule_order  = 3
+  rule_status = "ENABLED"
+
+  criteria {
+    compliance_security_control_id {
+      comparison = "EQUALS"
+      value      = "ECS.20"
+    }
+
+    dynamic "resource_id" {
+      for_each = local.ecs_tmp_init_team_chunks[count.index]
+      content {
+        comparison = "PREFIX"
+        value      = "arn:aws:ecs:${var.region}:${var.aws_account_id}:task-definition/${resource_id.value}-"
+      }
+    }
+  }
+
+  actions {
+    type = "FINDING_FIELDS_UPDATE"
+    finding_fields_update {
+      workflow {
+        status = "SUPPRESSED"
+      }
+      note {
+        text       = "Accepted: the platform_tmp_init container runs as root only to chmod 1777 the /tmp volume; the app container runs as a non-root user (enforced by the generator)."
+        updated_by = "${var.project}-platform-terraform"
+      }
+    }
+  }
+
+  depends_on = [aws_securityhub_account.main]
+}
+
+locals {
+  ecs_tmp_init_team_chunks = chunklist(sort(var.registered_teams), 20)
+}

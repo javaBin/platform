@@ -104,6 +104,7 @@ SNS topics, EventBridge rules, Config, GuardDuty, Security Hub, account guardrai
 | Security Hub control disabled | FSBP Inspector.1, Inspector.3 | Inspector EC2 and Lambda code scanning are off (legacy EB only; cost) |
 | Security Hub automation rule (suppress) | RDS.2, RDS.46 on `dbmoresleep` | Intentionally public database; EC2.18/EC2.19 on its security group stay open |
 | Security Hub automation rule (suppress) | ELB.18 on the platform ALB port-80 listener | Redirect-only listener |
+| Security Hub automation rule (suppress) | ECS.20 on `task-definition/{team}-*` for every registered team (one rule per 20 teams) | The `platform_tmp_init` container runs as root only to `chmod 1777 /tmp`; the generator and `ecs-service` reject a root app container |
 
 GuardDuty filters only affect new findings; archive existing matches once in the console.
 

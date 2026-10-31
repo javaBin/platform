@@ -86,6 +86,10 @@ Queries Security Hub for active findings at HIGH and CRITICAL severity, aggregat
 | `/javabin/platform/atlassian-org-id` | Atlassian organisation ID |
 | `/javabin/platform/atlassian-api-key` | Atlassian org admin API key (unscoped — full org admin) |
 
+### Team permission set (`_ensure_team_permission_set`)
+
+`javabin-team-{team}` attaches the `javabin-team-{team}-guardrails` policy and an inline policy: `Action "*"` on resources tagged `team={team}` (or untagged), denies on platform-managed parameters, a few untagged reads, and `AllowExecOnPlatformCluster`: `ecs:ExecuteCommand` on the shared `javabin-platform` cluster. ECS Exec is authorized against both the cluster and the task, and the task is only allowed through its propagated `team` tag, so members can exec into their own team's tasks only (apps with `compute.exec: true`). Changes reach existing permission sets on the next registry sync, which reprovisions them.
+
 ### Team Google group (`sync_google_group`)
 
 Each team gets the group `team-{name}@java.no`. Members are kept in step with the registry: a member

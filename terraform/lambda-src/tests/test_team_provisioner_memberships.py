@@ -92,6 +92,14 @@ class TeamPermissionSetTest(unittest.TestCase):
         managed = next(st for st in policy["Statement"] if st["Sid"] == "DenyPlatformManagedParameters")
         self.assertTrue(any(r.endswith("/apps/*/*/auth-status") for r in managed["Resource"]))
         self.assertTrue(any(r.endswith("/apps/*/*/cognito-client-*") for r in managed["Resource"]))
+        # ECS Exec: the shared cluster is allowed outright; tasks only via the
+        # team-tag condition on AllowTeamResources
+        exec_stmt = next(st for st in policy["Statement"] if st["Sid"] == "AllowExecOnPlatformCluster")
+        self.assertEqual(exec_stmt["Action"], "ecs:ExecuteCommand")
+        self.assertTrue(exec_stmt["Resource"].endswith(":cluster/javabin-platform"))
+        self.assertNotIn("Condition", exec_stmt)
+        team_stmt = next(st for st in policy["Statement"] if st["Sid"] == "AllowTeamResources")
+        self.assertEqual(team_stmt["Condition"], {"StringEqualsIfExists": {"aws:ResourceTag/team": "cupcake"}})
 
     def _guardrails_with(self, tags=None, missing=False):
         h = load(FakeDynamo([]))
