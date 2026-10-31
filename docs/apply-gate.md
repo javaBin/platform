@@ -86,7 +86,7 @@ other registered team's `apps/{team}/` prefix. The list is built from
 | LOW | Auto-approve, credentials issued |
 | MEDIUM | Auto-approve, credentials issued |
 | HIGH | Blocked until override token exists and HMAC is valid |
-| FAILED | Blocked (review script error) |
+| FAILED | Blocked: the review service gave no verdict (Bedrock or Lambda failure). Not a risk finding; re-run all jobs or override |
 
 ## Override Tokens
 
@@ -109,13 +109,66 @@ An override token is an HMAC-signed JSON file stored in S3 alongside the plan:
 
 ## Override Flow
 
-1. Apply blocks on HIGH risk → Slack alert with plan key and override link
-2. Admin triggers `approve-override.yml` in the platform repo
-   - Protected by GitHub environment `override-approval` (requires board member review)
+1. Apply blocks on HIGH or FAILED → Terraform Apply fails with what to do
+   (see below), and a Slack alert with the plan key, run link and override link
+   goes to the override channel
+2. A platform team member dispatches `approve-override.yml` in the platform repo
+   with the plan key and a reason
+   - Protected by GitHub environment `override-approval` (requires review by the
+     `javaBin/platform` team)
+   - The repo and run are read from the plan key
+     (`plans/javaBin/<repo>/<run_id>/tfplan`); the optional `repo` and `run_id`
+     inputs only have to match it. A malformed key fails before anything is signed
 3. Override workflow assumes `javabin-ci-override-approver` OIDC role
 4. Invokes gate Lambda `sign` action → Lambda computes HMAC, writes `override.json` to S3
-5. Workflow retriggers the failed apply run via `gh run rerun --failed`
-6. Apply re-runs → gate Lambda finds `override.json` → verifies HMAC → issues credentials
+5. The blocked run is re-run:
+   - javaBin/platform runs: the workflow runs `gh run rerun --failed` itself
+   - app repos: the workflow's `github.token` only covers javaBin/platform (no
+     platform GitHub App has `actions: write`), so the job summary and Slack
+     message give the run URL and the developer clicks **Re-run failed jobs**
+6. Apply re-runs → gate Lambda finds `override.json` → verifies HMAC → issues
+   credentials. The gate checks for an override on every run, so no other state
+   has to change. Docker build and ECS deploy, which wait for a successful
+   apply, run after it.
+
+## Requesting an override
+
+A HIGH or FAILED review blocks Terraform Apply, and with it the image build
+and ECS deploy of the same run. The Terraform Apply job prints which case it
+is, and the plan key.
+
+**HIGH — the review found HIGH risk.** Read the review in the Terraform Plan
+job log or the PR comment. If the change is intended:
+
+1. Ask the platform team (GitHub team `javaBin/platform`, or the override Slack
+   channel where the alert was posted) for an override. Send the plan key
+   (`plans/javaBin/<repo>/<run_id>/tfplan`), the run URL, and why the change is
+   safe.
+2. They run [approve-override.yml](https://github.com/javaBin/platform/actions/workflows/approve-override.yml)
+   with that plan key and a reason, or:
+
+   ```bash
+   gh workflow run approve-override.yml -R javaBin/platform \
+     -f plan_key=plans/javaBin/<repo>/<run_id>/tfplan -f reason="..."
+   ```
+
+   A `javaBin/platform` team member must then approve the `override-approval`
+   environment.
+3. When it has finished, open your blocked run and click **Re-run failed jobs**.
+
+**FAILED — the review service failed.** This is not a risk finding: Bedrock
+or the plan-review Lambda did not return a verdict. `invoke-plan-review.sh`
+already retries (3 invokes by default, each with 3 Bedrock attempts) before
+giving up. Click **Re-run all jobs** on the run later; that re-plans and
+re-reviews. **Re-run failed jobs** does not help, since it re-reads the same
+FAILED verdict. If the service stays down, request an override as for HIGH,
+then click **Re-run failed jobs**.
+
+The override is for that plan key (HMAC over the key) and expires with the
+plan bucket's lifecycle. A push of a new commit makes a new run and plan key,
+which is reviewed afresh. Known gap: **Re-run all jobs** re-plans the same
+commit under the same key (the key holds the run ID, not the attempt), and an
+`override.json` signed for an earlier attempt is still accepted.
 
 ## S3 Plan Artifact Layout
 

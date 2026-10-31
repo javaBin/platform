@@ -133,14 +133,14 @@ Docker BuildKit build + push to ECR repo `{team}-{app_name}`. Uses GitHub Action
 
 ### tf-plan.yml
 
-Plans the committed `terraform/` at the branch head (after expand), uploads the plan to S3 with its SHA256, has the `javabin-plan-review` Lambda review it (Bedrock Claude Haiku 5.5, platform credentials; it writes `risk.json`) and posts plan + review to the PR. A review that cannot run after retries is `FAILED`: re-run the workflow, or request an override if it persists.
+Plans the committed `terraform/` at the branch head (after expand), uploads the plan to S3 with its SHA256, has the `javabin-plan-review` Lambda review it (Bedrock Claude Haiku 5.5, platform credentials; it writes `risk.json`) and posts plan + review to the PR. A review the service could not run is `FAILED`, which is a service failure, not a risk finding: `invoke-plan-review.sh` retries it (`REVIEW_INVOKE_ATTEMPTS`, default 3) and the log says which case it is (`Plan review service failed` or `Plan review found HIGH risk`). Both block the apply; see [Requesting an override](apply-gate.md#requesting-an-override).
 
 **AWS role:** `javabin-ci-app-broker` (OIDC) → broker Lambda → `javabin-ci-plan-{team}` (read-only: refresh, state read, state lock, plan upload; tf-plan runs on any branch, so it cannot change resources); the review step uses the broker OIDC role to invoke `javabin-plan-review`
 **Outputs:** `has_changes`, `plan_key`, `plan_sha256`, `risk_level`, `planned_sha`
 
 ### tf-apply.yml
 
-Checks out the commit tf-plan planned, verifies the plan SHA256 and asks the apply-gate Lambda for credentials (HIGH/FAILED risk needs a board-member override), then applies.
+Checks out the commit tf-plan planned, verifies the plan SHA256 and asks the apply-gate Lambda for credentials (HIGH/FAILED risk needs an override approved by the platform team), then applies. A blocked apply prints the plan key and what to do; docker-build and ecs-deploy wait for it. See [Requesting an override](apply-gate.md#requesting-an-override).
 
 **AWS role:** `javabin-ci-apply-gate` (OIDC) → apply-gate Lambda → `javabin-ci-team-{team}`
 
@@ -156,7 +156,7 @@ Transitional Elastic Beanstalk deploy via EB CLI. Will be removed per-repo when 
 
 ### approve-override.yml
 
-`workflow_dispatch` — only board members can trigger. Writes a signed override for a blocked plan. Posts confirmation to Slack.
+`workflow_dispatch` behind the `override-approval` environment (reviewed by the `javaBin/platform` team). Inputs: `plan_key` and `reason`; the repo and run come from the plan key. Writes a signed override for the blocked plan and posts to Slack. Platform runs are re-run automatically; for an app repo the job prints the run URL and the developer clicks **Re-run failed jobs** (`github.token` cannot re-run another repo's workflows).
 
 **AWS role:** `javabin-ci-override-approver`
 

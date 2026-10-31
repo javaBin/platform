@@ -44,7 +44,7 @@ Monday 08:00   ──► securityhub-summary Lambda ──► #javabin-infra-ale
 
 - **LOW/MEDIUM** → auto-apply
 - **HIGH** → blocked, Slack notification sent, board member must run approve-override workflow
-- **FAILED** → blocked (review script error)
+- **FAILED** → blocked (the review could not run; a service failure, not a risk finding). See [Requesting an override](apply-gate.md#requesting-an-override)
 
 ## Plan Artifact Security
 

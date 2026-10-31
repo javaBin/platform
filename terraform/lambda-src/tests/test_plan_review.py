@@ -115,7 +115,7 @@ class PlanReviewTest(unittest.TestCase):
         h = load(self.s3, FakeBedrock([RuntimeError("boom")] * 3))
         result = h.handler({"plan_key": PLAN, "id_token": "good"}, None)
         self.assertEqual(result["risk"], "FAILED")
-        self.assertIn("could not run", result["markdown"])
+        self.assertIn("could not review this plan", result["markdown"])
         self.assertEqual(json.loads(self.s3.objects["plans/javaBin/frosting/123/risk.json"])["level"], "FAILED")
 
     def test_failed_is_recorded_before_review_so_a_crash_leaves_a_verdict(self):
@@ -131,6 +131,33 @@ class PlanReviewTest(unittest.TestCase):
         ctx = types.SimpleNamespace(get_remaining_time_in_millis=lambda: 50_000)
         self.assertEqual(h.handler({"plan_key": PLAN, "id_token": "good"}, ctx)["risk"], "FAILED")
         self.assertEqual(bedrock.calls, 0)
+
+    def test_failed_is_not_alerted_while_the_caller_retries(self):
+        h = load(self.s3, FakeBedrock([RuntimeError("boom")] * 3))
+        sent = []
+        h.notify = lambda repo, plan_key, risk, review: sent.append(risk)
+        h.handler({"plan_key": PLAN, "id_token": "good", "notify": True, "retrying": True}, None)
+        self.assertEqual(sent, [])
+
+    def test_failed_is_alerted_as_service_failure_on_the_last_attempt(self):
+        h = load(self.s3, FakeBedrock([RuntimeError("boom")] * 3))
+        posted = []
+        h.get_webhook_url = lambda ssm, param: "https://hooks"
+        h.post_to_slack = lambda url, body: posted.append(body["text"])
+        result = h.handler({"plan_key": PLAN, "id_token": "good", "notify": True, "retrying": False}, None)
+        self.assertIn("not a risk finding", result["markdown"])
+        self.assertEqual(len(posted), 1)
+        self.assertIn("plan-review service failed", posted[0])
+        self.assertIn("https://github.com/javaBin/frosting/actions/runs/123|Blocked run", posted[0])
+
+    def test_high_is_alerted_even_when_retrying(self):
+        h = load(self.s3, FakeBedrock([tool_response("HIGH")]))
+        posted = []
+        h.get_webhook_url = lambda ssm, param: "https://hooks"
+        h.post_to_slack = lambda url, body: posted.append(body["text"])
+        h.handler({"plan_key": PLAN, "id_token": "good", "notify": True, "retrying": True}, None)
+        self.assertEqual(len(posted), 1)
+        self.assertIn("the review found HIGH risk", posted[0])
 
     def test_another_repos_plan_is_refused(self):
         h = load(self.s3, FakeBedrock([]), repo="cupcake")

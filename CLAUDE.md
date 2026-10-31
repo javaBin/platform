@@ -152,7 +152,7 @@ terraform/state/
   tf-apply.yml         SHA verify + apply via project role
   eb-deploy.yml        Elastic Beanstalk deploy (transition)
   ecs-deploy.yml       ECS task definition update
-  approve-override.yml Risk gate override (board members)
+  approve-override.yml Risk gate override (platform team; docs/apply-gate.md#requesting-an-override)
   expand-terraform.yml Validate app.yaml, generate terraform/, commit it
 ```
 
@@ -193,7 +193,9 @@ terraform/state/
 | `scripts/provision-atlassian.py` | CI: resolve atlassian.yaml to java.no emails, invoke team-provisioner `sync_atlassian` (report-only unless `atlassian_sync_apply`) |
 | `scripts/sync-members.py` | CI: sync approved heroes from Google Sheets into members.yaml |
 | `scripts/review-plan.py` | CI: LLM plan review via Bedrock (platform CI; also bundled into the plan-review Lambda) |
-| `scripts/invoke-plan-review.sh` | CI: app tf-plan → plan-review Lambda |
+| `scripts/invoke-plan-review.sh` | CI: app tf-plan → plan-review Lambda; retries FAILED (service) reviews, says FAILED vs HIGH (tests: `scripts/tests/`) |
+| `scripts/override-help.sh` | CI: what a blocked apply tells the developer (HIGH: request override; FAILED: re-run all jobs) |
+| `scripts/override-target.sh` | CI (approve-override): repo + run from the plan key; re-runs platform runs, prints the re-run step for app repos |
 | `scripts/notify-slack.sh` | CI: generic Slack webhook notification (via `slack_post.py`) |
 | `scripts/notify-high-risk.sh` | CI: blocked-apply alert (risk HIGH or review FAILED) with plan key + override link (via `slack_post.py`) |
 | `scripts/slack_post.py` | CI: builds escaped, size-limited Block Kit, checks Slack's reply, falls back to plain text (tests: `scripts/tests/`) |
