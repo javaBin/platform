@@ -170,7 +170,7 @@ terraform/state/
 | `team-provisioner` | Syncs Google Groups, GitHub teams, AWS Budgets from registry team YAML; Atlassian groups from `groups/atlassian.yaml` |
 | `securityhub-summary` | Weekly Security Hub findings summary (Monday 08:00 UTC) |
 | `password-set` | Self-service password-set for new hero accounts (ALB only: password.javazone.no) |
-| `budget-enforcer` | Scales ECS services to zero when team exceeds 200% budget and sets `javabin:desired-count=0` so ecs-deploy keeps them at 0 until a tf-apply |
+| `budget-enforcer` | Suspends a team over 200% of budget: SSM marker, ECS to zero with `javabin:desired-count=0` (so ecs-deploy and tf-apply keep 0 tasks), RDS stopped; reconcile every 6 h re-applies it and lifts it when spend is back under 200% |
 | `resource-tagger` | EventBridge-triggered, auto-tags created-by + commit on new resources |
 | `ci-broker` | Verifies the job's GitHub OIDC token (repo from signed claims), checks repo ∈ app.yaml team, vends short-lived team role credentials |
 | `app-auth-sync` | Creates/deletes Cognito app clients requested by app.yaml `auth:` and `routing.login` (SSM request → client + credentials + allowed groups) |
@@ -184,6 +184,7 @@ terraform/state/
 |--------|------|
 | `scripts/bootstrap.sh` | One-time: create state bucket + lock tables |
 | `scripts/generate-modules.py` | CI: validates app.yaml, generates fmt-clean module blocks into terraform/ (tests: `scripts/tests/`) |
+| `scripts/check-alb-priorities.py` | CI (tf-plan): fails the plan when a listener rule would take an ALB priority already in use (tests: `scripts/tests/`) |
 | `scripts/registry.py` | Module sources + boilerplate templates for generate-modules.py |
 | `scripts/resolve-tool-version.sh` | CI: resolve node/java version from the app repo's version files |
 | `scripts/sync-registered-teams.py` | CI: registry `teams/*.yaml` → `registered-teams.auto.tfvars` (needs App token) |
@@ -206,7 +207,7 @@ terraform/state/
 | `scripts/check-aws-access.sh` | CI (app tf-plan): skips AWS steps with a notice when the run has no OIDC token (fork/Dependabot PRs) (tests: `scripts/tests/`) |
 | `scripts/auth-doctor.py` | CI (after app apply) / local: checks an app's Cognito sign-in end to end from auth-status + HTTP probes (tests: `scripts/tests/`) |
 | `scripts/reconcile-app-auth.sh` | CI (after platform apply): queue an app-auth-sync reconcile |
-| `scripts/sync-team-access.sh` | CI (after platform apply): queue team-provisioner `sync_team_access` (new teams' permission set + account assignment once their guardrails policy exists) |
+| `scripts/sync-team-access.sh` | CI (after platform apply): queue team-provisioner `sync_team_access` (switches teams from read-only to full access once their guardrails policy exists; rolls inline policy changes out) |
 
 ## Naming
 
@@ -223,7 +224,7 @@ terraform/state/
 | SSM params (app) | `/javabin/apps/{team}/{service}/{name}` |
 | ECS cluster | `javabin-platform` |
 | ECS execution roles | `javabin-ecs-exec-{team}` (platform-owned, reads only `/javabin/apps/{team}/*`) |
-| SSO team guardrails | `javabin-team-{team}-guardrails` (developer boundary with the team written in, for `javabin-team-{team}` permission sets) |
+| SSO team guardrails | `javabin-team-{team}-guardrails` (developer boundary with the team written in; the permissions boundary of `javabin-team-{team}` permission sets) |
 | ECR repos | `{team}-{service}` |
 | SNS topics | `javabin-{alerts,security,budget-enforcement}` |
 | Log groups | `/ecs/{team}/{service}` |
@@ -250,7 +251,8 @@ EventBridge (Create/Run) ──► compliance-reporter (report to Slack, no auto
   Every 3 hours      ──► team-provisioner sync_access_members (team members into javabin-developer@; Identity Center group memberships for members Google SCIM has provisioned since)
 Registry merge ──► team-provisioner (Google/GitHub/Budget/Cognito/Identity Center sync + member provisioning + access group sync; team and kodesmia members become direct members of javabin-developer@ so Google SCIM provisions them)
 Platform apply ──► team-provisioner sync_team_access (team permission sets once guardrails exist; #javabin-infra-alerts on new access or failure)
-AWS Budgets (200%) ──► budget-enforcer Lambda ──► ECS scale-to-zero + #javabin-cost-alerts
+AWS Budgets (200%) ──► budget-enforcer Lambda ──► suspension marker + ECS scale-to-zero (javabin:desired-count=0) + RDS stop + #javabin-cost-alerts
+  Every 6 hours      ──► budget-enforcer reconcile (keep suspensions in force, lift when spend < 200%)
 EventBridge (Create/Run) ──► resource-tagger Lambda ──► Tag created-by + commit
 ```
 
@@ -279,6 +281,7 @@ All parameters are in `eu-central-1`. Use `--profile javabin --region eu-central
 | `/javabin/apps/{team}/{app}/network` | String | app.yaml `calls:`/`provides:` request (written by app TF, read by app-peers-sync) |
 | `/javabin/apps/{team}/{app}/peer-{t}-{a}-{url,scopes}`, `m2m-client-{id,secret}` | String / SecureString | Written by app-peers-sync, read by ECS execution role |
 | `/javabin/apps/{team}/{app}/peers-status` | String | Written by app-peers-sync: state of the app's calls and consumers |
+| `/javabin/budget-suspensions/{team}` | String (JSON) | Written/deleted by budget-enforcer; read by the ecs-service module (plans the `javabin:desired-count` tag as `0` while it exists) |
 
 ## GCP Connection
 
@@ -333,7 +336,7 @@ Team group OWNERs are admin-managed and never removed by the sync; non-@java.no 
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
 - **Cognito**: pools deployed; the internal pool has been cut over to the Terraform-managed Google OIDC IdP (`internal_identity_providers` defaults to `["Google"]`). The old `GoogleSAML` IdP, created outside Terraform, is still in the pool but offered on no app client until it is deleted (docs/cognito-google-setup.md, "Decommission GoogleSAML")
 - **Google SCIM provisions only direct members** of `drift@`, `styret@` and `javabin-developer@java.no` to Identity Center; it does not expand nested groups. Nobody gets an Identity Center user (and so no AWS access, team role included) unless they are a direct member of one of those. The team provisioner adds team members and (via `flatten: true` in the registry's `groups/access.yaml`) kodesmia members to `javabin-developer@` one by one; SCIM creates the user later, and the 3-hourly `sync_access_members` run adds them to their Identity Center groups. Don't create Identity Center users through the API: they'd have no link to Google (see `docs/lambda-functions.md`).
-- **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) instead. The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
+- **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) as their permissions boundary instead. It must stay a boundary: its baseline `Allow *` attached as a policy grants everything its Denies miss (every untagged resource). A team with no guardrails policy (`platform`, or a new team before platform CI) gets read-only access only. The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
 - **App databases share one network path** (fixed by `app-network`): service-rds now allows ingress only from the app's own `{team}-{app}-tasks` SG; each app moves off the shared ECS tasks SG on its next pipeline run
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.
 - **`registered_app_repos` manually managed**: Being replaced with team-scoped IAM roles (repo→team resolved via GitHub API at runtime)

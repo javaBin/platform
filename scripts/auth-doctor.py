@@ -363,7 +363,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--app-yaml", default="app.yaml")
     p.add_argument("--team", help="default: app.yaml team")
-    p.add_argument("--app", help="default: app.yaml name, then $APP_SERVICE, then the repository name")
+    p.add_argument("--app", help="default: app.yaml name (required there)")
     p.add_argument("--wait", type=int, default=0, help="seconds to wait for app-auth-sync to finish (CI: 180)")
     p.add_argument("--no-tasks", action="store_true", help="skip the ECS task check")
     p.add_argument("--json", action="store_true", help="print results as JSON")
@@ -374,8 +374,10 @@ def main(argv=None):
         return 0
     gen = _load_generator()
     app = gen.load_yaml(args.app_yaml) or {}
-    name = args.app or app.get("name") or os.environ.get("APP_SERVICE") or \
-        os.environ.get("GITHUB_REPOSITORY", "").rsplit("/", 1)[-1]
+    name = args.app or app.get("name")
+    if not name:
+        print(f"{args.app_yaml}: name is required (or pass --app)", file=sys.stderr)
+        return 1
     try:
         report = diagnose(app, args.team, name, args.wait, tasks=not args.no_tasks)
     except gen.AppYamlError as e:

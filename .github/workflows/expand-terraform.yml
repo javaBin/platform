@@ -51,7 +51,6 @@ jobs:
 
       - name: Generate modules from app.yaml
         env:
-          APP_SERVICE: ${{ github.event.repository.name }}
           AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
           AWS_REGION: ${{ inputs.aws_region }}
           TF_ROOT: ${{ inputs.tf_root }}

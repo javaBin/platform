@@ -59,14 +59,15 @@ resource "aws_ssoadmin_managed_policy_attachment" "admin" {
 
 ################################################################################
 # Permission Set: JavabinDeveloper
-# ABAC-scoped access for heroes. Uses permission boundary.
-# Team tag from SAML assertion was meant to enable access to team-tagged
-# resources; no team tag is set, so this grants no team access (see above).
+# Baseline access for every developer (javabin-developer@ / kodesmia).
+# The ABAC statements below never match today: SSO sessions carry no team tag
+# (see CLAUDE.md "Known Issues"). Team resources come from the per-team
+# javabin-team-{team} permission sets the team-provisioner creates.
 ################################################################################
 
 resource "aws_ssoadmin_permission_set" "developer" {
   name             = "${var.project}-developer"
-  description      = "Developer access scoped to team resources via ABAC"
+  description      = "Baseline developer access (metrics, costs, shared infra reads). Team resources: use javabin-team-<team>"
   instance_arn     = local.instance_arn
   session_duration = var.session_duration
 }

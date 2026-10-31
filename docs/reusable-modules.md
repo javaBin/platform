@@ -76,6 +76,8 @@ Supports `environment` (map) and `secrets` (map of name => ARN) for container co
 
 `health_check_grace_period_seconds` (default `120`) is set on the service only when `target_group_arn` is set (AWS rejects it without a load balancer). `enable_execute_command` (default `false`) turns on ECS Exec; the task role then needs `ssmmessages:CreateControlChannel`, `CreateDataChannel`, `OpenControlChannel` and `OpenDataChannel` (the generator adds them for `compute.exec`).
 
+**Budget suspension:** while the SSM marker `{budget_suspension_path}/{team}` exists (default path `/javabin/budget-suspensions`, written by the `budget-enforcer` Lambda), the service's `javabin:desired-count` tag is planned as `"0"` whatever `desired_count` says, so neither an apply nor the ecs-deploy after it (which scales to the tag) undoes the suspension. See [cost-management.md](cost-management.md#budget-suspension).
+
 **Outputs:** `service_name`, `task_definition_arn`, `log_group_name`
 
 ## service-bucket

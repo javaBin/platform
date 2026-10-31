@@ -111,7 +111,7 @@ SNS topics, EventBridge rules, Config, GuardDuty, Security Hub, account guardrai
 
 GuardDuty filters only affect new findings; archive existing matches once in the console.
 
-Team SSO roles' `CredentialAccess:IAMUser/AnomalousBehavior` on `ssm:GetParameter` is deliberately not filtered. The `javabin-team-{team}` permission set is `Action "*"` scoped by `StringEqualsIfExists aws:ResourceTag/team`, so untagged parameters are readable too, and this is the finding a stolen SSO session produces. Check the source country and confirm with the user before archiving one.
+Team SSO roles' `CredentialAccess:IAMUser/AnomalousBehavior` on `ssm:GetParameter` is deliberately not filtered. The `javabin-team-{team}` permission set can read its own team's parameters (`/javabin/apps/{team}/*`, see [team-provisioner](lambda-functions.md#team-permission-set-javabin-teamteam)), and this is the finding a stolen SSO session produces. Check the source country and confirm with the user before archiving one.
 
 ## lambdas
 

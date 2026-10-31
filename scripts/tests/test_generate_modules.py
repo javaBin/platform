@@ -101,8 +101,18 @@ class ValidationTest(unittest.TestCase):
     def test_team_must_be_lowercase_letters(self):
         self.assertRejected({**CUPCAKE, "team": "cup-cake"}, "team:")
 
-    def test_routing_needs_priority(self):
-        self.assertRejected({**CUPCAKE, "routing": {"host": "x.javazone.no"}}, "routing.priority")
+    def test_name_is_required(self):
+        app = {k: v for k, v in CUPCAKE.items() if k != "name"}
+        self.assertRejected(app, "name is required")
+        self.assertRejected({**CUPCAKE, "name": ""}, "name is required")
+
+    def test_name_with_dots_explains_the_fix(self):
+        self.assertRejected({**CUPCAKE, "name": "2027.javazone.no"}, "dots are not allowed")
+
+    def test_explicit_priority_must_be_in_the_hand_picked_range(self):
+        for bad in (0, 1000, 50000, "100", True):
+            self.assertRejected({**CUPCAKE, "routing": {"host": "x.javazone.no", "priority": bad}},
+                                "routing.priority")
 
     def test_host_must_be_under_an_app_domain(self):
         self.assertRejected({**CUPCAKE, "routing": {"host": "cupcake.example.com", "priority": 101}},
@@ -118,6 +128,80 @@ class ValidationTest(unittest.TestCase):
 
     def test_auth_pool_both_is_rejected(self):
         self.assertRejected({**CUPCAKE, "auth": {"pool": "both"}}, "'both' is not supported")
+
+
+class ComputeValidationTest(unittest.TestCase):
+    def assertRejected(self, compute, fragment):
+        with self.assertRaises(gen.AppYamlError) as cm:
+            generate({**CUPCAKE, "compute": compute})
+        self.assertIn(fragment, str(cm.exception))
+
+    def test_valid_fargate_sizes_pass(self):
+        for compute in ({}, {"cpu": 256, "memory": 512}, {"cpu": 256, "memory": 2048},
+                        {"cpu": 1024, "memory": 8192}, {"cpu": 4096, "memory": 30720},
+                        {"cpu": 8192, "memory": 61440}, {"cpu": 512}, {"memory": 4096}):
+            generate({**CUPCAKE, "compute": compute})
+
+    def test_cpu_must_be_a_fargate_size(self):
+        self.assertRejected({"cpu": 300}, "compute.cpu: 300 is not a Fargate size")
+
+    def test_memory_must_fit_the_cpu(self):
+        self.assertRejected({"cpu": 256, "memory": 4096}, "allows 512, 1024, 2048")
+        self.assertRejected({"cpu": 1024, "memory": 1024}, "2048-8192 in steps of 1024")
+        self.assertRejected({"memory": 512}, "not valid with cpu 512")  # default cpu
+        self.assertRejected({"cpu": 8192, "memory": 17408}, "in steps of 4096")
+
+    def test_numbers_must_be_whole_numbers(self):
+        self.assertRejected({"cpu": "512"}, "compute.cpu: '512' must be a whole number")
+        self.assertRejected({"desired_count": True}, "compute.desired_count")
+        self.assertRejected({"port": 80.5}, "compute.port")
+
+    def test_port_and_desired_count_ranges(self):
+        self.assertRejected({"port": 0}, "compute.port: 0 must be 1-65535")
+        self.assertRejected({"port": 70000}, "compute.port")
+        self.assertRejected({"desired_count": -1}, "compute.desired_count: -1")
+        generate({**CUPCAKE, "compute": {"desired_count": 0}})
+
+
+class PriorityTest(unittest.TestCase):
+    def generate_quiet(self, app):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            files = generate(app)
+        return files, out.getvalue()
+
+    def test_explicit_priority_is_kept(self):
+        main = generate(CUPCAKE)["main.tf"]
+        self.assertIn("listener_rule_priority = 101", main)
+
+    def test_missing_priority_is_derived_from_team_and_name(self):
+        app = {**CUPCAKE, "routing": {"host": "cupcake-backend.javazone.no"}}
+        files, out = self.generate_quiet(app)
+        expected = gen.derived_priority("cupcake", "cupcake-backend")
+        self.assertIn(f"listener_rule_priority = {expected}\n", files["main.tf"])
+        self.assertIn(f"using {expected}", out)
+        self.assertEqual(expected, gen.derived_priority("cupcake", "cupcake-backend"))  # stable
+        self.assertNotEqual(expected, gen.derived_priority("cupcake", "cupcake"))
+
+    def test_derived_priorities_stay_in_range_with_room_for_login_rules(self):
+        for i in range(2000):
+            p = gen.derived_priority("team", f"app-{i}")
+            self.assertLessEqual(p, gen.AUTO_PRIORITY_MAX)
+            self.assertGreaterEqual(p - gen.LOGIN_MAX_RULES, gen.AUTO_PRIORITY_MIN)
+            # the slot's top: login rules below it stay inside the slot
+            self.assertEqual((p - gen.AUTO_PRIORITY_MIN) % gen.AUTO_PRIORITY_STRIDE, gen.LOGIN_MAX_RULES)
+
+    def test_derived_priority_fits_the_maximum_login_rules(self):
+        login = [{"paths": [f"/p{i}/*"], "public": True} for i in range(gen.LOGIN_MAX_RULES)]
+        app = {**CUPCAKE, "routing": {"host": "cupcake-backend.javazone.no", "login": login}}
+        files, _ = self.generate_quiet(app)
+        top = gen.derived_priority("cupcake", "cupcake-backend")
+        self.assertIn(f"priority = {top - gen.LOGIN_MAX_RULES}\n", files["main.tf"])
+
+    def test_domain_shorthand_needs_no_priority(self):
+        app = {**{k: v for k, v in CUPCAKE.items() if k != "routing"}, "domain": "cupcake-backend.javazone.no"}
+        files, _ = self.generate_quiet(app)
+        self.assertIn(f"listener_rule_priority = {gen.derived_priority('cupcake', 'cupcake-backend')}",
+                      files["main.tf"])
 
 
 class GenerationTest(unittest.TestCase):

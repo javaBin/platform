@@ -59,6 +59,10 @@ jobs:
           echo "has_pnpm=$(test -f pnpm-lock.yaml && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "has_eb=$(test -d .elasticbeanstalk && echo true || echo false)" >> "$GITHUB_OUTPUT"
           if [ -f app.yaml ]; then
+            if [ -z "$(yq '.name // ""' app.yaml)" ]; then
+              echo "::error file=app.yaml::name is required (e.g. name: my-app): lowercase letters, digits and hyphens, starting with a letter, max 20 chars"
+              exit 1
+            fi
             echo "app_name=$(yq '.name // ""' app.yaml)" >> "$GITHUB_OUTPUT"
             echo "app_team=$(yq '.team // ""' app.yaml)" >> "$GITHUB_OUTPUT"
           else
