@@ -66,9 +66,15 @@ ECS Fargate task definition + service + CloudWatch log group.
 
 Supports `environment` (map) and `secrets` (map of name => ARN) for container configuration.
 
+**Deploys:** Terraform registers the task definition (its image is the ECR repo URL, i.e. `latest`, and only serves as the template) and creates the service with 0 tasks. It then ignores the service's `task_definition` and `desired_count`: the `ecs-deploy` workflow registers a copy of the newest revision pinned to the commit's image digest and sets the desired count from the service tag `javabin:desired-count` (= `desired_count`). Apply alone therefore never restarts the app; the next ecs-deploy does.
+
 **Tag propagation:** `enable_ecs_managed_tags = true` and `propagate_tags = "SERVICE"` ensure Fargate task-level compute costs are attributed to the team via Cost Explorer.
 
 `service_registry_arns` (list, default `[]`) registers the tasks in Cloud Map (from `app-network`).
+
+**Containers:** the app container (`name`) runs as `container_user` (default `"1000"`; `0`/`root` are rejected) with `readonly_root_filesystem` (default `true`). The task volume `tmp` is mounted at `/tmp`; a non-essential init container `platform_tmp_init` (`tmp_init_image`, busybox pinned by digest from `public.ecr.aws`) runs as root, sets the volume to mode 1777 and exits, and the app container `dependsOn` it with condition `SUCCESS`. Without it the root-owned Fargate volume is not writable by a non-root user.
+
+`health_check_grace_period_seconds` (default `120`) is set on the service only when `target_group_arn` is set (AWS rejects it without a load balancer). `enable_execute_command` (default `false`) turns on ECS Exec; the task role then needs `ssmmessages:CreateControlChannel`, `CreateDataChannel`, `OpenControlChannel` and `OpenDataChannel` (the generator adds them for `compute.exec`).
 
 **Outputs:** `service_name`, `task_definition_arn`, `log_group_name`
 
@@ -76,28 +82,28 @@ Supports `environment` (map) and `secrets` (map of name => ARN) for container co
 
 S3 bucket with versioning, encryption, public access block, optional lifecycle expiry.
 
-**Naming:** `{project}-{name}-{account_id}`
+**Naming:** `{team}-{service}-{name}-{account_id}` (`service` is the app name)
 **Outputs:** `bucket_name`, `bucket_arn`, `access_policy_json`
 
 ## service-database
 
 DynamoDB table with configurable keys, billing mode, TTL, PITR, encryption.
 
-**Naming:** `{project}-{name}`
+**Naming:** `{team}-{service}-{name}`
 **Outputs:** `table_name`, `table_arn`, `access_policy_json`
 
 ## service-secret
 
 SSM Parameter Store SecureString. Value is set manually after creation.
 
-**Naming:** `/{project}/apps/{service}/{name}`
+**Naming:** `/{project}/apps/{team}/{service}/{name}`
 **Outputs:** `parameter_arn`, `parameter_name`, `access_policy_json`
 
 ## service-queue
 
 SQS queue + dead-letter queue with configurable retention and visibility timeout.
 
-**Naming:** `{project}-{name}` (queue), `{project}-{name}-dlq` (DLQ)
+**Naming:** `{team}-{service}-{name}` (queue), `{team}-{service}-{name}-dlq` (DLQ)
 **Outputs:** `queue_url`, `queue_arn`, `dlq_url`, `dlq_arn`, `access_policy_json`
 
 ## service-rds
@@ -108,7 +114,9 @@ RDS PostgreSQL instance in private subnets.
 
 | Input | Default |
 |-------|---------|
-| `name` | required |
+| `name` | required — database purpose; identifier `{team}-{service}-{name}`, database name `name` with `-` → `_` |
+| `team`, `service`, `project` | required |
+| `master_username` | `postgres` |
 | `engine_version` | `"16"` |
 | `instance_class` | `db.t3.micro` |
 | `allocated_storage` | 20 GB |
@@ -119,11 +127,11 @@ RDS PostgreSQL instance in private subnets.
 | `multi_az` | false |
 | `deletion_protection` | true |
 
-**Password:** Generated once via `random_password`, stored in SSM at `/{project}/apps/{name}/db-master-password`.
+**Password:** Generated once via `random_password`, stored in SSM at `/{project}/apps/{team}/{service}/{name}/db-master-password`. Password authentication only: IAM database authentication is not enabled.
 
-**Outputs:** `endpoint`, `address`, `port`, `db_name`, `password_parameter_arn`, `access_policy_json`, `security_group_id`
+**Outputs:** `endpoint` (host:port), `address`, `port`, `db_name`, `username`, `url` (`postgresql://host:port/db_name`), `jdbc_url` (`jdbc:postgresql://host:port/db_name`), `password_parameter_arn`, `access_policy_json`, `security_group_id`. The URLs carry no credentials.
 
-**Auto-wiring:** `access_policy_json` grants `rds-db:connect` + `ssm:GetParameter` on the password parameter. Auto-attached to task role via `collect:access_policy_json`.
+**Auto-wiring:** `access_policy_json` grants `ssm:GetParameter` on the password parameter (attached to the task role). The generator maps `env` → `url`, `jdbc_env` → `jdbc_url`, `host_env` → `address`, `port_env` → `port`, `user_env` → `username`, and `password_env` → `password_parameter_arn` as an ECS secret.
 
 **app.yaml:**
 ```yaml
@@ -153,7 +161,7 @@ An existing RDS instance brought under Terraform without changing it (`databases
 
 **Outputs:** `endpoint`, `address`, `port` (string), `arn`, `resource_id`
 
-**Auto-wiring:** none. The app keeps its own credentials (`secrets:`); `env`, `host_env` and `port_env` map to `endpoint`, `address` and `port`.
+**Auto-wiring:** none. The app keeps its own database name and credentials (`secrets:`); `host_env` and `port_env` map to `address` and `port`. `env`, `jdbc_env`, `user_env` and `password_env` are rejected with `adopt`.
 
 ## service-alarm
 

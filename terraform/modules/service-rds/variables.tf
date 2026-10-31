@@ -1,5 +1,10 @@
 variable "name" {
-  description = "Database instance identifier"
+  description = "Database purpose (e.g. 'main'). Identifier: {team}-{service}-{name}; database name: name with - replaced by _"
+  type        = string
+}
+
+variable "service" {
+  description = "App name (e.g. 'moresleep'), part of the instance identifier and the password path"
   type        = string
 }
 
@@ -11,6 +16,12 @@ variable "team" {
 variable "project" {
   description = "Project name prefix (for SSM parameter path)"
   type        = string
+}
+
+variable "master_username" {
+  description = "Master user name; the app connects as this user"
+  type        = string
+  default     = "postgres"
 }
 
 variable "engine_version" {

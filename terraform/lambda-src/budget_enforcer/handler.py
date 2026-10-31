@@ -4,6 +4,11 @@ Trigger: SNS notification from AWS Budgets (200% threshold).
 Parses budget name to extract team, finds ECS services tagged with that team,
 scales them to desired_count=0, and posts a Slack alert to the cost channel.
 
+It also sets the service's javabin:desired-count tag to 0. ecs-deploy reads the
+desired count from that tag, so app pushes keep deploying with 0 tasks; the
+count only comes back when a tf-apply writes compute.desired_count back to the
+tag (a reviewed plan shows "javabin:desired-count" = "0" -> "N").
+
 Does NOT destroy services — just scales to zero for easy recovery.
 """
 
@@ -25,6 +30,7 @@ ssm = boto3.client("ssm")
 CLUSTER = os.environ.get("ECS_CLUSTER", "javabin-platform")
 COST_WEBHOOK_PARAM = os.environ["COST_WEBHOOK_PARAM"]
 BUDGET_NAME_PREFIX = os.environ.get("BUDGET_NAME_PREFIX", "javabin-team-")
+DESIRED_COUNT_TAG = "javabin:desired-count"
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +66,15 @@ def scale_service_to_zero(cluster, service_name):
         desiredCount=0,
     )
     logger.info("Scaled %s to 0 in cluster %s", service_name, cluster)
+
+
+def pin_desired_count_to_zero(service_arn):
+    """Set javabin:desired-count to 0 so ecs-deploy does not scale it back up."""
+    ecs.tag_resource(
+        resourceArn=service_arn,
+        tags=[{"key": DESIRED_COUNT_TAG, "value": "0"}],
+    )
+    logger.info("Set %s=0 on %s", DESIRED_COUNT_TAG, service_arn)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +125,9 @@ def build_alert_blocks(team_name, budget_name, services_scaled, budget_limit):
                 "type": "mrkdwn",
                 "text": (
                     ":arrow_right: *To restore services*, increase the team budget in "
-                    "the registry or manually scale services back up via the AWS console/CLI."
+                    "the registry, then run the app's pipeline: its tf-apply writes "
+                    "`compute.desired_count` back to the `javabin:desired-count` tag "
+                    "and ecs-deploy scales the service up. App pushes alone keep it at 0."
                 ),
             },
         },
@@ -166,6 +183,13 @@ def handler(event, context):
 
         for svc in services:
             svc_name = svc["serviceName"]
+            tags = {t["key"]: t["value"] for t in svc.get("tags", [])}
+            if tags.get(DESIRED_COUNT_TAG, "0") != "0":
+                # Also before the first deploy, while the service has 0 tasks
+                try:
+                    pin_desired_count_to_zero(svc["serviceArn"])
+                except Exception as e:
+                    logger.error("Failed to tag service %s: %s", svc_name, e)
             current_count = svc.get("desiredCount", 0)
             if current_count == 0:
                 logger.info(
