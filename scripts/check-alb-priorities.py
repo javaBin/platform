@@ -11,11 +11,15 @@ priority.
 Usage (tf-plan, after run-plan.sh, with the team credentials):
   python3 scripts/check-alb-priorities.py <tf_root>
 
-Exits 1 with a ::error annotation on a conflict. If the plan or the live rules
-cannot be read it only warns: apply still catches a conflict, just later.
+Exits 1 with a ::error annotation on a conflict, and writes the conflicts to
+alb-priority-errors.txt in the current directory, which post-plan-comment.sh
+puts at the top of the PR comment (tf-plan posts the comment before it fails
+the job). If the plan or the live rules cannot be read it only warns: apply
+still catches a conflict, just later.
 """
 
 import json
+import os
 import subprocess
 import sys
 
@@ -23,6 +27,9 @@ import sys
 # the number of login rules that sit directly below the host rule).
 EXPLICIT_PRIORITY_MAX = 999
 LOGIN_MAX_RULES = 10
+
+# Read by post-plan-comment.sh (both run from the app repo root).
+ERRORS_FILE = "alb-priority-errors.txt"
 
 
 def planned_rules(plan):
@@ -104,8 +111,18 @@ def _run_json(cmd, cwd=None):
     return json.loads(out)
 
 
+def write_errors(errors, path=ERRORS_FILE):
+    """Leave the conflicts for the PR comment; remove a stale file when there are none."""
+    if errors:
+        with open(path, "w") as f:
+            f.writelines(f"- {e}\n" for e in errors)
+    elif os.path.exists(path):
+        os.remove(path)
+
+
 def main():
     tf_root = sys.argv[1] if len(sys.argv) > 1 else "terraform"
+    write_errors([])
     try:
         plan = _run_json(["terraform", "show", "-json", "tfplan"], cwd=tf_root)
     except (subprocess.CalledProcessError, OSError, ValueError) as e:
@@ -127,6 +144,7 @@ def main():
     for error in errors:
         print(f"::error file=app.yaml::{error}")
         print(f"ERROR: {error}", file=sys.stderr)
+    write_errors(errors)
     if not errors and wanted:
         print(f"ALB priorities free: {', '.join(str(w['priority']) for w in wanted)}")
     return 1 if errors else 0

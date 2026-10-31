@@ -5,6 +5,8 @@
 #
 # If review-output.txt exists in the current directory, it is appended
 # to the comment. This avoids posting two separate comments.
+# If alb-priority-errors.txt exists (written by check-alb-priorities.py on a
+# conflict), it is shown above the plan.
 #
 # Env: GH_TOKEN (or gh auth), GITHUB_REPOSITORY, PR_NUMBER
 
@@ -21,6 +23,14 @@ if [ "$HAS_CHANGES" = "true" ]; then
   STATUS=":construction: **Changes detected** — ${SUMMARY}"
 else
   STATUS=":white_check_mark: **No changes** — infrastructure is up to date."
+fi
+
+ALB_ERRORS=""
+if [ -s alb-priority-errors.txt ]; then
+  ALB_ERRORS=":x: **ALB rule priority conflict**: apply would fail with \`PriorityInUse\`, so this check fails.
+
+$(cat alb-priority-errors.txt)
+"
 fi
 
 # --- Filter plan: strip refresh/read noise, keep only the meaningful diff ---
@@ -49,6 +59,7 @@ cat > /tmp/plan-comment.md <<ENDOFCOMMENT
 
 ${STATUS}
 
+${ALB_ERRORS}
 <details><summary>Plan output</summary>
 
 \`\`\`

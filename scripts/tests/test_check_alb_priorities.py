@@ -1,7 +1,11 @@
 """Tests for check-alb-priorities.py — run: python3 -m unittest discover scripts/tests"""
 
+import contextlib
 import importlib.util
+import io
 import os
+import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -99,6 +103,43 @@ class CheckAlbPrioritiesTest(unittest.TestCase):
         taken = {11, 30}
         self.assertEqual(check.suggest_priority(taken), 22)
         self.assertIsNone(check.suggest_priority(set(range(1, 1000, 5))))
+
+
+class ErrorsFileTest(unittest.TestCase):
+    """The conflicts are left in a file for the PR comment (post-plan-comment.sh)."""
+
+    def setUp(self):
+        self.cwd = os.getcwd()
+        self.tmp = tempfile.TemporaryDirectory()
+        os.chdir(self.tmp.name)
+        self.run_json = check._run_json
+        self.argv = sys.argv
+
+    def tearDown(self):
+        check._run_json, sys.argv = self.run_json, self.argv
+        os.chdir(self.cwd)
+        self.tmp.cleanup()
+
+    def main(self, priority):
+        p = plan(change("module.routing.aws_lb_listener_rule.this", ["create"],
+                        after={"priority": priority, "listener_arn": LISTENER}))
+        check._run_json = lambda cmd, cwd=None: p if cmd[0] == "terraform" else {"Rules": LIVE}
+        sys.argv = ["check-alb-priorities.py", "tf"]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return check.main()
+
+    def test_conflict_is_written_for_the_comment(self):
+        self.assertEqual(self.main(100), 1)
+        with open(check.ERRORS_FILE) as f:
+            text = f.read()
+        self.assertTrue(text.startswith("- module.routing.aws_lb_listener_rule.this: "), text)
+        self.assertIn("priority 100 is already used by the rule for cupcake.javazone.no", text)
+
+    def test_no_conflict_removes_a_stale_file(self):
+        with open(check.ERRORS_FILE, "w") as f:
+            f.write("- old\n")
+        self.assertEqual(self.main(500), 0)
+        self.assertFalse(os.path.exists(check.ERRORS_FILE))
 
 
 if __name__ == "__main__":

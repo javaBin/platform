@@ -1,9 +1,13 @@
 """Tests for auth-doctor.py — run: python3 -m unittest discover scripts/tests"""
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
+import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("auth_doctor", os.path.join(HERE, "..", "auth-doctor.py"))
@@ -187,6 +191,18 @@ class TaskCheckTest(unittest.TestCase):
         # Old code rewrote cognito-client-id on every reconcile, so its
         # LastModifiedDate says nothing; only auth-status's timestamp counts.
         self.assertEqual([r["level"] for r in self.check({})], ["SKIP"])
+
+
+class NameTest(unittest.TestCase):
+    def test_name_is_not_taken_from_the_repository(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "app.yaml")
+            with open(path, "w") as f:
+                f.write("team: cupcake\nauth: internal\n")
+            env = {"APP_SERVICE": "cupcake", "GITHUB_REPOSITORY": "javaBin/cupcake"}
+            with mock.patch.dict(os.environ, env), contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(doc.main(["--app-yaml", path]), 1)
+            self.assertIn("name is required", err.getvalue())
 
 
 if __name__ == "__main__":
