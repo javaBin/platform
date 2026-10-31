@@ -18,7 +18,7 @@ Lambda posts to **#javabin-cost-alerts**.
 | Account budget `javabin-account-monthly` | `terraform/platform/cost-analytics/main.tf` | Forecast for the month > 100%; actual > 100%; actual > 150% |
 | Cost Anomaly Detection `javabin-anomaly-monitor` | `terraform/platform/monitoring/main.tf` | Per-service anomaly with total impact >= $10 (IMMEDIATE) |
 | Team budgets `javabin-team-<team>` | `team-provisioner` Lambda (from registry `budget_nok`, default 500 NOK) | Actual > 80% (Slack); actual > 200% triggers `budget-enforcer` |
-| `budget-enforcer` | `terraform/lambda-src/budget_enforcer` | Scales the team's ECS services to `desired_count=0` (nothing is deleted) |
+| `budget-enforcer` | `terraform/lambda-src/budget_enforcer` | Scales the team's ECS services to `desired_count=0` (nothing is deleted). The service's next ecs-deploy sets it back to `compute.desired_count` |
 | `daily-cost-check` / `cost-report` | `terraform/lambda-src/` | Daily spike check; weekly breakdown every Monday |
 
 The account budget limit is `account_budget_usd` in `terraform/platform/main.tf`

@@ -682,11 +682,40 @@ resource "aws_iam_role_policy" "ci_deploy_ecs" {
         Action = [
           "ecs:UpdateService",
           "ecs:DescribeServices",
+          # ecs-deploy reads the javabin:desired-count tag and copies the
+          # task definition's tags; DescribeTasks explains a failed rollout
+          "ecs:ListTagsForResource",
+          "ecs:DescribeTasks",
         ]
         Resource = "*"
         Condition = {
           StringEquals = {
             "aws:ResourceTag/team" = each.key
+          }
+        }
+      },
+      {
+        # The stopped tasks of a failed rollout (ListTasks has no tag condition)
+        Sid      = "EcsListTasks"
+        Effect   = "Allow"
+        Action   = ["ecs:ListTasks"]
+        Resource = "*"
+        Condition = {
+          ArnEquals = {
+            "ecs:cluster" = "arn:aws:ecs:${var.region}:${var.aws_account_id}:cluster/${var.project}-platform"
+          }
+        }
+      },
+      {
+        # Tags on the task definition revisions ecs-deploy registers (tag
+        # resource authorization is on, so tag-on-create needs TagResource)
+        Sid      = "EcsTagOnRegister"
+        Effect   = "Allow"
+        Action   = ["ecs:TagResource"]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "ecs:CreateAction" = "RegisterTaskDefinition"
           }
         }
       },

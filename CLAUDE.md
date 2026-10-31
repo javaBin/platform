@@ -128,7 +128,7 @@ terraform/state/
 | `terraform/modules/ecr-repo/` | ECR repository with lifecycle policy |
 | `terraform/modules/service-routing/` | ALB target group + listener rule + DNS; optional per-path ALB sign-in (`routing.login`) |
 | `terraform/modules/service-role/` | ECS task IAM role with composable policies |
-| `terraform/modules/ecs-service/` | ECS Fargate service |
+| `terraform/modules/ecs-service/` | ECS Fargate service (created with 0 tasks; ecs-deploy owns image + desired count) |
 | `terraform/modules/service-bucket/` | S3 bucket with IAM policy output |
 | `terraform/modules/service-database/` | DynamoDB table with IAM policy output |
 | `terraform/modules/service-rds/` | RDS PostgreSQL instance with generated master password |
@@ -151,7 +151,7 @@ terraform/state/
   tf-plan.yml          Terraform plan + S3 artifact upload
   tf-apply.yml         SHA verify + apply via project role
   eb-deploy.yml        Elastic Beanstalk deploy (transition)
-  ecs-deploy.yml       ECS task definition update
+  ecs-deploy.yml       Register revision pinned to the image digest, roll the service, check rolloutState
   approve-override.yml Risk gate override (board members)
   expand-terraform.yml Validate app.yaml, generate terraform/, commit it
 ```
@@ -198,6 +198,7 @@ terraform/state/
 | `scripts/notify-high-risk.sh` | CI: blocked-apply alert (risk HIGH or review FAILED) with plan key + override link (via `slack_post.py`) |
 | `scripts/slack_post.py` | CI: builds escaped, size-limited Block Kit, checks Slack's reply, falls back to plain text (tests: `scripts/tests/`) |
 | `scripts/invoke-apply-gate.sh` | CI: invoke gate Lambda for apply credentials |
+| `scripts/ecs-deploy.sh` | CI: register a task definition revision pinned to the image digest, roll the service, fail on anything but rolloutState COMPLETED (tests: `scripts/tests/`) |
 | `scripts/run-plan.sh` | CI: terraform plan with exit code handling |
 | `scripts/upload-plan.sh` | CI: upload plan artifact to S3 |
 | `scripts/auth-doctor.py` | CI (after app apply) / local: checks an app's Cognito sign-in end to end from auth-status + HTTP probes (tests: `scripts/tests/`) |

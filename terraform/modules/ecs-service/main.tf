@@ -78,11 +78,18 @@ resource "aws_ecs_task_definition" "this" {
 # ECS Service
 ################################################################################
 
+# The ecs-deploy workflow owns which image runs and how many tasks: each deploy
+# registers a copy of the family's latest revision pinned to the image digest
+# built from the commit, and sets the desired count from the
+# javabin:desired-count tag below. Terraform sets both only at creation, with
+# 0 tasks, so a new service does not start (and fail) before its first image
+# is pushed. A task definition change here reaches the service on the next
+# deploy, which follows tf-apply in the same pipeline run.
 resource "aws_ecs_service" "this" {
   name            = "${var.team}-${var.name}"
   cluster         = var.cluster_id
   task_definition = aws_ecs_task_definition.this.arn
-  desired_count   = var.desired_count
+  desired_count   = 0
   launch_type     = "FARGATE"
 
   network_configuration {
@@ -117,6 +124,14 @@ resource "aws_ecs_service" "this" {
 
   enable_ecs_managed_tags = true
   propagate_tags          = "SERVICE"
+
+  tags = {
+    "javabin:desired-count" = tostring(var.desired_count)
+  }
+
+  lifecycle {
+    ignore_changes = [task_definition, desired_count]
+  }
 
   depends_on = [aws_ecs_task_definition.this]
 }
