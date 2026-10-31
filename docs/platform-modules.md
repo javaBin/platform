@@ -56,10 +56,12 @@ GitHub OIDC provider (data source), CI roles, permission boundary, ECS execution
 | `javabin-ci-team-{team}` | CI broker and apply gate Lambdas (not OIDC) | Team TF plan + apply, scoped to the team by the developer boundary |
 | `javabin-ci-deploy-{team}` | CI broker Lambda (not OIDC) | ECR push, ECS deploy |
 | `javabin-ci-override-approver` | Board members, pinned to `approve-override.yml` | SSM override tokens |
-| `javabin-ci-registry` | Registry repo | Team provisioning dispatch |
+| `javabin-ci-registry` | Registry repo, `main` only | Team provisioning dispatch |
 | `javabin-ecs-execution` | ECS tasks | Pull images, write logs, read secrets |
 
 **Key design:** `job_workflow_ref` condition prevents app repos from writing rogue workflows.
+
+**OIDC subject formats:** every OIDC trust policy accepts both the legacy subject (`repo:javaBin/<repo>:...`) and GitHub's immutable subject (`repo:javaBin@95047/<repo>@<repo_id>:...`), which new repos get by default and can't opt out of. The org-wide roles (`ci-app-broker`, `ci-override-approver`, `ci-apply-gate`) pin the org ID (`github_org_id`). The platform and registry roles also pin the repo ID (`github_platform_repo_id`, `github_registry_repo_id` in `iam/variables.tf`); look one up with `gh api repos/javaBin/<repo> --jq .id`.
 
 ## compute
 
