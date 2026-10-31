@@ -231,6 +231,12 @@ jobs:
         working-directory: ${{ env.TF_ROOT }}
         run: sh "${{ github.workspace }}/scripts/verify-plan.sh" tfplan "${{ needs.plan.outputs.plan_sha256 }}"
 
+      # Install the provider versions the plan was made with (the lock file
+      # is inside the verified plan; it is gitignored in the repo).
+      - name: Restore provider lock file from plan
+        working-directory: ${{ env.TF_ROOT }}
+        run: unzip -o -q tfplan .terraform.lock.hcl
+
       - name: Terraform Init
         working-directory: ${{ env.TF_ROOT }}
         run: terraform init -input=false
@@ -247,6 +253,14 @@ jobs:
       - name: Reconcile app Cognito clients
         continue-on-error: true
         run: sh scripts/reconcile-app-auth.sh
+
+      # Grant newly registered teams their AWS access: the registry's team
+      # sync stops at "guardrails pending" until this apply has created
+      # javabin-team-<team>-guardrails. Async and idempotent; also rolls
+      # permission-set policy changes out to existing teams.
+      - name: Sync team AWS access
+        continue-on-error: true
+        run: sh scripts/sync-team-access.sh
 
   # --------------------------------------------------------------------------
   # Drift Detection — scheduled weekly, plan-only

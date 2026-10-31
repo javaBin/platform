@@ -31,9 +31,12 @@ jobs:
     name: Generate Terraform
     runs-on: ubuntu-latest
     steps:
+      # Same-repo PRs: the branch itself, so the generated commit lands on it.
+      # Fork PRs: github.head_ref names a branch that exists only in the fork,
+      # so use the PR merge ref (github.ref) instead.
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.head_ref || github.ref }}
+          ref: ${{ (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref) || github.ref }}
 
       # javaBin/platform is public: the caller's own GITHUB_TOKEN can read it,
       # so app repos need no GitHub App credentials for any pipeline step.
@@ -57,7 +60,8 @@ jobs:
 
       # Pushed with the caller's GITHUB_TOKEN (needs `contents: write` in the
       # app's deploy.yml). Pushes made with GITHUB_TOKEN never start another
-      # workflow run, so this cannot loop.
+      # workflow run, so this cannot loop. A rejected push (branch protection,
+      # read-only token, branch moved) fails with the fix in the log.
       - name: Commit and push generated files
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}

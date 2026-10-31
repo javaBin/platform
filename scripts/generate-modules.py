@@ -61,7 +61,8 @@ SCHEMA = {
     "name": None,
     "team": None,
     "compute": {"cpu", "memory", "port", "desired_count", "health_check",
-                "health_check_matcher", "user", "readonly_root_filesystem"},
+                "health_check_matcher", "health_check_grace_period", "user",
+                "readonly_root_filesystem", "exec"},
     "routing": {"host", "priority", "deregistration_delay", "login", "adopt_dns"},
     "domain": None,
     "resources": {"buckets", "databases", "secrets", "queues"},
@@ -91,7 +92,7 @@ RESOURCE_SCHEMA = {
     "databases": {"name", "env", "engine", "hash_key", "hash_key_type", "range_key",
                   "range_key_type", "ttl_attribute", "instance_class", "allocated_storage",
                   "engine_version", "backup_retention_period", "multi_az", "deletion_protection",
-                  "adopt", "host_env", "port_env"},
+                  "adopt", "host_env", "port_env", "jdbc_env", "user_env", "password_env"},
     "secrets": {"name", "env", "description"},
     "queues": {"name", "env", "visibility_timeout", "retention_seconds", "max_receive_count"},
 }
@@ -145,7 +146,42 @@ HOST_LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 LOCAL_HOSTS = ("localhost", "127.0.0.1")
 
+# compute.user: user, uid, user:group or uid:gid (ECS `user`). Never root.
+CONTAINER_USER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,31})?$")
+ROOT_USERS = ("0", "root")
+DEFAULT_CONTAINER_USER = "1000"
+DEFAULT_GRACE_PERIOD = 120  # seconds; the target group needs ~20s to mark a target unhealthy
+MAX_GRACE_PERIOD = 3600
+
+# Task role permissions ECS Exec needs (compute.exec). The SSM channel
+# actions have no resource-level permissions, hence "*".
+ECS_EXEC_POLICY = json.dumps({
+    "Version": "2012-10-17",
+    "Statement": [{
+        "Effect": "Allow",
+        "Action": ["ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel",
+                   "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel"],
+        "Resource": "*",
+    }],
+}, separators=(",", ":"))
+
 RDS_IDENTIFIER_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9-]{0,62}$")
+# A created instance's identifier ({team}-{app}-{name}): letters, digits and
+# single hyphens, max 63. Its database name is the name with - replaced by _.
+CREATED_RDS_ID_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
+# Bucket names allow no underscores; {team}-{app}-{name}-{account_id} max 63.
+BUCKET_PART_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+# Database keys that map to an environment variable (or ECS secret), the
+# module output each gets, and whether an adopted instance can have it.
+POSTGRES_ENV_KEYS = (
+    # key,          output,                   adopted
+    ("env",          "url",                    False),
+    ("jdbc_env",     "jdbc_url",               False),
+    ("host_env",     "address",                True),
+    ("port_env",     "port",                   True),
+    ("user_env",     "username",               False),
+    ("password_env", "password_parameter_arn", False),  # ECS secret
+)
 
 POSTGRES_ENGINES = ("postgres", "postgresql")
 # An adopted database keeps its live shape; these would suggest otherwise.
@@ -294,7 +330,7 @@ def _is_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _validate_compute(compute):
+def _validate_compute_sizes(compute):
     for key in ("cpu", "memory", "port", "desired_count"):
         if key in compute and not _is_int(compute[key]):
             raise AppYamlError(f"compute.{key}: {compute[key]!r} must be a whole number")
@@ -328,14 +364,26 @@ def _check_adoption(team, kind, identifier, where):
         )
 
 
-def _validate_database(where, db, team):
+def _validate_database(where, db, team, app_name):
     postgres = str(db.get("engine") or "dynamodb").lower() in POSTGRES_ENGINES
-    for key in ("host_env", "port_env"):
+    for key, _, _ in POSTGRES_ENV_KEYS[1:]:
         if key in db:
             if not postgres:
                 raise AppYamlError(f"{where}.{key}: only supported for engine: postgres")
             if not ENV_RE.match(str(db[key])):
                 raise AppYamlError(f"{where}.{key}: {db[key]!r} is not a valid variable name")
+    if postgres:
+        names = [db[k] for k, _, _ in POSTGRES_ENV_KEYS if db.get(k)]
+        dup = sorted({n for n in names if names.count(n) > 1})
+        if dup:
+            raise AppYamlError(f"{where}: {', '.join(dup)} is used for more than one of {', '.join(k for k, _, _ in POSTGRES_ENV_KEYS)}")
+    if postgres and "adopt" not in db:
+        identifier = f"{team}-{app_name}-{db['name']}"
+        if not db["name"][0].isalpha() or not CREATED_RDS_ID_RE.match(identifier) or len(identifier) > 63:
+            raise AppYamlError(
+                f"{where}.name: {db['name']!r} must start with a letter (it is the database name) and give "
+                f"an RDS identifier, here {identifier!r}, of letters, digits and single hyphens, at most 63 characters"
+            )
     if "adopt" not in db:
         return
     if not postgres:
@@ -343,6 +391,12 @@ def _validate_database(where, db, team):
     if not RDS_IDENTIFIER_RE.match(str(db["adopt"])):
         raise AppYamlError(f"{where}.adopt: {db['adopt']!r} is not an RDS DB instance identifier")
     _check_adoption(team, "rds", db["adopt"], f"{where}.adopt")
+    own_credentials = [k for k, _, adopted in POSTGRES_ENV_KEYS if k in db and not adopted]
+    if own_credentials:
+        raise AppYamlError(
+            f"{where}: {', '.join(own_credentials)} cannot be set with adopt — an adopted database keeps "
+            "its own database name and credentials; use host_env/port_env and put the rest in secrets:"
+        )
     rejected = [k for k in ADOPT_REJECTED if k in db]
     if rejected:
         raise AppYamlError(
@@ -377,8 +431,7 @@ def validate(app):
     if not TEAM_RE.match(str(app.get("team", ""))):
         raise AppYamlError(f"team: {app.get('team')!r} must be lowercase letters only, max 12 chars")
 
-    if "compute" in app:
-        _validate_compute(app["compute"] or {})
+    _validate_compute(app.get("compute") or {})
 
     routing = app.get("routing") or {}
     if routing:
@@ -413,7 +466,20 @@ def validate(app):
             if item.get("env") and not ENV_RE.match(item["env"]):
                 raise AppYamlError(f"resources.{rtype}[{i}].env: {item['env']!r} is not a valid variable name")
             if rtype == "databases":
-                _validate_database(f"resources.databases[{i}]", item, app["team"])
+                _validate_database(f"resources.databases[{i}]", item, app["team"], app["name"])
+            if rtype == "buckets":
+                bucket = f"{app['team']}-{app['name']}-{item['name']}-{'0' * 12}"
+                if not BUCKET_PART_RE.match(str(item["name"])) or len(bucket) > 63:
+                    raise AppYamlError(
+                        f"resources.buckets[{i}].name: {item['name']!r} must be lowercase letters, digits and "
+                        f"hyphens, and the bucket name {{team}}-{{app}}-{{name}}-{{account_id}} at most 63 "
+                        f"characters (it would be {len(bucket)})"
+                    )
+            if rtype == "queues" and len(f"{app['team']}-{app['name']}-{item['name']}-dlq") > 80:
+                raise AppYamlError(
+                    f"resources.queues[{i}].name: {item['name']!r} is too long; the dead-letter queue "
+                    "{team}-{app}-{name}-dlq must be at most 80 characters"
+                )
             if rtype == "secrets" and (item["name"] in RESERVED_SECRET_NAMES or RESERVED_SECRET_RE.match(item["name"])):
                 raise AppYamlError(
                     f"resources.secrets[{i}].name: {item['name']!r} is reserved for a parameter the platform "
@@ -437,6 +503,28 @@ def validate(app):
             f"calls/provides: the app-to-app request is {size} bytes, over the {MAX_NETWORK_BYTES}-byte SSM limit; "
             "shorten provides.scopes descriptions or list fewer scopes, calls or consumers"
         )
+
+
+def _validate_compute(compute):
+    _validate_compute_sizes(compute)
+    user = compute.get("user", DEFAULT_CONTAINER_USER)
+    if isinstance(user, bool) or not isinstance(user, (str, int)) or not CONTAINER_USER_RE.match(str(user)):
+        raise AppYamlError(f"compute.user: {user!r} must be a user, uid, user:group or uid:gid (e.g. \"1000\")")
+    if str(user).split(":")[0] in ROOT_USERS:
+        raise AppYamlError(
+            "compute.user: containers may not run as root; use the image's non-root user "
+            f"or a uid such as \"{DEFAULT_CONTAINER_USER}\" (/tmp is writable for any user)"
+        )
+    grace = compute.get("health_check_grace_period", DEFAULT_GRACE_PERIOD)
+    if isinstance(grace, bool) or not isinstance(grace, int) or not 0 <= grace <= MAX_GRACE_PERIOD:
+        raise AppYamlError(f"compute.health_check_grace_period: expected whole seconds 0-{MAX_GRACE_PERIOD}")
+    for key in ("readonly_root_filesystem", "exec"):
+        if key in compute and not isinstance(compute[key], bool):
+            raise AppYamlError(f"compute.{key} must be true or false")
+    if compute.get("exec") and compute.get("readonly_root_filesystem", True):
+        # The ECS Exec agent writes to the container filesystem; AWS does
+        # not support it with readonlyRootFilesystem.
+        raise AppYamlError("compute.exec requires readonly_root_filesystem: false (ECS Exec needs a writable root filesystem)")
 
 
 def network_request(app, calls, provides_scopes, consumers):
@@ -649,10 +737,15 @@ def import_block(to, import_id):
     return f"import {{\n  to = {to}\n  id = {hcl_string(import_id)}\n}}"
 
 
-def _wire_postgres_env(env_map, mod_name, db):
-    for key, output in (("env", "endpoint"), ("host_env", "address"), ("port_env", "port")):
+def _wire_postgres_env(env_map, secret_map, mod_name, db):
+    """Map a PostgreSQL entry's *_env keys to module outputs. The password is
+    an ECS secret (resolved from SSM at task start), everything else plain env."""
+    for key, output, _ in POSTGRES_ENV_KEYS:
         if db.get(key):
-            env_map[db[key]] = Ref(f"module.{mod_name}.{output}")
+            target = secret_map if key == "password_env" else env_map
+            if db[key] in env_map or db[key] in secret_map:
+                raise AppYamlError(f"resources.databases {db['name']}.{key}: {db[key]} is already set by another resource")
+            target[db[key]] = Ref(f"module.{mod_name}.{output}")
 
 
 # ---------------------------------------------------------------------------
@@ -904,12 +997,13 @@ def generate(app, account_id, region, platform_ref):
                 attrs["backup_retention_period"] = db["backup_retention_period"]
             blocks.append(module_block(mod_name, src("service-rds-adopted"), attrs))
             imports.append((f"module.{mod_name}.aws_db_instance.this", db["adopt"]))
-            _wire_postgres_env(env_map, mod_name, db)
+            _wire_postgres_env(env_map, secret_map, mod_name, db)
         elif engine in POSTGRES_ENGINES:
             mod_name = f"rds_{dname}"
             blocks.append(module_block(mod_name, src("service-rds"), {
                 "name": dname,
                 "team": team,
+                "service": name,
                 "project": PROJECT,
                 "engine_version": str(db.get("engine_version", "16")),
                 "instance_class": db.get("instance_class", "db.t3.micro"),
@@ -922,7 +1016,7 @@ def generate(app, account_id, region, platform_ref):
                 "deletion_protection": db.get("deletion_protection", True),
             }))
             policy_map[mod_name] = Ref(f"module.{mod_name}.access_policy_json")
-            _wire_postgres_env(env_map, mod_name, db)
+            _wire_postgres_env(env_map, secret_map, mod_name, db)
         elif engine == "dynamodb":
             mod_name = f"database_{dname}"
             attrs = {
@@ -1063,6 +1157,9 @@ def generate(app, account_id, region, platform_ref):
     env_map.update(peer_env)
     secret_map.update(peer_secrets)
 
+    if compute.get("exec"):
+        policy_map["ecs-exec"] = ECS_EXEC_POLICY
+
     # Task role (always)
     blocks.append(module_block("task_role", src("service-role"), {
         "name": name,
@@ -1085,6 +1182,8 @@ def generate(app, account_id, region, platform_ref):
         "name": name,
         "team": team,
         "cluster_id": Ref("module.platform.ecs_cluster_id"),
+        # Template only: ecs-deploy registers each deploy's revision with the
+        # image pinned to the digest docker-build pushed (see ecs-service)
         "image": Ref("module.ecr.repository_url"),
         "cpu": compute.get("cpu", 512),
         "memory": compute.get("memory", 1024),
@@ -1096,11 +1195,15 @@ def generate(app, account_id, region, platform_ref):
         "security_group_ids": Ref("[module.network.security_group_id]"),
         "service_registry_arns": Ref("[module.network.registry_arn]"),
         "region": region,
-        "container_user": str(compute.get("user", "1000")),
+        "container_user": str(compute.get("user", DEFAULT_CONTAINER_USER)),
         "readonly_root_filesystem": compute.get("readonly_root_filesystem", True),
     }
+    if compute.get("exec"):
+        service_attrs["enable_execute_command"] = True
     if routing.get("host"):
         service_attrs["target_group_arn"] = Ref("module.routing.target_group_arn")
+        service_attrs["health_check_grace_period_seconds"] = compute.get(
+            "health_check_grace_period", DEFAULT_GRACE_PERIOD)
     if all_env:
         service_attrs["environment"] = all_env
     if secret_map:

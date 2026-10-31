@@ -73,7 +73,7 @@ Queries Security Hub for active findings at HIGH and CRITICAL severity, aggregat
 
 ## team-provisioner
 
-**Trigger:** Registry repo merge events (via `provision-app.yml` workflow dispatch)
+**Trigger:** Registry repo merge events (direct invocation from registry CI via `javabin-ci-registry`); `sync_team_access` from platform CI after apply; `sync_access_members` from EventBridge every 3 hours (`javabin-team-provisioner-access-schedule`)
 **Purpose:** Syncs team definitions from registry YAML across Google Groups, GitHub teams, AWS Budgets (80% warning + 200% enforcement thresholds), Cognito groups, and Identity Center groups. Also handles hero account provisioning.
 
 | SSM Parameter | Purpose |
@@ -85,6 +85,10 @@ Queries Security Hub for active findings at HIGH and CRITICAL severity, aggregat
 | `/javabin/platform/github-app-client-secret` | GitHub App client secret |
 | `/javabin/platform/atlassian-org-id` | Atlassian organisation ID |
 | `/javabin/platform/atlassian-api-key` | Atlassian org admin API key (unscoped — full org admin) |
+
+### Team permission set (`_ensure_team_permission_set`)
+
+`javabin-team-{team}` attaches the `javabin-team-{team}-guardrails` policy and an inline policy: `Action "*"` on resources tagged `team={team}` (or untagged), denies on platform-managed parameters, a few untagged reads, and `AllowExecOnPlatformCluster`: `ecs:ExecuteCommand` on the shared `javabin-platform` cluster. ECS Exec is authorized against both the cluster and the task, and the task is only allowed through its propagated `team` tag, so members can exec into their own team's tasks only (apps with `compute.exec: true`). Changes reach existing permission sets on the next registry sync, which reprovisions them.
 
 ### Team Google group (`sync_google_group`)
 
@@ -126,6 +130,84 @@ more; read the current list there first and add to it rather than pasting this o
 `admin.directory.group`, `admin.directory.group.member`, `admin.directory.user`,
 `admin.directory.user.alias`, `gmail.send`, `gmail.settings.sharing`, `apps.groups.settings`
 (all under `https://www.googleapis.com/auth/`).
+
+### Team GitHub team (`sync_github_team`)
+
+Each team gets the GitHub team `{name}`. Members without a `role:` field are team **maintainers**
+(`GITHUB_DEFAULT_TEAM_ROLE`), so whoever registered the team can add its repos to it; `role: member`
+makes someone a plain member. Registering a team (`javabin register-team`) writes no `role:`. A
+member's existing role is changed in place, and logins not in the registry are removed. The Google
+group keeps **MEMBER** as its default (only `role: maintainer` makes a Google MANAGER).
+
+### Team AWS access (`sync_identity_center_group`, `sync_team_access`)
+
+The team sync puts members in the Identity Center group `team-{name}` and gives that group the
+permission set `javabin-team-{name}` on the account, with the customer-managed policy
+`javabin-team-{name}-guardrails`. That policy is made by platform Terraform, which only learns of a
+new team when platform CI runs on the registry's `teams-changed` dispatch, after the team sync.
+Until it exists the team sync stops before the inline policy and the account assignment and reports
+`guardrails: pending` (`:hourglass_flowing_sand:` in Slack): without the guardrails the inline
+policy's `Action: *` would be unbounded.
+
+Platform CI finishes the job: after every apply it queues `{"action": "sync_team_access"}`
+(`scripts/sync-team-access.sh`, async). For every `team-*` Identity Center group whose guardrails
+policy exists and is tagged `managed-by=terraform`, `repo=javaBin/platform`, it attaches the
+guardrails, writes the inline policy, makes the account assignment and re-provisions the permission
+set; teams without one (e.g. `platform`) are left alone. `{"teams": [...]}` limits the run. It posts
+to #javabin-infra-alerts only when a team got access for the first time or something failed
+(`CreateAccountAssignment` accepts an assignment that already exists without a conflict, so the
+handler checks `ListAccountAssignments` first; if that lookup fails it stays quiet). Since it
+runs on every apply it also rolls inline policy changes out to existing teams.
+
+### How a member gets AWS access (`sync_aws_access_group`, `sync_access_members`)
+
+Users reach Identity Center only through Google's SCIM auto-provisioning, and Google provisions only
+the **direct** members of the groups the AWS app's *Group membership* setting lists (`drift@`,
+`styret@` and `javabin-developer@java.no`; `SCIM_GROUPS` in the handler mirrors it). Google does not
+expand nested groups, so `team-{name}@` or `kodesmia@` nested in `javabin-developer@` would give no
+one a user. The flow is:
+
+1. **Registry sync adds the person to the AWS access group.** The team sync makes every member's
+   java.no address (from their `google` field) a direct MEMBER of `AWS_ACCESS_GROUP` (env var, set
+   from Terraform `var.aws_access_group`, default `javabin-developer@java.no`). For kodesmia, the
+   registry's `groups/access.yaml` declares the group with `flatten: true`:
+
+   ```yaml
+   - name: javabin-developer
+     google: javabin-developer@java.no
+     description: Google SCIM provisions direct members to IAM Identity Center
+     groups: [kodesmia]
+     flatten: true
+   ```
+
+   An access group with `flatten: true` gets the role groups' individual members (from the resolved
+   members in the `sync_groups_and_heros` payload) instead of the nested group email. Both paths are
+   additive, like the other access groups: nobody is removed. The result lists `added_members`,
+   members present but not in kodesmia or any team as `preserved` (they are kept), and personal
+   (non-java.no) addresses as `skipped_external` (they can't be provisioned).
+2. **Google SCIM creates the Identity Center user**, some time later. The same registry run has
+   already tried the Identity Center groups, so it skips the person and returns them in
+   `not_in_identity_center` (only members actually in the group count in `member_count`).
+3. **The scheduled run adds them to their groups.** Every 3 hours EventBridge invokes
+   `{"action": "sync_access_members"}`. It reads the registry members the provisioner recorded in the
+   memberships table (`team-{name}` and every cognito-enabled group, e.g. `kodesmia`), makes the
+   recorded team members direct members of `AWS_ACCESS_GROUP` (covers teams synced before this
+   existed or a failed add), and adds recorded members that now have an Identity Center user to the
+   Identity Center group of the same name. It only adds; removals stay with the registry syncs. It
+   posts to #javabin-infra-alerts only when someone was added or an add failed.
+
+The Slack summary lists everyone without an Identity Center user with a reason
+(`_identity_center_reasons`): **pending SCIM** (just added to `javabin-developer@`, or already a
+direct member of a provisioned group; if that persists, check the Google app's provisioning
+status), **can't be provisioned** (personal address, suspended in Google, not in Google Workspace)
+or **not a direct member of `javabin-developer@`**. The response body carries the same map as
+`not_in_identity_center`.
+
+The provisioner does not create these users itself through the Identity Store API, although the
+API would accept it: a user made that way has no link to the Google account, so suspending or
+deleting the person in Google would not remove their AWS access (SCIM never manages it), and when
+Google later tries to provision the same `UserName` its create conflicts with the existing user and
+fails. Identity Center users stay SCIM-owned (`CreatedBy: SCIM/...`).
 
 ### Atlassian group sync (`sync_atlassian`)
 

@@ -86,12 +86,18 @@ compute:
   cpu: 512            # default: 512 (0.5 vCPU); 256, 512, 1024, 2048, 4096, 8192 or 16384
   memory: 1024        # default: 1024 (1 GB); MiB, must fit cpu (table below)
   port: 8080          # default: 8000; 1-65535
-  desired_count: 1    # default: 1; 0 or more
+  desired_count: 1    # default: 1; 0 or more — applied by ecs-deploy, not tf-apply
   health_check: /health  # default: /health — ALB target group health check path
   health_check_matcher: "200"      # default: "200"
+  health_check_grace_period: 120   # default: 120 — seconds a new task may fail ALB health checks
   user: "1000"                     # default: "1000" — container user (non-root)
   readonly_root_filesystem: true   # default: true — only /tmp is writable
+  exec: false                      # default: false — allow `aws ecs execute-command` into the tasks
 ```
+
+**`user`** is the user the app container runs as: a name, uid, `user:group` or `uid:gid` (the ECS `user` field). It defaults to uid `1000` and always replaces the image's `USER`, so set it to the image's own non-root user when its files belong to that user (for example `"101"` for `nginxinc/nginx-unprivileged`, whose files belong to uid 101). `0` and `root` are rejected.
+
+**`/tmp`** is an empty volume, writable by any user (mode 1777, like a normal `/tmp`) and wiped when the task stops. Fargate creates the volume owned by root, so the platform adds a short init container (`platform_tmp_init`, busybox from `public.ecr.aws`, pulled through the NAT gateway) that runs as root, runs `chmod 1777 /tmp` and exits; the app container starts once it has succeeded. You see it next to your container in `aws ecs describe-tasks`, and its output in the app's log group. Security Hub ECS.20 (no root containers) is suppressed for app task definitions because of it.
 
 Images that write outside `/tmp` (caches, uploads to local disk) need `readonly_root_filesystem: false`, or their tasks crash on start; the deployment circuit breaker then rolls the deploy back.
 
@@ -106,6 +112,17 @@ Images that write outside `/tmp` (caches, uploads to local disk) need `readonly_
 | 4096 | 8192-30720, steps of 1024 |
 | 8192 | 16384-61440, steps of 4096 |
 | 16384 | 32768-122880, steps of 8192 |
+
+**`health_check_grace_period`** (0-3600, apps with `routing` only): for this long after a task starts, ECS ignores failing load balancer health checks. The target group checks every 10 s and marks a target unhealthy after 2 failures, so without it a task that takes more than about 20 s to start (JVM apps, migrations) is stopped and replaced before it is ready. Raise it for slow starters; the deploy still fails when the task never becomes healthy.
+
+**`exec: true`** turns on [ECS Exec](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-exec.html) for the service and gives the task role the `ssmmessages` permissions it needs. It requires `readonly_root_filesystem: false`, because the agent ECS Exec runs inside the container writes to its filesystem (AWS does not support ECS Exec with a read-only root filesystem). Team members can then open a shell in their own team's tasks with the `javabin-team-{team}` SSO permission set, with the [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) installed:
+
+```sh
+aws ecs execute-command --cluster javabin-platform --task <task-id> \
+  --container <app name> --interactive --command /bin/sh
+```
+
+The setting applies to tasks started after the deploy that turns it on. Tasks of other teams are denied.
 
 ### routing
 
@@ -228,7 +245,7 @@ S3 buckets with versioning and encryption.
 ```yaml
 resources:
   buckets:
-    - name: data          # bucket: {team}-{name}-{account_id}
+    - name: data          # bucket: {team}-{app}-{name}-{account_id}
       env: DATA_BUCKET    # env var injected into container
 ```
 
@@ -252,16 +269,31 @@ resources:
       backup_retention_period: 7    # days, RDS only, default: 7
       multi_az: false               # RDS only, default: false
       deletion_protection: true     # RDS only, default: true
-      env: DATABASE_URL             # host:port
+      env: DATABASE_URL             # postgresql://host:5432/main (no credentials)
+      jdbc_env: SPRING_DATASOURCE_URL       # optional, postgres only: jdbc:postgresql://host:5432/main
+      user_env: SPRING_DATASOURCE_USERNAME  # optional, postgres only: master user name
+      password_env: SPRING_DATASOURCE_PASSWORD  # optional, postgres only: password, as an ECS secret
       host_env: DB_HOST             # optional, postgres only: hostname alone
       port_env: DB_PORT             # optional, postgres only: port alone
 ```
 
 DynamoDB and PostgreSQL entries can coexist in the same `databases` list. Entries without `engine` (or with `engine: dynamodb`) use the DynamoDB module. Entries with `engine: postgres` or `engine: postgresql` use the RDS module.
 
-RDS instances generate a master password at creation time, stored in SSM Parameter Store at `/{project}/apps/{name}/db-master-password`. The ECS task role automatically receives IAM policies for `rds-db:connect` and `ssm:GetParameter` on the password parameter.
+Every resource is named after the team, the app and the entry: the DynamoDB table above is `{team}-{app}-sessions` and the RDS instance `{team}-{app}-main`, so two apps in one team can both have a `main` database. A PostgreSQL `name` must start with a letter, and `{team}-{app}-{name}` must be at most 63 characters of letters, digits and single hyphens. The database inside the instance is `name` with `-` replaced by `_`.
 
-`env` gets the endpoint as `host:port`. Apps that read host and port separately use `host_env` and `port_env` (PostgreSQL only, created or adopted).
+RDS instances generate a master password at creation time, stored in SSM Parameter Store at `/javabin/apps/{team}/{app}/{name}/db-master-password`. The app connects with password authentication as the master user (`postgres`); IAM database authentication is not enabled. The task role can read the password parameter (`ssm:GetParameter`).
+
+What each key injects (PostgreSQL):
+
+| Key | Value | How |
+|-----|-------|-----|
+| `env` | `postgresql://{host}:{port}/{database}` (libpq URI: psql, psycopg, node-postgres, pgx) | environment |
+| `jdbc_env` | `jdbc:postgresql://{host}:{port}/{database}` (JDBC, e.g. Spring's `SPRING_DATASOURCE_URL`) | environment |
+| `user_env` | master user name | environment |
+| `password_env` | master password | ECS secret, resolved from SSM when the task starts |
+| `host_env` / `port_env` | hostname / port alone | environment |
+
+Neither URL contains credentials (the generated password has characters that would need URL-encoding), so pass the user and password separately: Spring Boot reads `SPRING_DATASOURCE_USERNAME`/`_PASSWORD`, libpq-based clients read `PGUSER`/`PGPASSWORD`. An adopted database supports only `host_env` and `port_env`.
 
 ##### Adopting an existing PostgreSQL instance
 
@@ -621,7 +653,7 @@ These fields were documented earlier but are not implemented. Using them fails `
 1. Developer creates/updates `app.yaml`
 2. The `expand` job runs `scripts/generate-modules.py`, which validates `app.yaml` and writes `terraform/backend.tf`, `providers.tf`, `main.tf`, `outputs.tf` (module blocks sourced from `javaBin/platform//terraform/modules/*`), then commits them to the branch
 3. `tf-plan` plans the committed files → LLM review → `tf-apply` on the default branch (main or master)
-4. `docker-build` pushes `{team}-{name}` to ECR, `ecs-deploy` rolls the service
+4. `docker-build` pushes `{team}-{name}` to ECR, `ecs-deploy` registers a task definition revision pinned to the pushed digest and rolls the service onto it (a new service is created with 0 tasks and gets `desired_count` here)
 
 Generated files carry a `# GENERATED FROM app.yaml` marker and are overwritten on every run. Developers can add their own `.tf` files alongside them.
 
@@ -629,15 +661,17 @@ Generated files carry a `# GENERATED FROM app.yaml` marker and are overwritten o
 
 All app resources are prefixed with the team name for ABAC enforcement.
 
+`{name}` is the app name and `{resource}` the `name` of the `resources:` entry. Generation rejects a bucket name that is not lowercase letters, digits and hyphens or makes the bucket name longer than 63 characters, and a queue name that makes the DLQ name longer than 80.
+
 | Resource | Name Pattern |
 |----------|-------------|
 | ECS service | `{team}-{name}` |
 | ECR repo | `{team}-{name}` |
 | ALB target group | `{team}-{name}` (max 32 chars, truncated+hashed if over) |
-| S3 bucket | `{team}-{name}-{account_id}` |
-| DynamoDB table | `{team}-{name}` |
-| SQS queue | `{team}-{name}` |
-| RDS instance | `{team}-{name}` |
+| S3 bucket | `{team}-{name}-{resource}-{account_id}` |
+| DynamoDB table | `{team}-{name}-{resource}` |
+| SQS queue | `{team}-{name}-{resource}` (DLQ `-dlq`) |
+| RDS instance | `{team}-{name}-{resource}`, password `/javabin/apps/{team}/{name}/{resource}/db-master-password` |
 | SSM (secrets) | `/javabin/apps/{team}/{service}/{secret_name}` |
 | IAM task role | `{team}-{name}` |
 | CloudWatch logs | `/ecs/{team}/{name}` |

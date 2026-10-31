@@ -8,7 +8,14 @@
 # Usage: ensure-tf-boilerplate.sh <tf_root>
 #
 # Env: AWS_ACCOUNT_ID, AWS_REGION (default eu-central-1)
-# Uses: GITHUB_REPOSITORY (org/repo), gh CLI for team resolution
+#      TEAM — the team the CI broker verified for this repo (tf-plan passes
+#      the broker's answer, tf-apply the team tf-plan used). It names the
+#      state key apps/<team>/<repo>, which is the only state the team's CI
+#      roles can read, so it must never be guessed.
+# Uses: GITHUB_REPOSITORY (org/repo)
+#
+# tf-plan and tf-apply both run this, so apply initializes the same backend
+# and providers that the plan was made with.
 #
 # Generated files include default_tags with project, team, and managed-by
 # so that ALL Terraform-created resources are automatically tagged —
@@ -22,13 +29,10 @@ REGION="${AWS_REGION:-eu-central-1}"
 REPO_NAME="${GITHUB_REPOSITORY##*/}"
 PROJECT="javabin"
 
-# Resolve team from GitHub API (first non-platform team the repo belongs to)
-TEAM=""
-if command -v gh >/dev/null 2>&1; then
-  TEAM=$(gh api "/repos/${GITHUB_REPOSITORY}/teams" \
-    --jq '[.[] | select(.slug != "platform")] | .[0].slug // ""' 2>/dev/null || true)
+if [ -z "${TEAM:-}" ] && { [ ! -f "$TF_ROOT/backend.tf" ] || [ ! -f "$TF_ROOT/providers.tf" ]; }; then
+  echo "::error::No team for ${GITHUB_REPOSITORY}: cannot generate backend.tf/providers.tf (state key apps/<team>/${REPO_NAME}). Add the repo to its GitHub team (see docs/reusable-workflows.md) or commit your own backend.tf and providers.tf."
+  exit 1
 fi
-[ -z "$TEAM" ] && TEAM="unknown"
 
 # --- Generate backend.tf if missing ---
 if [ ! -f "$TF_ROOT/backend.tf" ]; then
@@ -44,7 +48,7 @@ terraform {
   }
 }
 EOF
-  echo "Generated backend.tf (state key: apps/${REPO_NAME})"
+  echo "Generated backend.tf (state key: apps/${TEAM}/${REPO_NAME})"
 fi
 
 # --- Generate providers.tf if missing ---

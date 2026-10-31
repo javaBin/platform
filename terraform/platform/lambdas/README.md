@@ -11,7 +11,7 @@ Terraform for all platform Lambda functions. Source code lives in `terraform/lam
 | `javabin-daily-cost-check` | Python 3.12 | EventBridge (daily 08:00) | No |
 | `javabin-compliance-reporter` | Python 3.12 | EventBridge (resource creation) | No |
 | `javabin-override-cleanup` | Python 3.12 | EventBridge (hourly) | No |
-| `javabin-team-provisioner` | Python 3.12 | (future) registry events | No |
+| `javabin-team-provisioner` | Python 3.12 | Registry CI, platform CI after apply, EventBridge (every 3 hours) | No |
 
 Each Lambda has its own IAM role with least-privilege policies.
 
