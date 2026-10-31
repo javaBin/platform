@@ -13,9 +13,11 @@ So app plans are reviewed here instead:
      cannot write these objects. (The plan text itself is uploaded by the
      plan job, so the review guards against mistakes, not against code in
      the job forging its own plan text.)
-  5. For HIGH or FAILED on main, post the override request to Slack.
+  5. For HIGH or FAILED on main, post the override request to Slack. A
+     FAILED verdict (Bedrock or service failure, not a risk finding) is not
+     posted while the caller says it will retry (retrying=true).
 
-Input:  {plan_key, id_token, notify?}
+Input:  {plan_key, id_token, notify?, retrying?}
 Output: {risk, markdown} or {error}
 """
 
@@ -40,6 +42,7 @@ PLAN_BUCKET = os.environ["PLAN_BUCKET"]
 OIDC_AUDIENCE = os.environ.get("OIDC_AUDIENCE", f"{PROJECT}-plan-review")
 SLACK_PARAM = os.environ.get("SLACK_WEBHOOK_PARAM", f"/{PROJECT}/slack/platform-override-alerts-webhook")
 OVERRIDE_URL = f"https://github.com/{GITHUB_ORG}/platform/actions/workflows/approve-override.yml"
+OVERRIDE_DOC = f"https://github.com/{GITHUB_ORG}/platform/blob/main/docs/apply-gate.md#requesting-an-override"
 ATTEMPTS = int(os.environ.get("REVIEW_ATTEMPTS", "3"))
 
 s3 = boto3.client("s3")
@@ -77,9 +80,16 @@ def put_json(key, body):
 
 
 def notify(repo, plan_key, risk, review):
-    summary = review.get("summary", "") if review else "The LLM review could not run; re-run the workflow or request an override."
-    text = (f"*Apply blocked — {risk} risk*\n*Repo:* {GITHUB_ORG}/{repo}\n*Plan:* `{plan_key}`\n{summary}\n"
-            f"<{OVERRIDE_URL}|Approve override>")
+    if review:
+        title = f"*Apply blocked — the review found {risk} risk*"
+        summary = review.get("summary", "")
+    else:
+        title = "*Apply blocked — the plan-review service failed (no risk verdict)*"
+        summary = "This is a service failure, not a risk finding. Re-run all jobs later, or approve an override if the plan is safe."
+    run_id = plan_key.split("/")[3] if plan_key.count("/") >= 4 else ""
+    run = f"<https://github.com/{GITHUB_ORG}/{repo}/actions/runs/{run_id}|Blocked run> | " if run_id else ""
+    text = (f"{title}\n*Repo:* {GITHUB_ORG}/{repo}\n*Plan:* `{plan_key}`\n{summary}\n"
+            f"{run}<{OVERRIDE_URL}|Approve override>")
     try:
         post_to_slack(get_webhook_url(ssm, SLACK_PARAM), {"text": text})
     except Exception as e:
@@ -115,10 +125,12 @@ def handler(event, context):
     put_json(f"{plan_dir}/review.json", review or {"risk": "FAILED"})
     logger.info("Reviewed %s: %s", plan_key, risk)
 
-    if risk in ("HIGH", "FAILED") and event.get("notify"):
+    final = risk == "HIGH" or (risk == "FAILED" and not event.get("retrying"))
+    if final and event.get("notify"):
         notify(repo, plan_key, risk, review)
 
     markdown = review_plan.format_review(review) if review else (
-        "**Risk: ⚪ FAILED**\n\nThe LLM review could not run after "
-        f"{ATTEMPTS} attempts. Re-run the workflow; if it keeps failing, request an override.")
+        "**Risk: ⚪ FAILED**\n\nThe plan-review service could not review this plan after "
+        f"{ATTEMPTS} attempts. This is a service failure, not a risk finding. Re-run all jobs "
+        f"later; if it keeps failing, [request an override]({OVERRIDE_DOC}).")
     return {"risk": risk, "markdown": markdown}

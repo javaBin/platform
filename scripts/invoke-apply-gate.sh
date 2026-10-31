@@ -56,6 +56,7 @@ echo "Risk level: $RISK"
 
 if [ "$APPROVED" != "true" ]; then
   echo "Apply blocked: ${REASON:-risk gate denied}"
+  sh "$(dirname "$0")/override-help.sh" "$RISK" "$PLAN_KEY"
 
   # Notify Slack about the block
   if [ -n "$SSM_WEBHOOK_PARAM" ]; then

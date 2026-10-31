@@ -2,21 +2,26 @@ name: Approve Override
 
 # Workflow dispatch — only runs after approval from the 'override-approval'
 # GitHub environment (requires board member review).
+#
+# Only plan_key and reason are needed: the repo and run come from the plan
+# key. For a platform run the failed jobs are re-run here; github.token cannot
+# touch app repos, so for an app run the job prints the run URL and the
+# developer clicks "Re-run failed jobs" (docs/apply-gate.md#requesting-an-override).
 
 on:
   workflow_dispatch:
     inputs:
       plan_key:
-        description: "S3 plan key (from the Slack alert)"
+        description: "S3 plan key, plans/javaBin/<repo>/<run_id>/tfplan (from the blocked run's log or the Slack alert)"
         required: true
         type: string
       repo:
-        description: "Repository (e.g. javaBin/moresleep)"
-        required: true
+        description: "Optional check: repository (e.g. javaBin/moresleep); must match the plan key"
+        required: false
         type: string
       run_id:
-        description: "Failed apply run ID to retrigger"
-        required: true
+        description: "Optional check: blocked run ID; must match the plan key"
+        required: false
         type: string
       reason:
         description: "Reason for override"
@@ -42,6 +47,15 @@ jobs:
         with:
           sparse-checkout: scripts
 
+      # Before signing: a plan key that names no run is refused here.
+      - name: Resolve blocked run
+        id: target
+        env:
+          PLAN_KEY: ${{ inputs.plan_key }}
+          REPO: ${{ inputs.repo }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: sh scripts/override-target.sh resolve
+
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -60,14 +74,15 @@ jobs:
       - name: Notify Slack
         env:
           SSM_WEBHOOK_PARAM: /javabin/slack/platform-override-alerts-webhook
-          REPO: ${{ inputs.repo }}
+          REPO: ${{ steps.target.outputs.repo }}
+          RUN_URL: ${{ steps.target.outputs.run_url }}
           PLAN_KEY: ${{ inputs.plan_key }}
           REASON: ${{ inputs.reason }}
-        run: sh scripts/notify-slack.sh "Risk Override Approved" "*Repo:* ${REPO}\n*Plan:* \`${PLAN_KEY}\`\n*By:* ${GITHUB_ACTOR}\n*Reason:* ${REASON}"
+        run: sh scripts/notify-slack.sh "Risk Override Approved" "*Repo:* ${REPO}\n*Plan:* \`${PLAN_KEY}\`\n*By:* ${GITHUB_ACTOR}\n*Reason:* ${REASON}\n*Next:* Re-run failed jobs on the blocked run (automatic for javaBin/platform)" "$RUN_URL" "Blocked run"
 
       - name: Retrigger failed apply
         env:
           GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ inputs.run_id }}
-          REPO: ${{ inputs.repo }}
-        run: gh run rerun "$RUN_ID" --repo "$REPO" --failed
+          RUN_ID: ${{ steps.target.outputs.run_id }}
+          REPO: ${{ steps.target.outputs.repo }}
+        run: sh scripts/override-target.sh retrigger
