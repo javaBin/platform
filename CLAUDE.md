@@ -305,7 +305,7 @@ Team group OWNERs are admin-managed and never removed by the sync; non-@java.no 
 | 0a | AWS Discovery | **Done** |
 | 0b | Bootstrap State Backend | **Done** — S3 backend live |
 | 0c | Organizations + Permission Boundary | **Done** — org enabled, boundary deployed, SCP deferred |
-| 1 | Identity (Google + Identity Center + Cognito) | **Deployed** — GCP SA with domain-wide delegation, Identity Center with ABAC + 3 permission sets in `terraform/org/`. Google Workspace SAML IdP for SSO (auto-provisions users, groups synced via CI/team-provisioner). Cognito pool TF exists but not yet applied (needs Google OAuth client). |
+| 1 | Identity (Google + Identity Center + Cognito) | **Deployed** — GCP SA with domain-wide delegation, Identity Center with ABAC + 3 permission sets in `terraform/org/`. Google Workspace SAML IdP for SSO (auto-provisions users, groups synced via CI/team-provisioner). Cognito pools deployed; the internal pool signs in with the Terraform-managed Google OIDC IdP. |
 | 2a | Networking | **Deployed** — VPC, subnets, NAT |
 | 2b | Ingress | **Deployed** — ALB + ACM cert |
 | 2c | IAM / OIDC | **Deployed** — 6 CI roles (infra, infra-plan, per-app, deploy, override-approver, registry), team-prefixed naming + permission boundary |
@@ -324,7 +324,7 @@ Team group OWNERs are admin-managed and never removed by the sync; non-@java.no 
 
 ### Known Issues
 - **ECS deploy stabilization**: platform-test-app task registers but service fails health check
-- **Cognito**: pools deployed; internal pool's `GoogleSAML` IdP was created outside Terraform. It is replaced by the Terraform-managed Google OIDC IdP at cutover (docs/cognito-google-setup.md), then deleted
+- **Cognito**: pools deployed; the internal pool has been cut over to the Terraform-managed Google OIDC IdP (`internal_identity_providers` defaults to `["Google"]`). The old `GoogleSAML` IdP, created outside Terraform, is still in the pool but offered on no app client until it is deleted (docs/cognito-google-setup.md, "Decommission GoogleSAML")
 - **SSO sessions carry no `team` tag**: the Identity Center ABAC attribute (`${path:enterprise.team}`) is never set on users, so `${aws:PrincipalTag/team}` is empty for humans. Per-team permission sets (`javabin-team-{team}`) therefore use `javabin-team-{team}-guardrails` (the developer boundary rendered with the team name) instead. The ABAC-based `javabin-developer` permission set in `terraform/org` cannot reach team resources
 - **App databases share one network path** (fixed by `app-network`): service-rds now allows ingress only from the app's own `{team}-{app}-tasks` SG; each app moves off the shared ECS tasks SG on its next pipeline run
 - **Team provisioner Lambda**: All sync functions working (Google/GitHub/Budget/Cognito/Identity Center). Password-set flow deployed.

@@ -7,9 +7,14 @@
 # Prerequisite: Google Workspace SAML sync must be configured first so that
 # Identity Center groups (infra@, heroes@, board@, pkom@) exist.
 #
-# ABAC: The "team" attribute flows from Google group membership through
-# SAML assertion → Identity Center → STS session tag. This lets a single
-# JavabinDeveloper permission set work for all teams.
+# ABAC: The "team" attribute was meant to flow from Google group membership
+# through SAML assertion → Identity Center → STS session tag, so a single
+# JavabinDeveloper permission set would work for all teams.
+#
+# NOTE: the "team" attribute is never populated on Identity Center users, so
+# SSO sessions carry no team tag and javabin-developer gets no access to team
+# resources. Developers use the per-team permission sets (javabin-team-{team})
+# created by the team-provisioner Lambda instead (see CLAUDE.md, Known Issues).
 ################################################################################
 
 data "aws_ssoadmin_instances" "this" {}
@@ -20,6 +25,7 @@ locals {
 
 ################################################################################
 # Access Control Attributes (ABAC) — map "team" from SAML assertion
+# (the source attribute is never set today; see the ABAC note above)
 ################################################################################
 
 resource "aws_ssoadmin_instance_access_control_attributes" "this" {
@@ -54,7 +60,8 @@ resource "aws_ssoadmin_managed_policy_attachment" "admin" {
 ################################################################################
 # Permission Set: JavabinDeveloper
 # ABAC-scoped access for heroes. Uses permission boundary.
-# Team tag from SAML assertion enables access to team-tagged resources.
+# Team tag from SAML assertion was meant to enable access to team-tagged
+# resources; no team tag is set, so this grants no team access (see above).
 ################################################################################
 
 resource "aws_ssoadmin_permission_set" "developer" {
