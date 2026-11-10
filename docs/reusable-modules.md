@@ -28,7 +28,7 @@ ECR repository with 4-rule lifecycle policy.
 | Rule | Default |
 |------|---------|
 | Keep N semver releases (`v*`) | 5 |
-| Keep N main builds (`main-*`, `master-*`) | 3 |
+| Keep N main builds (`main-*`) | 3 |
 | Expire untagged | 1 day |
 | Expire other tags | 7 days |
 
