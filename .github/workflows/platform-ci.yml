@@ -60,8 +60,6 @@ jobs:
     if: github.event_name != 'schedule'
     permissions:
       contents: read
-    env:
-      TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/terraform-provider-cache
     steps:
       - uses: actions/checkout@v6
 
@@ -72,6 +70,8 @@ jobs:
 
       - name: Validate all reusable modules
         shell: bash
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/terraform-provider-cache
         run: |
           mkdir -p "$TF_PLUGIN_CACHE_DIR"
           status=0
