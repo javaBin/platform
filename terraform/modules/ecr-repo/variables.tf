@@ -21,7 +21,7 @@ variable "semver_keep_count" {
 }
 
 variable "main_keep_count" {
-  description = "Number of main/master branch build images to keep"
+  description = "Number of main branch build images to keep"
   type        = number
   default     = 3
 }

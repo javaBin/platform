@@ -40,7 +40,7 @@ resource "aws_ecr_lifecycle_policy" "this" {
         description  = "Keep last ${var.main_keep_count} main builds"
         selection = {
           tagStatus     = "tagged"
-          tagPrefixList = ["main-", "master-"]
+          tagPrefixList = ["main-"]
           countType     = "imageCountMoreThan"
           countNumber   = var.main_keep_count
         }
