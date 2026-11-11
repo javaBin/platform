@@ -43,8 +43,11 @@ COLUMN_MAP = {
 }
 
 # Maps Norwegian group names from the sheet to group IDs in groups.yaml.
+# None = a known sheet choice that maps to no group.
 GROUP_MAP = {
-    "JavaZone": "javazone",
+    # javazone@java.no is the coordination group's list, kept by hand
+    # (`manual: true` in groups.yaml); JavaZone volunteers are not added to it.
+    "JavaZone": None,
     "Styret": "styret",
     "Kodesmia": "kodesmia",
     "Region": "region",
@@ -197,11 +200,10 @@ def map_groups(groups_str):
     raw = [g.strip() for g in groups_str.split(",") if g.strip()]
     mapped = []
     for g in raw:
-        group_id = GROUP_MAP.get(g)
-        if group_id:
-            mapped.append(group_id)
-        else:
+        if g not in GROUP_MAP:
             print(f"  Warning: unknown group '{g}' — not in GROUP_MAP, skipping", file=sys.stderr)
+        elif GROUP_MAP[g]:
+            mapped.append(GROUP_MAP[g])
     # Always include helter — all heroes are helter members
     mapped.append("helter")
     return sorted(set(mapped))

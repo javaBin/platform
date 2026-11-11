@@ -279,5 +279,36 @@ class ResultLineTest(unittest.TestCase):
         self.assertIn("settings: isArchived", line)
 
 
+class ManualGroupTest(unittest.TestCase):
+    """`manual: true` groups (javazone@java.no) are kept by hand: the sync adds nobody."""
+
+    def test_sync_groups_and_heros_skips_manual_group(self):
+        h = load()
+        directory = FakeDirectory({"jz-koordineringsgruppen@java.no": "MEMBER"})
+        groups = [
+            {"name": "helter", "google": "helter@java.no", "members": ["ola@java.no"]},
+            # members a stale payload might still carry; none of them may be added
+            {"name": "javazone", "google": "javazone@java.no", "manual": True, "members": ["ola@java.no"]},
+        ]
+        with mock.patch.object(h, "_get_google_access_token", return_value="tok"), \
+                mock.patch.object(h, "_google_api", side_effect=directory), \
+                mock.patch.object(h, "notify_slack"), \
+                mock.patch.object(h, "_prune_memberships", return_value=[]), \
+                mock.patch.object(h, "_explain_not_in_identity_center", return_value={}):
+            body = json.loads(h.handle_sync_groups_and_heros({"groups": groups, "heros": []})["body"])
+        self.assertIn("helter", body["synced"])
+        self.assertNotIn("javazone", body["synced"])
+        self.assertFalse([c for c in directory.calls if "javazone%40java.no" in c[1]], directory.calls)
+
+    def test_sync_groups_skips_manual_group(self):
+        h = load()
+        with mock.patch.object(h, "sync_group_to_cognito") as cognito, \
+                mock.patch.object(h, "sync_group_to_identity_center") as ic, \
+                mock.patch.object(h, "notify_slack"):
+            h.handle_sync_groups({"groups": [{"name": "javazone", "google": "javazone@java.no", "manual": True}]})
+        cognito.assert_not_called()
+        ic.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
