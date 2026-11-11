@@ -2657,9 +2657,14 @@ def handle_sync_groups_and_heros(event):
         "failed": aliases_failed,
     }
 
-    # Step 3 (+ 4, 5): Sync Google groups, Cognito, Identity Center per group (parallel)
+    # Step 3 (+ 4, 5): Sync Google groups, Cognito, Identity Center per group (parallel).
+    # Manual groups are kept by hand in Google Admin: never add members to them.
+    synced_groups = [g for g in groups if not g.get("manual")]
+    skipped = sorted(g.get("name") or "?" for g in groups if g.get("manual"))
+    if skipped:
+        logger.info("Skipping manual group(s): %s", ", ".join(skipped))
     with ThreadPoolExecutor(max_workers=GROUP_SYNC_WORKERS) as executor:
-        futures = [executor.submit(_sync_one_group, group, access_token) for group in groups]
+        futures = [executor.submit(_sync_one_group, group, access_token) for group in synced_groups]
         for future in as_completed(futures):
             name, gr = future.result()
             if name:
@@ -2838,7 +2843,7 @@ def handle_sync_groups(event):
     results = {}
     for group in groups:
         name = group.get("name")
-        if not name or not group.get("google"):
+        if not name or not group.get("google") or group.get("manual"):
             continue
 
         logger.info("Syncing group: %s (%s)", name, group["google"])

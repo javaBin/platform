@@ -171,7 +171,8 @@ def generate_plan(token, members_data, groups_data, access_data):
     members_list = members_data.get("members") or []
     for group in (groups_data.get("groups") or []):
         group_email = group.get("google", "")
-        if not group_email:
+        # manual: membership is kept by hand in Google Admin, never reconciled
+        if not group_email or group.get("manual"):
             continue
 
         desired_group_members = {

@@ -9,7 +9,7 @@ Usage:
   sort-members.py groups/members.yaml groups/groups.yaml > sorted.yaml
 
 Priority order (highest first):
-  drift → styret → pkom → kodesmia → region → javazone → other
+  drift → styret → pkom → kodesmia → region → other
 """
 
 import argparse
@@ -18,7 +18,7 @@ from collections import defaultdict
 
 import yaml
 
-GROUP_PRIORITY = ["drift", "styret", "pkom", "kodesmia", "region", "javazone"]
+GROUP_PRIORITY = ["drift", "styret", "pkom", "kodesmia", "region"]
 
 
 def primary_section(member):

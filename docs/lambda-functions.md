@@ -86,6 +86,15 @@ Queries Security Hub for active findings at HIGH and CRITICAL severity, aggregat
 | `/javabin/platform/atlassian-org-id` | Atlassian organisation ID |
 | `/javabin/platform/atlassian-api-key` | Atlassian org admin API key (unscoped — full org admin) |
 
+### Registry groups (`sync_groups_and_heros`)
+
+`scripts/provision-groups.py` resolves each group in the registry's `groups/groups.yaml` to the java.no
+addresses of the members who list it, and the Lambda adds the missing ones (additive: members not in
+the YAML are preserved). A group with `manual: true` is kept by hand in Google Admin: the script sends it
+with no members and the Lambda skips it (no Google, Cognito or Identity Center sync), and
+`scripts/reconcile-groups.py` plans no removals from it. `javazone@java.no`, the JavaZone coordination
+group's list, is manual: only koordineringsgruppa may be in it.
+
 ### Team permission set (`_ensure_team_permission_set`)
 
 `javabin-team-{team}` attaches the `javabin-team-{team}-guardrails` policy and an inline policy: `Action "*"` on resources tagged `team={team}` (or untagged), denies on platform-managed parameters, a few untagged reads, and `AllowExecOnPlatformCluster`: `ecs:ExecuteCommand` on the shared `javabin-platform` cluster. ECS Exec is authorized against both the cluster and the task, and the task is only allowed through its propagated `team` tag, so members can exec into their own team's tasks only (apps with `compute.exec: true`). Changes reach existing permission sets on the next registry sync, which reprovisions them.

@@ -32,14 +32,19 @@ def load_yaml(path):
 
 
 def resolve_memberships(groups, members_data):
-    """For each group, determine which members belong to it."""
+    """For each group, determine which members belong to it.
+
+    Groups marked `manual: true` get no members: their membership is kept by
+    hand in Google Admin, and the provisioner leaves them alone. They stay in
+    the payload so access groups can still nest them.
+    """
     members_list = members_data.get("members") or []
 
     resolved_groups = []
     for group in groups.get("groups", []):
         name = group["name"]
 
-        member_emails = [
+        member_emails = [] if group.get("manual") else [
             h["javabin_google_email"]
             for h in members_list
             if h.get("javabin_google_email") and name in (h.get("memberships") or [])
@@ -187,7 +192,10 @@ def main():
     total_members = sum(len(g["members"]) for g in resolved_groups)
     print(f"Resolved {len(resolved_groups)} groups with {total_members} total memberships")
     for g in resolved_groups:
-        print(f"  {g['name']}: {len(g['members'])} member(s)")
+        if g.get("manual"):
+            print(f"  {g['name']}: manual (not synced)")
+        else:
+            print(f"  {g['name']}: {len(g['members'])} member(s)")
 
     if access_groups:
         print(f"\nAccess groups: {len(access_groups)}")
