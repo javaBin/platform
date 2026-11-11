@@ -193,6 +193,7 @@ terraform/state/
 | `scripts/provision-groups.py` | CI: resolve members.yaml + access.yaml, invoke team-provisioner Lambda |
 | `scripts/provision-atlassian.py` | CI: resolve atlassian.yaml to java.no emails, invoke team-provisioner `sync_atlassian` (report-only unless `atlassian_sync_apply`) |
 | `scripts/sync-members.py` | CI: sync approved heroes from Google Sheets into members.yaml |
+| `scripts/gmail-address-map.py` | Manual: members with `forward_to_personal: true` → Gmail recipient address map lines (java.no → personal email), pasted into the "Personlige aliaser" routing rule (tests: `scripts/tests/`) |
 | `scripts/review-plan.py` | CI: LLM plan review via Bedrock (platform CI; also bundled into the plan-review Lambda) |
 | `scripts/invoke-plan-review.sh` | CI: app tf-plan → plan-review Lambda; retries FAILED (service) reviews, says FAILED vs HIGH (tests: `scripts/tests/`) |
 | `scripts/override-help.sh` | CI: what a blocked apply tells the developer (HIGH: request override; FAILED: re-run all jobs) |
@@ -301,7 +302,9 @@ Delegated scopes the platform code requests (Admin console > Security > API cont
 delegation; the field replaces the whole list, so read what is there first and only add, since the
 console may grant scopes not listed here): `admin.directory.group`,
 `admin.directory.group.member`, `admin.directory.user`, `admin.directory.user.alias`, `gmail.send`,
-`gmail.settings.sharing`, `apps.groups.settings` (prefix `https://www.googleapis.com/auth/`).
+`apps.groups.settings` (prefix `https://www.googleapis.com/auth/`). Forwarding to members' personal
+emails is opt-in and a Gmail routing rule set by hand (`scripts/gmail-address-map.py`,
+docs/lambda-functions.md), not an API call.
 Google rejects a token if any requested scope is not delegated, so `apps.groups.settings` is
 requested on a separate token (`_get_google_groups_settings_token`) and team group settings are
 skipped, not failed, when it is missing. The Groups Settings API (`groupssettings.googleapis.com`)

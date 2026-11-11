@@ -95,6 +95,23 @@ with no members and the Lambda skips it (no Google, Cognito or Identity Center s
 `scripts/reconcile-groups.py` plans no removals from it. `javazone@java.no`, the JavaZone coordination
 group's list, is manual: only koordineringsgruppa may be in it.
 
+### Forwarding to personal email (opt-in, by hand)
+
+New accounts get a welcome mail at their personal email and no forwarding: mail to a java.no address
+stays in its java.no inbox. A member who wants it forwarded too gets `forward_to_personal: true` in the
+registry's `members.yaml`. Forwarding is a Gmail routing rule, not the Gmail API (which forwards to an
+external address only after the recipient confirms it): Admin console → Apps → Google Workspace → Gmail →
+Routing → "Personlige aliaser" (Email forwarding using recipient address map), with "Also route to
+original destination" ON. The rule has no API. When an opted-in member is added, removed or changes
+`personal_email`, `provision-groups.py` prints and posts a reminder listing the java.no addresses (never
+the personal ones); an admin then replaces the rule's address mappings with the output of
+`scripts/gmail-address-map.py <registry>/groups/members.yaml`, or disables the rule when it prints
+nothing. Registry PR plan comments mark the flag on new and changed members. The map lists primary
+addresses only; check that mail to an opted-in member's `alias` is forwarded too.
+
+The Lambda no longer needs `gmail.settings.sharing` (it set per-user forwarding before). Remove that
+scope from the domain-wide delegation client so the service account key cannot set forwarding.
+
 ### Team permission set (`_ensure_team_permission_set`)
 
 `javabin-team-{team}` attaches the `javabin-team-{team}-guardrails` policy and an inline policy: `Action "*"` on resources tagged `team={team}` (or untagged), denies on platform-managed parameters, a few untagged reads, and `AllowExecOnPlatformCluster`: `ecs:ExecuteCommand` on the shared `javabin-platform` cluster. ECS Exec is authorized against both the cluster and the task, and the task is only allowed through its propagated `team` tag, so members can exec into their own team's tasks only (apps with `compute.exec: true`). Changes reach existing permission sets on the next registry sync, which reprovisions them.
@@ -137,7 +154,7 @@ settings have no visible effect.
 Delegated scopes the platform code requests (client ID 103162295681564397615). The console may grant
 more; read the current list there first and add to it rather than pasting this one:
 `admin.directory.group`, `admin.directory.group.member`, `admin.directory.user`,
-`admin.directory.user.alias`, `gmail.send`, `gmail.settings.sharing`, `apps.groups.settings`
+`admin.directory.user.alias`, `gmail.send`, `apps.groups.settings`
 (all under `https://www.googleapis.com/auth/`).
 
 ### Team GitHub team (`sync_github_team`)

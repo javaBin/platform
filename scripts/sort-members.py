@@ -83,6 +83,8 @@ def format_yaml(sections):
                 lines.append(f"    javabin_google_email: {m['javabin_google_email']}")
                 alias = m.get("alias") or ""
                 lines.append(f"    alias: {alias}" if alias else "    alias:")
+                if m.get("forward_to_personal") is True:
+                    lines.append("    forward_to_personal: true")
                 memberships = m.get("memberships", [])
                 if memberships:
                     lines.append(f"    memberships: [{', '.join(memberships)}]")

@@ -41,6 +41,10 @@ def diff_members(base_data, pr_data):
             bv, pv = b.get(field, ""), p.get(field, "")
             if bv != pv:
                 diffs.append(f"`{field}`: {bv!r} → {pv!r}")
+        # Absent and false both mean no forwarding.
+        bf, pf = b.get("forward_to_personal") is True, p.get("forward_to_personal") is True
+        if bf != pf:
+            diffs.append(f"`forward_to_personal`: {bf} → {pf} *(update the Gmail address map by hand)*")
         b_groups = set(b.get("memberships") or [])
         p_groups = set(p.get("memberships") or [])
         if b_groups != p_groups:
@@ -154,6 +158,8 @@ def format_markdown(added, removed, changed, group_added, group_removed, group_c
         for m in added:
             name = f"{m.get('firstname', '')} {m.get('lastname', '')}"
             groups = ", ".join(m.get("memberships") or [])
+            if m.get("forward_to_personal") is True:
+                groups += " *(forward_to_personal: update the Gmail address map by hand)*"
             lines.append(f"| {name} | {m.get('javabin_google_email', '')} | {groups} |")
         lines.append("")
 
