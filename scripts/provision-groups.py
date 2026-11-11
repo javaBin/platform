@@ -136,17 +136,23 @@ def detect_removals(prev_members, curr_members, prev_groups, curr_groups):
 
 
 def forwarding_changes(prev_members, curr_members):
-    """java.no accounts whose forward_to_personal opt-in turned on / off (sorted lists)."""
+    """java.no accounts whose address map entry must change: (turned on, turned off, target changed).
+
+    Each is a sorted list of java.no addresses. "Target changed" means an opted-in member's
+    personal_email changed, so the rule would keep forwarding to the old address.
+    """
     def opted_in(data):
         return {
-            m["javabin_google_email"].lower() for m in (data.get("members") or [])
-            if m.get("javabin_google_email") and m.get("forward_to_personal") is True
+            m["javabin_google_email"].strip().lower(): (m.get("personal_email") or "").strip().lower()
+            for m in (data.get("members") or [])
+            if (m.get("javabin_google_email") or "").strip() and m.get("forward_to_personal") is True
         }
     prev, curr = opted_in(prev_members), opted_in(curr_members)
-    return sorted(curr - prev), sorted(prev - curr)
+    changed = sorted(e for e in prev.keys() & curr.keys() if prev[e] != curr[e])
+    return sorted(curr.keys() - prev.keys()), sorted(prev.keys() - curr.keys()), changed
 
 
-def post_forwarding_reminder(turned_on, turned_off):
+def post_forwarding_reminder(turned_on, turned_off, target_changed=()):
     """Tell the admin to update the Gmail recipient address map (it has no API).
 
     Lists java.no addresses only; personal emails stay out of Slack.
@@ -156,6 +162,8 @@ def post_forwarding_reminder(turned_on, turned_off):
         lines.append("*Turned on:* " + ", ".join(turned_on))
     if turned_off:
         lines.append("*Turned off:* " + ", ".join(turned_off))
+    if target_changed:
+        lines.append("*Personal email changed:* " + ", ".join(target_changed))
     lines.append("")
     lines.append(
         "Run `scripts/gmail-address-map.py groups/members.yaml` (javaBin/platform) and replace the "
@@ -266,9 +274,9 @@ def main():
         else:
             print("\nNo removals detected")
 
-        turned_on, turned_off = forwarding_changes(prev_members, members_data)
-        if turned_on or turned_off:
-            post_forwarding_reminder(turned_on, turned_off)
+        changes = forwarding_changes(prev_members, members_data)
+        if any(changes):
+            post_forwarding_reminder(*changes)
 
     # Pass CI context so the Lambda can attribute the sync in Slack
     ci_context = {

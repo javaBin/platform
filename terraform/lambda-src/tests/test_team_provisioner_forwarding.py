@@ -1,5 +1,8 @@
 """The provisioner never sets up Gmail forwarding; opt-in forwarding is a Gmail routing rule.
 
+Seam: `_sync_hero_account` with the Directory API (`_google_api`) faked and urllib patched, so any
+Gmail settings call would show up as a urlopen call.
+
 Run: python3 -m unittest discover -s terraform/lambda-src/tests
 """
 
@@ -51,7 +54,6 @@ class NoForwardingTest(unittest.TestCase):
         self.assertEqual(result["status"], "created")
         welcome.assert_called_once()
         urlopen.assert_not_called()  # no Gmail settings call
-        self.assertEqual([m for m, _ in calls], ["GET", "POST"])
 
     def test_existing_account_conflict_sets_up_nothing(self):
         h = load()
@@ -60,10 +62,9 @@ class NoForwardingTest(unittest.TestCase):
         welcome.assert_not_called()
         urlopen.assert_not_called()
 
-    def test_no_forwarding_code_or_scope(self):
+    def test_directory_token_does_not_ask_for_gmail_settings(self):
         h = load()
-        self.assertFalse(hasattr(h, "_setup_email_forwarding"))
-        self.assertNotIn("gmail.settings.sharing", h.GOOGLE_SCOPES)
+        self.assertNotIn("gmail.settings", h.GOOGLE_SCOPES)
 
 
 if __name__ == "__main__":

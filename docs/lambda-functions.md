@@ -102,10 +102,15 @@ stays in its java.no inbox. A member who wants it forwarded too gets `forward_to
 registry's `members.yaml`. Forwarding is a Gmail routing rule, not the Gmail API (which forwards to an
 external address only after the recipient confirms it): Admin console → Apps → Google Workspace → Gmail →
 Routing → "Personlige aliaser" (Email forwarding using recipient address map), with "Also route to
-original destination" ON. The rule has no API. When the opted-in members change, `provision-groups.py`
-prints and posts a reminder listing the java.no addresses turned on or off; an admin then replaces the
-rule's address mappings with the output of `scripts/gmail-address-map.py <registry>/groups/members.yaml`,
-or disables the rule when it prints nothing. The plan comment on registry PRs shows the flag change.
+original destination" ON. The rule has no API. When an opted-in member is added, removed or changes
+`personal_email`, `provision-groups.py` prints and posts a reminder listing the java.no addresses (never
+the personal ones); an admin then replaces the rule's address mappings with the output of
+`scripts/gmail-address-map.py <registry>/groups/members.yaml`, or disables the rule when it prints
+nothing. Registry PR plan comments mark the flag on new and changed members. The map lists primary
+addresses only; check that mail to an opted-in member's `alias` is forwarded too.
+
+The Lambda no longer needs `gmail.settings.sharing` (it set per-user forwarding before). Remove that
+scope from the domain-wide delegation client so the service account key cannot set forwarding.
 
 ### Team permission set (`_ensure_team_permission_set`)
 

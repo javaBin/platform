@@ -1,12 +1,18 @@
 """Forwarding to personal email is opt-in (`forward_to_personal: true` in members.yaml).
 
+Seams: the scripts' public functions and `provision-groups.py main()`, with the Lambda
+invocation and the Slack webhook (urllib) patched out.
+
 Run: python3 -m unittest discover -s scripts/tests
 """
 
 import contextlib
 import importlib.util
 import io
+import json
 import os
+import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -53,19 +59,43 @@ class ProvisionGroupsForwardingTest(unittest.TestCase):
     def test_changes(self):
         now = {"members": [member("Ola"), member("Kari", True), member("Per", False)]}
         self.assertEqual(self.pg.forwarding_changes(MEMBERS, now),
-                         (["kari.nordmann@java.no"], ["ola.nordmann@java.no"]))
-        self.assertEqual(self.pg.forwarding_changes(MEMBERS, MEMBERS), ([], []))
+                         (["kari.nordmann@java.no"], ["ola.nordmann@java.no"], []))
+        self.assertEqual(self.pg.forwarding_changes(MEMBERS, MEMBERS), ([], [], []))
 
-    def test_reminder_names_java_no_addresses_only(self):
-        out = io.StringIO()
-        with mock.patch.dict(os.environ, {"SLACK_WEBHOOK_URL": "https://hooks.example/x"}), \
-                mock.patch.object(self.pg.urllib.request, "urlopen") as urlopen, \
-                contextlib.redirect_stdout(out):
-            self.pg.post_forwarding_reminder(["kari.nordmann@java.no"], ["ola.nordmann@java.no"])
-        sent = urlopen.call_args.args[0].data.decode()
-        self.assertIn("kari.nordmann@java.no", sent)
-        self.assertIn("gmail-address-map.py", sent)
-        self.assertNotIn("@gmail.com", sent)
+    def test_personal_email_change_of_opted_in_member(self):
+        now = {"members": [member("Ola", True, personal_email="ola@new.example")]}
+        self.assertEqual(self.pg.forwarding_changes(MEMBERS, now), ([], [], ["ola.nordmann@java.no"]))
+
+    def run_main(self, prev, curr):
+        """Run main() on YAML files; returns the Slack payloads it posted."""
+        import yaml
+        with tempfile.TemporaryDirectory() as d:
+            paths = {}
+            for name, data in {"groups": {"groups": []}, "prev": prev, "curr": curr}.items():
+                paths[name] = os.path.join(d, f"{name}.yaml")
+                with open(paths[name], "w") as f:
+                    yaml.safe_dump(data, f)
+            argv = ["provision-groups.py", paths["groups"], paths["curr"], "--prev-members", paths["prev"]]
+            with mock.patch.object(sys, "argv", argv), \
+                    mock.patch.dict(os.environ, {"SLACK_WEBHOOK_URL": "https://hooks.example/x"}), \
+                    mock.patch.object(self.pg, "invoke_lambda"), \
+                    mock.patch.object(self.pg.urllib.request, "urlopen") as urlopen, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.pg.main()
+        return [json.loads(c.args[0].data)["text"] for c in urlopen.call_args_list]
+
+    def test_main_posts_reminder_without_personal_emails(self):
+        now = {"members": [member("Ola", True, personal_email="ola@new.example"), member("Kari", True),
+                           member("Per", False), member("Anne", "yes")]}
+        texts = [t for t in self.run_main(MEMBERS, now) if "Forwarding to personal email" in t]
+        self.assertEqual(len(texts), 1)
+        self.assertIn("*Turned on:* kari.nordmann@java.no", texts[0])
+        self.assertIn("*Personal email changed:* ola.nordmann@java.no", texts[0])
+        for m in MEMBERS["members"] + now["members"]:
+            self.assertNotIn(m["personal_email"], texts[0])
+
+    def test_main_posts_nothing_when_opt_ins_unchanged(self):
+        self.assertEqual(self.run_main(MEMBERS, MEMBERS), [])
 
     def test_member_details_carry_no_forwarding(self):
         # The Lambda never sets up forwarding; nothing in the payload asks for it.
@@ -82,7 +112,15 @@ class DiffGroupsForwardingTest(unittest.TestCase):
 
     def test_flag_change_shows_in_plan(self):
         _, _, changed = self.dg.diff_members({"members": [member("Ola")]}, {"members": [member("Ola", True)]})
-        self.assertEqual(changed[0]["diffs"], ["`forward_to_personal`: '' → True"])
+        self.assertEqual(len(changed[0]["diffs"]), 1)
+        self.assertIn("`forward_to_personal`: False → True", changed[0]["diffs"][0])
+        # an explicit false is the same as no flag
+        self.assertEqual(self.dg.diff_members({"members": [member("Ola", False)]}, {"members": [member("Ola")]})[2], [])
+
+    def test_new_member_opt_in_shows_in_plan(self):
+        added, _, _ = self.dg.diff_members({"members": []}, {"members": [member("Ola", True)]})
+        md = self.dg.format_markdown(added, [], [], [], [], [], [], [])
+        self.assertIn("forward_to_personal", md)
 
 
 class SerializersKeepFlagTest(unittest.TestCase):
