@@ -111,7 +111,10 @@ def detect_removals(prev_members, curr_members, prev_groups, curr_groups):
 
     membership_removals = []
     all_group_names = {g["name"] for g in (prev_groups.get("groups") or [])} | {g["name"] for g in (curr_groups.get("groups") or [])}
-    for gname in sorted(all_group_names):
+    # Manual groups are kept by hand in Google Admin: dropping one from
+    # memberships changes nothing there, and reconcile skips them.
+    manual = {g["name"] for g in (curr_groups.get("groups") or []) if g.get("manual")}
+    for gname in sorted(all_group_names - manual):
         prev_set = {
             m["javabin_google_email"] for m in (prev_members.get("members") or [])
             if m.get("javabin_google_email") and gname in (m.get("memberships") or [])

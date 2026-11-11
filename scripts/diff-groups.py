@@ -69,7 +69,7 @@ def diff_groups(base_data, pr_data):
     for name in sorted(base_groups.keys() & pr_groups.keys()):
         b, p = base_groups[name], pr_groups[name]
         diffs = []
-        for field in ["google", "cognito", "identity_center", "permission_set"]:
+        for field in ["google", "cognito", "identity_center", "permission_set", "manual"]:
             bv, pv = b.get(field), p.get(field)
             if bv != pv:
                 diffs.append(f"`{field}`: {bv!r} → {pv!r}")
@@ -106,9 +106,11 @@ def diff_access(base_data, pr_data):
 
 def resolve_membership_changes(base_members_data, pr_members_data, base_groups_data, pr_groups_data):
     """Show per-group membership additions/removals."""
+    # Manual groups are kept by hand in Google Admin: memberships never reach them.
+    manual = {g["name"] for g in (pr_groups_data.get("groups") or []) if g.get("manual")}
     all_group_names = sorted(
-        {g["name"] for g in (base_groups_data.get("groups") or [])}
-        | {g["name"] for g in (pr_groups_data.get("groups") or [])}
+        ({g["name"] for g in (base_groups_data.get("groups") or [])}
+         | {g["name"] for g in (pr_groups_data.get("groups") or [])}) - manual
     )
 
     base_members = base_members_data.get("members") or []

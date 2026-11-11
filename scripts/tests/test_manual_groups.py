@@ -50,6 +50,26 @@ class ProvisionGroupsTest(unittest.TestCase):
         self.assertEqual(got["javazone"]["members"], [])
         self.assertIs(got["javazone"]["manual"], True)  # the Lambda skips it too
 
+    def test_no_removal_warning_for_manual_group(self):
+        now = {"members": [{**m, "memberships": ["helter"]} for m in MEMBERS["members"]]}
+        _, removals, _ = self.pg.detect_removals(MEMBERS, now, GROUPS, GROUPS)
+        self.assertEqual(removals, [])
+
+
+class DiffGroupsTest(unittest.TestCase):
+    def setUp(self):
+        try:
+            self.dg = load("diff_groups", "diff-groups.py")
+        except ModuleNotFoundError as e:
+            self.skipTest(str(e))
+
+    def test_manual_flag_shown_and_manual_memberships_not_listed(self):
+        base = {"groups": [{k: v for k, v in g.items() if k != "manual"} for g in GROUPS["groups"]]}
+        _, _, changed = self.dg.diff_groups(base, GROUPS)
+        self.assertEqual(changed, [{"name": "javazone", "diffs": ["`manual`: None → True"]}])
+        now = {"members": [{**m, "memberships": ["helter"]} for m in MEMBERS["members"]]}
+        self.assertEqual(self.dg.resolve_membership_changes(MEMBERS, now, base, GROUPS), [])
+
 
 class ReconcileGroupsTest(unittest.TestCase):
     def setUp(self):
@@ -101,7 +121,7 @@ class SortMembersTest(unittest.TestCase):
 
     def test_javazone_is_not_a_section(self):
         self.assertNotIn("javazone", self.sort.GROUP_PRIORITY)
-        self.assertEqual(self.sort.primary_section({"memberships": ["helter"]}), "other")
+        self.assertEqual(self.sort.primary_section({"memberships": ["helter", "javazone"]}), "other")
 
 
 if __name__ == "__main__":
