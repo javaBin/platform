@@ -37,7 +37,7 @@ def diff_members(base_data, pr_data):
     for email in sorted(base_members.keys() & pr_members.keys()):
         b, p = base_members[email], pr_members[email]
         diffs = []
-        for field in ["firstname", "lastname", "javabin_google_email", "alias"]:
+        for field in ["firstname", "lastname", "javabin_google_email", "alias", "forward_to_personal"]:
             bv, pv = b.get(field, ""), p.get(field, "")
             if bv != pv:
                 diffs.append(f"`{field}`: {bv!r} → {pv!r}")
