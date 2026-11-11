@@ -242,6 +242,8 @@ def format_yaml(members):
             lines.append(f"    javabin_google_email: {m['javabin_google_email']}")
             alias = m.get("alias") or ""
             lines.append(f"    alias: {alias}" if alias else "    alias:")
+            if m.get("forward_to_personal") is True:
+                lines.append("    forward_to_personal: true")
             memberships = m.get("memberships", [])
             if memberships:
                 lines.append(f"    memberships: [{', '.join(memberships)}]")
@@ -284,8 +286,10 @@ def merge_heroes(existing, new_entries):
         key = entry["personal_email"].lower()
         if key in merged:
             old = merged[key]
-            # Preserve alias from existing entry
+            # Preserve alias and forwarding opt-in (set in the registry, never by the sheet)
             entry["alias"] = old.get("alias") or entry.get("alias") or ""
+            if old.get("forward_to_personal") is True:
+                entry["forward_to_personal"] = True
             # Update memberships from sheet (source of truth for group affiliations)
             merged[key] = entry
             updated += 1

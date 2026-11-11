@@ -85,5 +85,29 @@ class DiffGroupsForwardingTest(unittest.TestCase):
         self.assertEqual(changed[0]["diffs"], ["`forward_to_personal`: '' → True"])
 
 
+class SerializersKeepFlagTest(unittest.TestCase):
+    """The sort bot and the sheet sync rewrite members.yaml; they must keep the opt-in."""
+
+    def test_sort_members_keeps_flag(self):
+        try:
+            sort = load("sort_members_fwd", "sort-members.py")
+        except ModuleNotFoundError as e:
+            self.skipTest(str(e))
+        out = sort.format_yaml(sort.sort_members(MEMBERS["members"]))
+        self.assertEqual(out.count("forward_to_personal: true"), 1)
+        ola = out[out.index("firstname: Ola"):]
+        self.assertLess(ola.index("forward_to_personal: true"), ola.index("memberships:"))
+
+    def test_sync_members_preserves_flag_from_registry(self):
+        sm = load("sync_members_fwd", "sync-members.py")
+        existing = {m["personal_email"]: dict(m) for m in MEMBERS["members"]}
+        fresh = [{**member("Ola"), "memberships": ["helter", "kodesmia"]}, member("Kari")]
+        merged, _, _ = sm.merge_heroes(existing, fresh)
+        by_first = {m["firstname"]: m for m in merged}
+        self.assertIs(by_first["Ola"].get("forward_to_personal"), True)
+        self.assertNotIn("forward_to_personal", by_first["Kari"])
+        self.assertEqual(sm.format_yaml(merged).count("forward_to_personal: true"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
