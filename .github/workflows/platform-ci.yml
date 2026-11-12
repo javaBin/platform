@@ -4,8 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'terraform/platform/**'
-      - 'terraform/lambda-src/**'
+      - 'terraform/**'
       - 'scripts/**'
       - '.github/workflows/**'
   pull_request:
@@ -35,6 +34,58 @@ env:
   PLAN_BUCKET: javabin-ci-plan-artifacts-553637109631
 
 jobs:
+  # Formatting covers every Terraform root and shared module in the repo.
+  terraform-format:
+    name: Terraform Format
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.7"
+          terraform_wrapper: false
+
+      - name: Check all Terraform formatting
+        run: terraform fmt -check -diff -recursive terraform
+
+  # App modules are not referenced by terraform/platform, so its plan cannot
+  # validate them. Backend-free validation needs no AWS credentials or state.
+  validate-modules:
+    name: Validate Terraform Modules
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.7"
+          terraform_wrapper: false
+
+      - name: Validate all reusable modules
+        shell: bash
+        env:
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/terraform-provider-cache
+        run: |
+          mkdir -p "$TF_PLUGIN_CACHE_DIR"
+          status=0
+          for module in terraform/modules/*/; do
+            echo "::group::Validate $module"
+            if ! terraform -chdir="$module" init -backend=false -input=false -no-color; then
+              status=1
+            elif ! terraform -chdir="$module" validate -no-color; then
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$status"
+
   # --------------------------------------------------------------------------
   # Unit tests — app.yaml generator and Lambda handlers (stdlib unittest)
   # --------------------------------------------------------------------------
@@ -57,7 +108,7 @@ jobs:
         run: python3 -m unittest discover -s terraform/lambda-src/tests -v
 
   # --------------------------------------------------------------------------
-  # Plan — terraform init, validate, fmt, plan
+  # Plan — terraform init, validate, plan for the shared platform state
   # --------------------------------------------------------------------------
   plan:
     name: Terraform Plan
@@ -135,11 +186,6 @@ jobs:
         working-directory: ${{ env.TF_ROOT }}
         run: terraform validate
 
-      - name: Terraform Format
-        if: steps.changes.outputs.has_infra_changes == 'true'
-        working-directory: ${{ env.TF_ROOT }}
-        run: terraform fmt -recursive
-
       - name: Terraform Plan
         id: plan
         if: steps.changes.outputs.has_infra_changes == 'true'
@@ -188,7 +234,7 @@ jobs:
   apply:
     name: Terraform Apply
     runs-on: ubuntu-latest
-    needs: plan
+    needs: [plan, terraform-format, validate-modules]
     if: >-
       github.ref == 'refs/heads/main' &&
       contains(fromJSON('["push", "workflow_dispatch", "repository_dispatch"]'), github.event_name) &&

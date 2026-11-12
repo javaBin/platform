@@ -1,6 +1,6 @@
 # Platform CI Workflow
 
-Defined in `.github/workflows/platform-ci.yml`. Runs on pushes to `terraform/platform/**`, `terraform/lambda-src/**`, and `scripts/**`.
+Defined in `.github/workflows/platform-ci.yml`. Runs on pushes to `main` affecting `terraform/**`, `scripts/**`, or `.github/workflows/**`, and on all pull requests.
 
 ## Pipeline
 
@@ -13,9 +13,16 @@ Monday 08:00   ──► securityhub-summary Lambda ──► #javabin-infra-ale
 
 ## Jobs
 
+### terraform-format and validate-modules
+- Run on non-scheduled workflow events, with no AWS credentials.
+- Check formatting across all Terraform roots and modules with `terraform fmt -check -diff -recursive terraform`.
+- Discover each directory under `terraform/modules/` and run `terraform init -backend=false` followed by `terraform validate`. Provider downloads are reused within the job.
+- Both checks must pass before the platform apply job can run.
+- Validation checks configuration correctness, not lifecycle-policy retention semantics. App module changes are deployed by the consuming app's Terraform plan/apply workflow after it fetches the updated module.
+
 ### plan (includes LLM review)
 - OIDC → `javabin-ci-infra-plan` role (read-only)
-- `terraform init`, `validate`, `fmt -check`, `plan`
+- `terraform init`, `validate`, `plan` in `terraform/platform`, including its referenced child modules. The parent `terraform/` directory is not a Terraform root configuration; `org/` and `state/` remain separate, human-applied roots.
 - Uploads `tfplan` + `plan-output.txt` to S3 with SHA256 hash
 - Posts plan output as PR comment on pull requests
 - Runs `scripts/review-plan.py` inline — calls Bedrock (Claude Haiku 5.5) for risk analysis
